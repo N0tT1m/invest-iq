@@ -1,0 +1,56 @@
+[package]
+name = "api-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "api-server"
+path = "src/main.rs"
+
+[dependencies]
+analysis-core = { path = "../analysis-core" }
+analysis-orchestrator = { path = "../analysis-orchestrator" }
+technical-analysis = { path = "../technical-analysis" }
+quant-analysis = { path = "../quant-analysis" }
+polygon-client = { path = "../polygon-client" }
+validation = { path = "../validation" }
+portfolio-manager = { path = "../portfolio-manager" }
+alpaca-broker = { path = "../alpaca-broker" }
+backtest-engine = { path = "../backtest-engine" }
+risk-manager = { path = "../risk-manager" }
+analytics = { path = "../analytics" }
+sentiment-analysis = { path = "../sentiment-analysis" }
+confidence-calibrator = { path = "../confidence-calibrator" }
+alpha-decay = { path = "../alpha-decay" }
+smart-watchlist = { path = "../smart-watchlist" }
+flow-map = { path = "../flow-map" }
+time-machine = { path = "../time-machine" }
+tax-optimizer = { path = "../tax-optimizer" }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tower_governor = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+dashmap = { workspace = true }
+chrono = { workspace = true }
+redis = { workspace = true }
+reqwest = { workspace = true }
+sqlx = { workspace = true }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+http = "1.0"
+lazy_static = "1.4"
+uuid = { version = "1.0", features = ["v4"] }
+rust-embed = { workspace = true }
+dirs = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

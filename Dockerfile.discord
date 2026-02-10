@@ -1,0 +1,49 @@
+# Multi-stage build for InvestIQ Discord Bot
+
+# Stage 1: Build
+FROM rust:1.75-slim as builder
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y pkg-config libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create a new empty shell project
+WORKDIR /app
+
+# Copy manifests
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+# Build for release
+RUN cargo build --release --bin discord-bot
+
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+
+# Install runtime dependencies (including fonts for chart rendering)
+RUN apt-get update && \
+    apt-get install -y ca-certificates libssl3 fontconfig fonts-dejavu-core && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 investiq && \
+    mkdir -p /app && \
+    chown -R investiq:investiq /app
+
+WORKDIR /app
+
+# Copy the build artifact from the build stage
+COPY --from=builder /app/target/release/discord-bot ./discord-bot
+
+# Change ownership
+RUN chown investiq:investiq ./discord-bot
+
+# Switch to non-root user
+USER investiq
+
+# Set environment variables
+ENV RUST_LOG=info
+
+# Run the binary
+CMD ["./discord-bot"]

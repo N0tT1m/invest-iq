@@ -1,0 +1,41 @@
+[package]
+name = "trading-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Core dependencies
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.8"
+dotenvy = "0.15"
+uuid = { version = "1.0", features = ["v4"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
+
+# Internal crates
+analysis-core = { path = "../analysis-core" }
+analysis-orchestrator = { path = "../analysis-orchestrator" }
+alpaca-broker = { path = "../alpaca-broker" }
+risk-manager = { path = "../risk-manager" }
+portfolio-manager = { path = "../portfolio-manager" }
+analytics = { path = "../analytics" }
+polygon-client = { path = "../polygon-client" }
+kelly-position-sizer = { path = "../kelly-position-sizer" }
+multi-timeframe = { path = "../multi-timeframe" }
+market-regime-detector = { path = "../market-regime-detector" }
+news-trading = { path = "../news-trading" }
+ml-client = { path = "../ml-client" }
+
+[[bin]]
+name = "trading-agent"
+path = "src/main.rs"

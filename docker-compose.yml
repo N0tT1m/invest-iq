@@ -1,0 +1,68 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: investiq-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - investiq-network
+    restart: unless-stopped
+
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: investiq-api
+    ports:
+      - "3000:3000"
+      - "8050:8050"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - RUST_LOG=${RUST_LOG:-info}
+      - API_BASE_URL=http://localhost:3000
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  discord-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.discord
+    container_name: investiq-discord
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+    depends_on:
+      - api-server
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - discord  # Only start if explicitly requested
+
+volumes:
+  redis_data:
+
+networks:
+  investiq-network:
+    driver: bridge

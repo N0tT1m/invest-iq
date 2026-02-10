@@ -1,0 +1,26 @@
+[package]
+name = "data-loader"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "data-loader"
+path = "src/main.rs"
+
+[dependencies]
+analysis-core = { path = "../analysis-core" }
+polygon-client = { path = "../polygon-client" }
+technical-analysis = { path = "../technical-analysis" }
+fundamental-analysis = { path = "../fundamental-analysis" }
+quant-analysis = { path = "../quant-analysis" }
+sentiment-analysis = { path = "../sentiment-analysis" }
+
+tokio = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+dotenvy = "0.15"

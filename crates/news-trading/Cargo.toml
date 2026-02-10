@@ -1,0 +1,21 @@
+[package]
+name = "news-trading"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+analysis-core = { path = "../analysis-core" }
+polygon-client = { path = "../polygon-client" }
+
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+log = "0.4"
+
+[dev-dependencies]
+tokio-test = "0.4"

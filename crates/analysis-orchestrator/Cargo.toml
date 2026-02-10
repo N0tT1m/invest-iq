@@ -1,0 +1,22 @@
+[package]
+name = "analysis-orchestrator"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+analysis-core = { path = "../analysis-core" }
+polygon-client = { path = "../polygon-client" }
+technical-analysis = { path = "../technical-analysis" }
+fundamental-analysis = { path = "../fundamental-analysis" }
+quant-analysis = { path = "../quant-analysis" }
+sentiment-analysis = { path = "../sentiment-analysis" }
+ml-client = { path = "../ml-client" }
+
+tokio = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }

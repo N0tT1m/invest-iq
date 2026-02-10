@@ -1,0 +1,56 @@
+# Multi-stage build for InvestIQ API Server
+
+# Stage 1: Build
+FROM rust:slim AS builder
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y pkg-config libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create a new empty shell project
+WORKDIR /app
+
+# Copy manifests
+COPY Cargo.toml Cargo.lock schema.sql ./
+COPY crates ./crates
+
+# Build for release
+RUN cargo build --release --bin api-server
+
+# Stage 2: Runtime (python:3.11-slim so embedded PythonManager can run Dash)
+FROM python:3.11-slim
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y curl ca-certificates libssl3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 investiq && \
+    mkdir -p /app && \
+    chown -R investiq:investiq /app
+
+WORKDIR /app
+
+# Copy the build artifact from the build stage
+COPY --from=builder /app/target/release/api-server ./api-server
+
+# Change ownership
+RUN chown investiq:investiq ./api-server
+
+# Switch to non-root user
+USER investiq
+
+# Expose the API port and frontend port
+EXPOSE 3000 8050
+
+# Health check using curl against the real health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:3000/health || exit 1
+
+# Set environment variables
+ENV RUST_LOG=info
+
+# Run the binary
+CMD ["./api-server"]

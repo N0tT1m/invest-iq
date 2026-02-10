@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+*.md
+docs/
+CHANGELOG.md
+LICENSE
+
+# Development files
+.env
+.env.local
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Build artifacts
+target/
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# Frontend
+frontend/
+node_modules/
+npm-debug.log
+
+# Docker
+docker-compose.yml
+Dockerfile*
+.dockerignore
+
+# CI/CD
+.github/
+
+# Misc
+.DS_Store
+*.log
+tmp/
+temp/

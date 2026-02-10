@@ -1,0 +1,381 @@
+use axum::{
+    extract::{Path, Query, State},
+    routing::{get, post, put},
+    Json, Router,
+};
+use risk_manager::{
+    CircuitBreakerCheck, PositionSizeCalculation, RiskCheck, RiskParameters, RiskProfile,
+    RiskRadar, RiskRadarCalculator, RiskTargetProfile, StopLossAlert,
+};
+use serde::Deserialize;
+
+use crate::{get_default_analysis, ApiResponse, AppError, AppState};
+
+#[derive(Deserialize)]
+pub struct PositionSizeRequest {
+    pub entry_price: f64,
+    pub account_balance: f64,
+    pub current_positions_value: f64,
+}
+
+#[derive(Deserialize)]
+pub struct RiskCheckRequest {
+    pub confidence: f64,
+    pub account_balance: f64,
+    pub current_positions_value: f64,
+    pub active_positions_count: i32,
+}
+
+#[derive(Deserialize)]
+pub struct PriceUpdate {
+    pub symbol: String,
+    pub price: f64,
+}
+
+/// Request for target risk profile update
+#[derive(Deserialize)]
+pub struct UpdateTargetRequest {
+    pub market_risk: Option<f64>,
+    pub volatility_risk: Option<f64>,
+    pub liquidity_risk: Option<f64>,
+    pub event_risk: Option<f64>,
+    pub concentration_risk: Option<f64>,
+    pub sentiment_risk: Option<f64>,
+}
+
+/// Query params for radar calculation
+#[derive(Deserialize)]
+pub struct RadarQuery {
+    pub include_target: Option<bool>,
+}
+
+/// Request for manual trading halt
+#[derive(Deserialize)]
+pub struct TradingHaltRequest {
+    pub halted: bool,
+    pub reason: Option<String>,
+}
+
+pub fn risk_routes() -> Router<AppState> {
+    Router::new()
+        // Existing routes
+        .route("/api/risk/parameters", get(get_risk_parameters))
+        .route("/api/risk/parameters", put(update_risk_parameters))
+        .route("/api/risk/position-size", post(calculate_position_size))
+        .route("/api/risk/check", post(check_trade_risk))
+        .route("/api/risk/positions", get(get_active_risk_positions))
+        .route("/api/risk/stop-loss/check", post(check_stop_losses))
+        .route("/api/risk/trailing-stop/:symbol", post(update_trailing_stop))
+        .route("/api/risk/position/:symbol/close", post(close_risk_position))
+        // Circuit breaker routes
+        .route("/api/risk/circuit-breakers", get(get_circuit_breakers))
+        .route("/api/risk/trading-halt", post(set_trading_halt))
+        // Risk Radar routes
+        .route("/api/risk/radar", get(get_portfolio_risk_radar))
+        .route("/api/risk/radar/:symbol", get(get_symbol_risk_radar))
+        .route("/api/risk/target", get(get_target_profile))
+        .route("/api/risk/target", put(update_target_profile))
+}
+
+async fn get_risk_parameters(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<RiskParameters>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    let params = risk_manager.get_parameters().await?;
+
+    Ok(Json(ApiResponse::success(params)))
+}
+
+async fn update_risk_parameters(
+    State(state): State<AppState>,
+    Json(params): Json<RiskParameters>,
+) -> Result<Json<ApiResponse<RiskParameters>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    risk_manager.update_parameters(&params).await?;
+
+    Ok(Json(ApiResponse::success(params)))
+}
+
+async fn calculate_position_size(
+    State(state): State<AppState>,
+    Json(req): Json<PositionSizeRequest>,
+) -> Result<Json<ApiResponse<PositionSizeCalculation>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    let calculation = risk_manager.calculate_position_size(
+        req.entry_price,
+        req.account_balance,
+        req.current_positions_value,
+    ).await?;
+
+    Ok(Json(ApiResponse::success(calculation)))
+}
+
+async fn check_trade_risk(
+    State(state): State<AppState>,
+    Json(req): Json<RiskCheckRequest>,
+) -> Result<Json<ApiResponse<RiskCheck>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    let check = risk_manager.check_trade_risk(
+        req.confidence,
+        req.account_balance,
+        req.current_positions_value,
+        req.active_positions_count,
+    ).await?;
+
+    Ok(Json(ApiResponse::success(check)))
+}
+
+async fn get_active_risk_positions(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<risk_manager::ActiveRiskPosition>>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    let positions = risk_manager.get_active_positions().await?;
+
+    Ok(Json(ApiResponse::success(positions)))
+}
+
+async fn check_stop_losses(
+    State(state): State<AppState>,
+    Json(prices): Json<Vec<PriceUpdate>>,
+) -> Result<Json<ApiResponse<Vec<StopLossAlert>>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    let price_tuples: Vec<(String, f64)> = prices.iter()
+        .map(|p| (p.symbol.clone(), p.price))
+        .collect();
+
+    let alerts = risk_manager.check_stop_losses(price_tuples).await?;
+
+    Ok(Json(ApiResponse::success(alerts)))
+}
+
+async fn update_trailing_stop(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+    Json(price): Json<f64>,
+) -> Result<Json<ApiResponse<String>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    risk_manager.update_trailing_stop(&symbol, price).await?;
+
+    Ok(Json(ApiResponse::success(format!("Trailing stop updated for {}", symbol))))
+}
+
+async fn close_risk_position(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+) -> Result<Json<ApiResponse<String>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    risk_manager.close_position(&symbol, "manual_close").await?;
+
+    Ok(Json(ApiResponse::success(format!("Position {} closed", symbol))))
+}
+
+// =============================================================================
+// Risk Radar Handlers
+// =============================================================================
+
+/// Get portfolio-wide risk radar
+async fn get_portfolio_risk_radar(
+    State(state): State<AppState>,
+    Query(query): Query<RadarQuery>,
+) -> Result<Json<ApiResponse<RiskProfile>>, AppError> {
+    // Calculate risk radar from portfolio positions
+    let portfolio_manager = state.portfolio_manager.as_ref();
+
+    // Build risk radar from available data
+    let mut radar = RiskRadar::moderate();
+
+    // If we have positions, calculate concentration risk
+    if let Some(pm) = portfolio_manager {
+        if let Ok(summary) = pm.get_portfolio_summary(|_| Ok(100.0)).await {
+            let num_positions = summary.positions.len();
+
+            // Calculate concentration based on number of positions
+            radar.concentration_risk = RiskRadarCalculator::calculate_concentration_risk(
+                0.2, // Default 20% per position estimate
+                0.3, // Default sector weight estimate
+                num_positions,
+            );
+        }
+    }
+
+    // Default target profile
+    let target = if query.include_target.unwrap_or(true) {
+        Some(RiskTargetProfile::default().target)
+    } else {
+        None
+    };
+
+    let profile = RiskProfile::new(radar, target);
+
+    Ok(Json(ApiResponse::success(profile)))
+}
+
+/// Get risk radar for a specific symbol
+async fn get_symbol_risk_radar(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+    Query(query): Query<RadarQuery>,
+) -> Result<Json<ApiResponse<RiskProfile>>, AppError> {
+    let symbol = symbol.to_uppercase();
+
+    // Get analysis for this symbol
+    let analysis = get_default_analysis(&state, &symbol).await?;
+
+    // Calculate risk dimensions from analysis
+    let mut radar = RiskRadar::moderate();
+
+    // Market risk from quant analysis (beta)
+    if let Some(quant) = &analysis.quantitative {
+        if let Some(beta) = quant.metrics.get("beta").and_then(|v| v.as_f64()) {
+            radar.market_risk = RiskRadarCalculator::calculate_market_risk(beta, 0.7);
+        }
+
+        if let Some(volatility) = quant.metrics.get("volatility").and_then(|v| v.as_f64()) {
+            let atr_pct = volatility / 16.0; // Rough daily from annualized
+            radar.volatility_risk = RiskRadarCalculator::calculate_volatility_risk(volatility, atr_pct);
+        }
+    }
+
+    // Sentiment risk from sentiment analysis
+    if let Some(sentiment) = &analysis.sentiment {
+        let confidence = sentiment.confidence;
+        let article_count = sentiment.metrics.get("total_articles")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(5) as i32;
+        radar.sentiment_risk = RiskRadarCalculator::calculate_sentiment_risk(
+            0.3, // Default sentiment volatility
+            confidence,
+            article_count,
+        );
+    }
+
+    // Technical confidence affects event risk perception
+    if let Some(technical) = &analysis.technical {
+        radar.event_risk = RiskRadarCalculator::calculate_event_risk(
+            None, // Would need earnings calendar integration
+            None,
+            false,
+        ) * (1.0 + (1.0 - technical.confidence) * 0.5);
+    }
+
+    // Default target
+    let target = if query.include_target.unwrap_or(true) {
+        Some(RiskTargetProfile::default().target)
+    } else {
+        None
+    };
+
+    let profile = RiskProfile::new(radar, target);
+
+    Ok(Json(ApiResponse::success(profile)))
+}
+
+/// Get target risk profile
+async fn get_target_profile(
+    State(_state): State<AppState>,
+) -> Result<Json<ApiResponse<RiskTargetProfile>>, AppError> {
+    // TODO: Load from database
+    // For now, return default
+    Ok(Json(ApiResponse::success(RiskTargetProfile::default())))
+}
+
+/// Update target risk profile
+async fn update_target_profile(
+    State(_state): State<AppState>,
+    Json(req): Json<UpdateTargetRequest>,
+) -> Result<Json<ApiResponse<RiskTargetProfile>>, AppError> {
+    let mut profile = RiskTargetProfile::default();
+
+    // Update with provided values
+    if let Some(v) = req.market_risk {
+        profile.target.market_risk = v.clamp(0.0, 100.0);
+    }
+    if let Some(v) = req.volatility_risk {
+        profile.target.volatility_risk = v.clamp(0.0, 100.0);
+    }
+    if let Some(v) = req.liquidity_risk {
+        profile.target.liquidity_risk = v.clamp(0.0, 100.0);
+    }
+    if let Some(v) = req.event_risk {
+        profile.target.event_risk = v.clamp(0.0, 100.0);
+    }
+    if let Some(v) = req.concentration_risk {
+        profile.target.concentration_risk = v.clamp(0.0, 100.0);
+    }
+    if let Some(v) = req.sentiment_risk {
+        profile.target.sentiment_risk = v.clamp(0.0, 100.0);
+    }
+
+    profile.updated_at = chrono::Utc::now();
+
+    // TODO: Save to database
+
+    Ok(Json(ApiResponse::success(profile)))
+}
+
+// =============================================================================
+// Circuit Breaker Handlers
+// =============================================================================
+
+/// Get current circuit breaker status
+async fn get_circuit_breakers(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<CircuitBreakerCheck>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    // Get portfolio value from Alpaca if available, else use 0
+    let (portfolio_value, daily_pl) = if let Some(alpaca) = state.alpaca_client.as_ref() {
+        let account = alpaca.get_account().await.ok();
+        let pv = account.as_ref()
+            .and_then(|a| a.portfolio_value.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        let positions = alpaca.get_positions().await.unwrap_or_default();
+        let dpl: f64 = positions.iter()
+            .filter_map(|p| p.unrealized_intraday_pl.parse::<f64>().ok())
+            .sum();
+        (pv, dpl)
+    } else {
+        (0.0, 0.0)
+    };
+
+    let check = risk_manager.check_circuit_breakers(portfolio_value, daily_pl).await?;
+
+    Ok(Json(ApiResponse::success(check)))
+}
+
+/// Manually halt or resume trading
+async fn set_trading_halt(
+    State(state): State<AppState>,
+    Json(req): Json<TradingHaltRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let risk_manager = state.risk_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
+
+    risk_manager.set_trading_halt(req.halted, req.reason.as_deref()).await?;
+
+    let status = if req.halted { "halted" } else { "resumed" };
+    tracing::info!("Trading {}: {:?}", status, req.reason);
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "trading_halted": req.halted,
+        "message": format!("Trading {}", status),
+    }))))
+}

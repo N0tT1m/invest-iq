@@ -1,0 +1,27 @@
+[package]
+name = "discord-bot"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "discord-bot"
+path = "src/main.rs"
+
+[dependencies]
+analysis-core = { path = "../analysis-core" }
+analysis-orchestrator = { path = "../analysis-orchestrator" }
+
+tokio = { workspace = true }
+serenity = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+
+# Chart generation
+plotters = "0.3"
+plotters-backend = "0.3"

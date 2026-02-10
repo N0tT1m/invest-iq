@@ -1,0 +1,62 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Environment
+.env
+.env.local
+.env.production
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ML Models & Data
+*.pkl
+*.joblib
+*.xgb
+*.h5
+*.pth
+ml-services/models/
+ml-services/signal_models/models/
+
+# Node
+node_modules/
+
+# Process ID files
+*.pid
+
+# Frontend build artifacts
+/frontend/venv/
