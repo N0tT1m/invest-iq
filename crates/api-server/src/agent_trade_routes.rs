@@ -8,9 +8,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use crate::{ApiResponse, AppError, AppState};
+use crate::{audit, ApiResponse, AppError, AppState};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PendingTrade {
@@ -42,32 +43,8 @@ pub struct ReviewTrade {
 }
 
 /// Initialize the pending_trades table
-pub async fn init_pending_trades_table(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS pending_trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            action TEXT NOT NULL,
-            shares REAL NOT NULL,
-            confidence REAL NOT NULL DEFAULT 0.5,
-            reason TEXT NOT NULL DEFAULT '',
-            signal_type TEXT NOT NULL DEFAULT 'Neutral',
-            proposed_at TEXT NOT NULL DEFAULT (datetime('now')),
-            status TEXT NOT NULL DEFAULT 'pending',
-            reviewed_at TEXT,
-            price REAL,
-            order_id TEXT
-        )"
-    )
-    .execute(pool)
-    .await?;
-
-    // Migrate existing tables that lack the new columns
-    for col in ["price REAL", "order_id TEXT"] {
-        let sql = format!("ALTER TABLE pending_trades ADD COLUMN {}", col);
-        let _ = sqlx::query(&sql).execute(pool).await; // ignore "duplicate column" errors
-    }
-
+pub async fn init_pending_trades_table(_pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
+    // Table is now created by sqlx migrations.
     Ok(())
 }
 
@@ -135,9 +112,10 @@ async fn propose_trade(
     let reason = req.reason.unwrap_or_default();
     let signal_type = req.signal_type.unwrap_or_else(|| "Neutral".to_string());
 
-    let result = sqlx::query(
+    let (id,): (i64,) = sqlx::query_as(
         "INSERT INTO pending_trades (symbol, action, shares, confidence, reason, signal_type)
-         VALUES (?, ?, ?, ?, ?, ?)"
+         VALUES (?, ?, ?, ?, ?, ?)
+         RETURNING id"
     )
     .bind(&symbol)
     .bind(&req.action)
@@ -145,10 +123,8 @@ async fn propose_trade(
     .bind(confidence)
     .bind(&reason)
     .bind(&signal_type)
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
-
-    let id = result.last_insert_rowid();
 
     let trade: PendingTrade = sqlx::query_as(
         "SELECT id, symbol, action, shares, confidence, reason, signal_type,
@@ -161,6 +137,12 @@ async fn propose_trade(
 
     tracing::info!("Agent proposed trade: {} {} shares of {} (confidence: {:.0}%)",
         req.action, req.shares, symbol, confidence * 100.0);
+
+    let details = serde_json::json!({
+        "shares": req.shares, "confidence": confidence, "reason": reason
+    }).to_string();
+    audit::log_audit(pool, "agent_trade_proposed", Some(&symbol), Some(&req.action),
+        Some(&details), "agent", None).await;
 
     Ok(Json(ApiResponse::success(trade)))
 }
@@ -195,9 +177,12 @@ async fn review_trade(
             let alpaca_client = state.alpaca_client.as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Alpaca broker not configured"))?;
 
+            let shares_decimal = Decimal::from_f64_retain(trade.shares)
+                .ok_or_else(|| anyhow::anyhow!("Invalid shares value: {}", trade.shares))?;
+
             let market_order = match trade.action.as_str() {
-                "buy" => alpaca_broker::MarketOrderRequest::buy(&trade.symbol, trade.shares),
-                "sell" => alpaca_broker::MarketOrderRequest::sell(&trade.symbol, trade.shares),
+                "buy" => alpaca_broker::MarketOrderRequest::buy(&trade.symbol, shares_decimal),
+                "sell" => alpaca_broker::MarketOrderRequest::sell(&trade.symbol, shares_decimal),
                 _ => return Err(anyhow::anyhow!("Invalid trade action: {}", trade.action).into()),
             };
 
@@ -212,6 +197,9 @@ async fn review_trade(
 
             tracing::info!("Approved agent trade {}: {} {} shares of {} -> order {}",
                 id, trade.action, trade.shares, trade.symbol, order.id);
+
+            audit::log_audit(pool, "agent_trade_approved", Some(&trade.symbol), Some(&trade.action),
+                Some(&format!("trade_id={}, shares={}", id, trade.shares)), "user", Some(&order.id)).await;
 
             Ok(Json(ApiResponse::success(serde_json::json!({
                 "trade_id": id,
@@ -229,6 +217,9 @@ async fn review_trade(
             .await?;
 
             tracing::info!("Rejected agent trade {}: {} {} shares of {}", id, trade.action, trade.shares, trade.symbol);
+
+            audit::log_audit(pool, "agent_trade_rejected", Some(&trade.symbol), Some(&trade.action),
+                Some(&format!("trade_id={}, shares={}", id, trade.shares)), "user", None).await;
 
             Ok(Json(ApiResponse::success(serde_json::json!({
                 "trade_id": id,

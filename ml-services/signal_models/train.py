@@ -1,4 +1,7 @@
 """Training pipeline: load data, train models, save artifacts."""
+from dotenv import load_dotenv
+load_dotenv()
+load_dotenv(dotenv_path="../.env")
 import argparse
 import json
 import logging

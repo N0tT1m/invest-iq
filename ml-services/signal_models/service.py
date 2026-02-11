@@ -86,6 +86,14 @@ class HealthResponse(BaseModel):
     model_dir: str
 
 
+class ModelInfoResponse(BaseModel):
+    model_dir: str
+    models_loaded: Dict[str, bool]
+    training_date: Optional[str] = None
+    days_since_training: Optional[int] = None
+    feature_count: int
+
+
 # ---- Startup/Shutdown ----
 
 @app.on_event("startup")
@@ -199,6 +207,32 @@ async def health():
         models=models_loaded,
         feature_count=len(FEATURE_NAMES),
         model_dir=MODEL_DIR,
+    )
+
+
+@app.get("/model-info", response_model=ModelInfoResponse)
+async def model_info():
+    """Return model metadata including training date and staleness."""
+    import os
+    from datetime import datetime
+
+    training_date = None
+    days_since = None
+
+    # Check meta model file modification time as proxy for training date
+    meta_path = Path(MODEL_DIR) / "meta_model.json"
+    if meta_path.exists():
+        mtime = os.path.getmtime(str(meta_path))
+        dt = datetime.fromtimestamp(mtime)
+        training_date = dt.isoformat()
+        days_since = (datetime.now() - dt).days
+
+    return ModelInfoResponse(
+        model_dir=MODEL_DIR,
+        models_loaded=models_loaded,
+        training_date=training_date,
+        days_since_training=days_since,
+        feature_count=len(FEATURE_NAMES),
     )
 
 

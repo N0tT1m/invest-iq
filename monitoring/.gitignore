@@ -1,0 +1,13 @@
+# Prometheus and Grafana runtime data
+prometheus_data/
+grafana_data/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

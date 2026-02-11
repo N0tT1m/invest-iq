@@ -63,6 +63,30 @@ pub struct PolygonClient {
     rate_limiter: RateLimiter,
 }
 
+// Finnhub article response structure
+#[derive(Debug, Deserialize, Default)]
+struct FinnhubArticle {
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    datetime: i64,
+    #[serde(default)]
+    headline: String,
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    image: String,
+    #[serde(default)]
+    related: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    url: String,
+}
+
 impl PolygonClient {
     pub fn new(api_key: String) -> Self {
         // Default 500 req/min for Starter plan. Polygon recommends <100 req/sec (~6000/min).
@@ -587,6 +611,100 @@ impl PolygonClient {
         }).collect())
     }
 
+    /// Fetch news from Finnhub as a supplemental source.
+    /// Requires FINNHUB_API_KEY env var. Returns empty vec if not configured.
+    pub async fn get_finnhub_news(&self, symbol: &str, days_back: u32) -> Result<Vec<NewsArticle>, AnalysisError> {
+        let api_key = match std::env::var("FINNHUB_API_KEY") {
+            Ok(k) if !k.is_empty() => k,
+            _ => return Ok(Vec::new()), // Silently skip if not configured
+        };
+
+        let now = chrono::Utc::now();
+        let from = (now - chrono::Duration::days(days_back as i64)).format("%Y-%m-%d").to_string();
+        let to = now.format("%Y-%m-%d").to_string();
+
+        let url = "https://finnhub.io/api/v1/company-news";
+        let response = self.client.get(url)
+            .query(&[
+                ("symbol", symbol),
+                ("from", from.as_str()),
+                ("to", to.as_str()),
+                ("token", api_key.as_str()),
+            ])
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| AnalysisError::ApiError(format!("Finnhub request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            tracing::warn!("Finnhub API returned status {}, skipping", response.status());
+            return Ok(Vec::new()); // Don't fail on Finnhub errors
+        }
+
+        let finnhub_articles: Vec<FinnhubArticle> = response
+            .json()
+            .await
+            .unwrap_or_default();
+
+        // Convert to our NewsArticle format
+        Ok(finnhub_articles.into_iter().take(20).map(|a| {
+            NewsArticle {
+                id: a.id.to_string(),
+                title: a.headline,
+                author: Some(a.source),
+                published_utc: chrono::DateTime::from_timestamp(a.datetime, 0)
+                    .map(|dt| dt.to_utc())
+                    .unwrap_or_else(|| Utc::now()),
+                article_url: a.url,
+                tickers: vec![symbol.to_string()],
+                description: Some(a.summary),
+                keywords: vec![a.category],
+            }
+        }).collect())
+    }
+
+    /// Fetch general market news from Finnhub (not symbol-specific).
+    /// Requires FINNHUB_API_KEY env var. Returns empty vec if not configured.
+    pub async fn get_finnhub_general_news(&self) -> Result<Vec<NewsArticle>, AnalysisError> {
+        let api_key = match std::env::var("FINNHUB_API_KEY") {
+            Ok(k) if !k.is_empty() => k,
+            _ => return Ok(Vec::new()),
+        };
+
+        let url = "https://finnhub.io/api/v1/news";
+        let response = self.client.get(url)
+            .query(&[
+                ("category", "general"),
+                ("token", api_key.as_str()),
+            ])
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| AnalysisError::ApiError(format!("Finnhub general news failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            tracing::warn!("Finnhub general news returned status {}, skipping", response.status());
+            return Ok(Vec::new());
+        }
+
+        let articles: Vec<FinnhubArticle> = response.json().await.unwrap_or_default();
+
+        Ok(articles.into_iter().take(20).map(|a| {
+            NewsArticle {
+                id: a.id.to_string(),
+                title: a.headline,
+                author: Some(a.source),
+                published_utc: chrono::DateTime::from_timestamp(a.datetime, 0)
+                    .map(|dt| dt.to_utc())
+                    .unwrap_or_else(|| Utc::now()),
+                article_url: a.url,
+                tickers: if a.related.is_empty() { vec![] } else { vec![a.related] },
+                description: Some(a.summary),
+                keywords: vec![a.category],
+            }
+        }).collect())
+    }
+
     /// List active US common stock tickers from Polygon reference API.
     /// Paginates automatically. Returns up to `max_tickers` symbols.
     pub async fn list_tickers(&self, max_tickers: usize) -> Result<Vec<String>, AnalysisError> {
@@ -649,6 +767,40 @@ impl PolygonClient {
 
         Ok(tickers)
     }
+
+    /// Search for tickers by name or symbol text.
+    /// Uses Polygon's `/v3/reference/tickers?search=...` parameter.
+    pub async fn search_tickers(&self, query: &str, limit: usize) -> Result<Vec<TickerSearchResult>, AnalysisError> {
+        let url = format!("{}/v3/reference/tickers", BASE_URL);
+        let limit_str = limit.min(100).to_string();
+
+        let response = self.send_request(
+            self.client.get(&url).query(&[
+                ("apiKey", self.api_key.as_str()),
+                ("search", query),
+                ("market", "stocks"),
+                ("active", "true"),
+                ("limit", limit_str.as_str()),
+                ("order", "asc"),
+                ("sort", "ticker"),
+            ])
+        ).await?;
+
+        if !response.status().is_success() {
+            return Err(AnalysisError::ApiError(format!(
+                "HTTP {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            )));
+        }
+
+        let body: TickerSearchResponse = response
+            .json()
+            .await
+            .map_err(|e| AnalysisError::ApiError(e.to_string()))?;
+
+        Ok(body.results)
+    }
 }
 
 // Ticker list response
@@ -662,6 +814,29 @@ struct TickerListResponse {
 #[derive(Debug, Deserialize)]
 struct TickerListEntry {
     ticker: String,
+}
+
+// Ticker search response
+#[derive(Debug, Deserialize)]
+struct TickerSearchResponse {
+    #[serde(default)]
+    results: Vec<TickerSearchResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TickerSearchResult {
+    pub ticker: String,
+    pub name: String,
+    #[serde(default)]
+    pub market: String,
+    #[serde(default)]
+    pub locale: String,
+    #[serde(default)]
+    pub primary_exchange: String,
+    #[serde(default, rename = "type")]
+    pub r#type: String,
+    #[serde(default)]
+    pub currency_name: String,
 }
 
 // Benzinga response structures
@@ -786,6 +961,11 @@ pub struct TickerDetails {
     pub market_cap: Option<f64>,
     pub share_class_shares_outstanding: Option<f64>,
     pub weighted_shares_outstanding: Option<f64>,
+    pub description: Option<String>,
+    pub homepage_url: Option<String>,
+    pub sic_description: Option<String>,
+    pub total_employees: Option<i64>,
+    pub list_date: Option<String>,
 }
 
 // Dividend types

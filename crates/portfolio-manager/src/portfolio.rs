@@ -1,7 +1,8 @@
 use crate::models::*;
 use crate::db::PortfolioDb;
 use anyhow::{anyhow, Result};
-use sqlx::Row;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::*;
 
 pub struct PortfolioManager {
     db: PortfolioDb,
@@ -24,7 +25,7 @@ impl PortfolioManager {
 
     /// Add a new position to the portfolio
     pub async fn add_position(&self, position: Position) -> Result<i64> {
-        let result = sqlx::query(
+        let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO positions (symbol, shares, entry_price, entry_date, notes)
             VALUES (?, ?, ?, ?, ?)
@@ -32,17 +33,18 @@ impl PortfolioManager {
                 shares = shares + excluded.shares,
                 entry_price = ((positions.shares * positions.entry_price) + (excluded.shares * excluded.entry_price)) / (positions.shares + excluded.shares),
                 notes = excluded.notes
+            RETURNING id
             "#
         )
         .bind(&position.symbol)
-        .bind(position.shares)
-        .bind(position.entry_price)
+        .bind(position.shares.to_f64().unwrap_or(0.0))
+        .bind(position.entry_price.to_f64().unwrap_or(0.0))
         .bind(&position.entry_date)
         .bind(&position.notes)
-        .execute(self.db.pool())
+        .fetch_one(self.db.pool())
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Get a position by symbol
@@ -77,8 +79,8 @@ impl PortfolioManager {
             WHERE id = ?
             "#
         )
-        .bind(position.shares)
-        .bind(position.entry_price)
+        .bind(position.shares.to_f64().unwrap_or(0.0))
+        .bind(position.entry_price.to_f64().unwrap_or(0.0))
         .bind(&position.entry_date)
         .bind(&position.notes)
         .bind(id)
@@ -89,14 +91,14 @@ impl PortfolioManager {
     }
 
     /// Remove shares from a position (or delete if shares reach 0)
-    pub async fn remove_shares(&self, symbol: &str, shares: f64) -> Result<()> {
+    pub async fn remove_shares(&self, symbol: &str, shares: Decimal) -> Result<()> {
         // Get current position
         let position = self.get_position(symbol).await?
             .ok_or_else(|| anyhow!("Position not found: {}", symbol))?;
 
         let new_shares = position.shares - shares;
 
-        if new_shares <= 0.0001 {
+        if new_shares <= Decimal::from_f64(0.0001).unwrap_or_default() {
             // Delete position if shares are 0 or negative
             sqlx::query("DELETE FROM positions WHERE symbol = ?")
                 .bind(symbol)
@@ -105,7 +107,7 @@ impl PortfolioManager {
         } else {
             // Update shares
             sqlx::query("UPDATE positions SET shares = ? WHERE symbol = ?")
-                .bind(new_shares)
+                .bind(new_shares.to_f64().unwrap_or(0.0))
                 .bind(symbol)
                 .execute(self.db.pool())
                 .await?;
@@ -131,15 +133,20 @@ impl PortfolioManager {
     {
         let positions = self.get_all_positions().await?;
         let mut positions_with_pnl = Vec::new();
-        let mut total_value = 0.0;
-        let mut total_cost = 0.0;
+        let mut total_value = Decimal::ZERO;
+        let mut total_cost = Decimal::ZERO;
 
         for position in positions {
-            let current_price = price_fetcher(&position.symbol)?;
+            let current_price_f64 = price_fetcher(&position.symbol)?;
+            let current_price = Decimal::from_f64(current_price_f64).unwrap_or_default();
             let market_value = position.shares * current_price;
             let cost_basis = position.shares * position.entry_price;
             let unrealized_pnl = market_value - cost_basis;
-            let unrealized_pnl_percent = (unrealized_pnl / cost_basis) * 100.0;
+            let unrealized_pnl_percent = if cost_basis > Decimal::ZERO {
+                ((unrealized_pnl / cost_basis) * Decimal::from(100)).to_f64().unwrap_or(0.0)
+            } else {
+                0.0
+            };
 
             total_value += market_value;
             total_cost += cost_basis;
@@ -155,8 +162,8 @@ impl PortfolioManager {
         }
 
         let total_pnl = total_value - total_cost;
-        let total_pnl_percent = if total_cost > 0.0 {
-            (total_pnl / total_cost) * 100.0
+        let total_pnl_percent = if total_cost > Decimal::ZERO {
+            ((total_pnl / total_cost) * Decimal::from(100)).to_f64().unwrap_or(0.0)
         } else {
             0.0
         };
@@ -173,20 +180,21 @@ impl PortfolioManager {
 
     /// Save a portfolio snapshot for equity curve
     pub async fn save_snapshot(&self, summary: &PortfolioSummary) -> Result<i64> {
-        let result = sqlx::query(
+        let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO portfolio_snapshots (total_value, total_cost, total_pnl, total_pnl_percent, snapshot_date)
             VALUES (?, ?, ?, ?, datetime('now'))
+            RETURNING id
             "#
         )
-        .bind(summary.total_value)
-        .bind(summary.total_cost)
-        .bind(summary.total_pnl)
+        .bind(summary.total_value.to_f64().unwrap_or(0.0))
+        .bind(summary.total_cost.to_f64().unwrap_or(0.0))
+        .bind(summary.total_pnl.to_f64().unwrap_or(0.0))
         .bind(summary.total_pnl_percent)
-        .execute(self.db.pool())
+        .fetch_one(self.db.pool())
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Get portfolio snapshots for equity curve
@@ -203,15 +211,15 @@ impl PortfolioManager {
 
     /// Add to watchlist
     pub async fn add_to_watchlist(&self, symbol: &str, notes: Option<String>) -> Result<i64> {
-        let result = sqlx::query(
-            "INSERT OR IGNORE INTO watchlist (symbol, notes) VALUES (?, ?)"
+        let (id,): (i64,) = sqlx::query_as(
+            "INSERT OR IGNORE INTO watchlist (symbol, notes) VALUES (?, ?) RETURNING id"
         )
         .bind(symbol)
         .bind(&notes)
-        .execute(self.db.pool())
+        .fetch_one(self.db.pool())
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Get watchlist
@@ -252,8 +260,8 @@ mod tests {
         let position = Position {
             id: None,
             symbol: "AAPL".to_string(),
-            shares: 10.0,
-            entry_price: 150.0,
+            shares: Decimal::from(10),
+            entry_price: Decimal::from(150),
             entry_date: "2025-01-01".to_string(),
             notes: Some("Test position".to_string()),
             created_at: None,
@@ -264,7 +272,7 @@ mod tests {
 
         let retrieved = manager.get_position("AAPL").await.unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().shares, 10.0);
+        assert_eq!(retrieved.unwrap().shares, Decimal::from(10));
     }
 
     #[tokio::test]
@@ -275,22 +283,22 @@ mod tests {
         let position = Position {
             id: None,
             symbol: "AAPL".to_string(),
-            shares: 10.0,
-            entry_price: 150.0,
+            shares: Decimal::from(10),
+            entry_price: Decimal::from(150),
             entry_date: "2025-01-01".to_string(),
             notes: None,
             created_at: None,
         };
 
         manager.add_position(position).await.unwrap();
-        manager.remove_shares("AAPL", 5.0).await.unwrap();
+        manager.remove_shares("AAPL", Decimal::from(5)).await.unwrap();
 
         let retrieved = manager.get_position("AAPL").await.unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().shares, 5.0);
+        assert_eq!(retrieved.unwrap().shares, Decimal::from(5));
 
         // Remove all remaining shares
-        manager.remove_shares("AAPL", 5.0).await.unwrap();
+        manager.remove_shares("AAPL", Decimal::from(5)).await.unwrap();
         let retrieved = manager.get_position("AAPL").await.unwrap();
         assert!(retrieved.is_none());
     }

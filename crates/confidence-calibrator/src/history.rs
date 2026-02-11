@@ -80,13 +80,14 @@ impl CalibrationHistoryStore {
 
     /// Record a new prediction
     pub async fn record_prediction(&self, prediction: &PredictionOutcome) -> Result<i64> {
-        let result = sqlx::query(
+        let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO calibration_history (
                 symbol, prediction_type, predicted_confidence, source,
                 prediction_date, timeframe
             )
             VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING id
             "#,
         )
         .bind(&prediction.symbol)
@@ -95,10 +96,10 @@ impl CalibrationHistoryStore {
         .bind(&prediction.source)
         .bind(prediction.prediction_date)
         .bind(&prediction.timeframe)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Record the outcome of a prediction

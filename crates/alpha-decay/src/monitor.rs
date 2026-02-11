@@ -5,7 +5,7 @@
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Row, SqlitePool};
+use sqlx::{FromRow, SqlitePool};
 
 /// A performance snapshot at a point in time
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -58,13 +58,14 @@ impl AlphaDecayMonitor {
 
     /// Record a performance snapshot
     pub async fn record_snapshot(&self, snapshot: &PerformanceSnapshot) -> Result<i64> {
-        let result = sqlx::query(
+        let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO strategy_health_snapshots (
                 strategy_name, snapshot_date, rolling_sharpe, win_rate,
                 profit_factor, trades_count
             )
             VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING id
             "#,
         )
         .bind(&snapshot.strategy_name)
@@ -73,10 +74,10 @@ impl AlphaDecayMonitor {
         .bind(snapshot.win_rate)
         .bind(snapshot.profit_factor)
         .bind(snapshot.trades_count)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Get all snapshots for a strategy

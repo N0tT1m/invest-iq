@@ -5,6 +5,8 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  schedule:
+    - cron: '0 4 * * 0'  # Weekly Sunday 4am UTC
 
 env:
   CARGO_TERM_COLOR: always
@@ -180,3 +182,54 @@ jobs:
         uses: rustsec/audit-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  frontend-test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          pip install -r requirements.txt
+
+      - name: Run frontend tests
+        env:
+          API_KEY: test_key
+          API_BASE_URL: http://localhost:3000
+        run: |
+          cd frontend
+          python -m pytest tests/ -v
+
+  retrain:
+    name: Weekly Model Retrain
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ML dependencies
+        run: |
+          pip install -r ml-services/requirements.txt
+          pip install -r ml-services/signal_models/requirements.txt
+
+      - name: Run retraining with validation
+        env:
+          MODEL_DIR: ./ml-services/models/signal_models
+        run: |
+          bash scripts/retrain-with-validation.sh --force

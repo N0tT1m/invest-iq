@@ -17,6 +17,7 @@ pub struct SignalWithAnalysis {
 }
 
 pub struct StrategyManager {
+    #[allow(dead_code)]
     config: AgentConfig,
     orchestrator: Arc<AnalysisOrchestrator>,
 }
@@ -63,7 +64,7 @@ impl StrategyManager {
 
         let mut results = Vec::new();
         for (i, handle) in handles.into_iter().enumerate() {
-            if let Ok(Some((analysis, current_price))) = handle.await {
+            if let Ok(Some((analysis, _current_price))) = handle.await {
                 let opp = &opportunities[i];
                 if let Some(sig) = self.analysis_to_signal(&analysis, opp) {
                     results.push(SignalWithAnalysis {

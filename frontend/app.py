@@ -1,4 +1,10 @@
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from project root (parent of frontend/)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 import dash
 from dash import dcc, html, Input, Output, State
 import dash.dependencies
@@ -31,6 +37,7 @@ from components.flow_map import FlowMapComponent
 from components.smart_watchlist import SmartWatchlistComponent
 from components.tax_dashboard import TaxDashboardComponent
 from components.agent_trades import AgentTradesComponent
+from components.symbol_search import SymbolSearchComponent
 
 # Initialize the Dash app with a modern theme
 app = dash.Dash(
@@ -159,10 +166,31 @@ app.index_string = '''
 
 # App layout
 app.layout = dbc.Container([
+    # Navigation Bar
+    dbc.Navbar(
+        dbc.Container([
+            dbc.NavbarBrand("InvestIQ", className="ms-2 fw-bold", style={"color": "#00cc88", "fontSize": "1.3rem"}),
+            dbc.Nav([
+                dbc.NavItem(dbc.NavLink("Dashboard", id="nav-dashboard", href="#", active=True,
+                                         style={"color": "#fff", "fontWeight": "500"})),
+                dbc.NavItem(dbc.NavLink("Symbol Search", id="nav-search", href="#",
+                                         style={"color": "#aaa"})),
+            ], className="ms-auto", navbar=True),
+        ], fluid=True),
+        color="#1a1a2e",
+        dark=True,
+        className="mb-4",
+        style={"borderBottom": "2px solid #00cc88"},
+    ),
+
+    # Page container — switches between dashboard and search
+    # Dashboard page
+    html.Div(id="page-dashboard", children=[
+
     # Header
     dbc.Row([
         dbc.Col([
-            html.H1("📈 InvestIQ - Comprehensive Stock Analysis", className="text-center mb-4 mt-4"),
+            html.H1("Comprehensive Stock Analysis", className="text-center mb-4 mt-2"),
             html.P("AI-Powered Technical, Fundamental, Quantitative & Sentiment Analysis",
                    className="text-center text-muted mb-4")
         ])
@@ -583,10 +611,18 @@ app.layout = dbc.Container([
     dbc.Row([
         dbc.Col([
             html.Hr(),
-            html.P("⚠️ Disclaimer: This tool is for educational purposes only. Not financial advice. Always consult a professional.",
+            html.P("Disclaimer: This tool is for educational purposes only. Not financial advice. Always consult a professional.",
                    className="text-center text-muted small")
         ])
     ])
+
+    ]),  # End of page-dashboard div
+
+    # Symbol Search page (hidden by default)
+    html.Div(id="page-search", style={"display": "none"}, children=[
+        SymbolSearchComponent.create_search_page_layout(),
+    ]),
+
 ], fluid=True)
 
 
@@ -2284,10 +2320,17 @@ def update_watchlist_tax(analyze_clicks, refresh_clicks, symbol):
 
         try:
             watchlist_data = f_watchlist.result()
-            watchlist_card = SmartWatchlistComponent.create_feed_summary(watchlist_data) if watchlist_data else dbc.Card([
-                dbc.CardHeader(html.H5("Smart Watchlist", className="mb-0")),
-                dbc.CardBody(html.P("No data available", className="text-muted"))
-            ])
+            if watchlist_data:
+                # Create summary card and up to 10 opportunity cards
+                cards = [SmartWatchlistComponent.create_feed_summary(watchlist_data)]
+                for opp in watchlist_data.get("opportunities", [])[:10]:
+                    cards.append(SmartWatchlistComponent.create_opportunity_card(opp))
+                watchlist_card = html.Div(cards)
+            else:
+                watchlist_card = dbc.Card([
+                    dbc.CardHeader(html.H5("Smart Watchlist", className="mb-0")),
+                    dbc.CardBody(html.P("No data available", className="text-muted"))
+                ])
         except Exception as e:
             watchlist_card = dbc.Card([
                 dbc.CardHeader(html.H5("Smart Watchlist", className="mb-0")),
@@ -2723,6 +2766,138 @@ def _kill_port(port):
                     print(f"Killed stale process {pid_int} on port {port}")
     except Exception:
         pass
+
+
+# ============================================================================
+# PAGE NAVIGATION
+# ============================================================================
+
+@app.callback(
+    [Output('page-dashboard', 'style'),
+     Output('page-search', 'style'),
+     Output('nav-dashboard', 'active'),
+     Output('nav-search', 'active'),
+     Output('nav-dashboard', 'style'),
+     Output('nav-search', 'style')],
+    [Input('nav-dashboard', 'n_clicks'),
+     Input('nav-search', 'n_clicks')],
+    prevent_initial_call=True,
+)
+def switch_page(dash_clicks, search_clicks):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return ({"display": "block"}, {"display": "none"},
+                True, False,
+                {"color": "#fff", "fontWeight": "500"}, {"color": "#aaa"})
+    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    if triggered_id == "nav-search":
+        return ({"display": "none"}, {"display": "block"},
+                False, True,
+                {"color": "#aaa"}, {"color": "#fff", "fontWeight": "500"})
+    return ({"display": "block"}, {"display": "none"},
+            True, False,
+            {"color": "#fff", "fontWeight": "500"}, {"color": "#aaa"})
+
+
+# ============================================================================
+# SYMBOL SEARCH CALLBACKS
+# ============================================================================
+
+@app.callback(
+    Output('symbol-search-results', 'children'),
+    [Input('symbol-search-btn', 'n_clicks'),
+     Input('symbol-search-input', 'n_submit')],
+    [State('symbol-search-input', 'value')],
+    prevent_initial_call=True,
+)
+def search_symbols(n_clicks, n_submit, query):
+    if not query or len(query.strip()) < 1:
+        return ""
+
+    results = SymbolSearchComponent.fetch_search_results(query.strip(), limit=30)
+    if not results:
+        return dbc.Alert(
+            f"No results found for '{query}'. Try a different search term.",
+            color="info",
+            className="mt-3",
+        )
+
+    cards = [html.H5(f"{len(results)} results for '{query}'", className="mb-3")]
+    for r in results:
+        cards.append(SymbolSearchComponent.create_search_result_card(r))
+    return html.Div(cards)
+
+
+@app.callback(
+    Output('symbol-detail-section', 'children'),
+    [Input({"type": "search-analyze-btn", "index": dash.ALL}, 'n_clicks'),
+     Input({"type": "popular-symbol-btn", "index": dash.ALL}, 'n_clicks')],
+    prevent_initial_call=True,
+)
+def show_symbol_detail(*args):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return ""
+    # Find which button was clicked
+    triggered = ctx.triggered[0]
+    if triggered["value"] is None:
+        return ""
+    prop_id = triggered["prop_id"]
+    # Extract symbol from pattern-matching id
+    import json
+    try:
+        id_dict = json.loads(prop_id.split(".")[0])
+        symbol = id_dict.get("index", "")
+    except (json.JSONDecodeError, AttributeError):
+        return ""
+
+    if not symbol:
+        return ""
+
+    detail = SymbolSearchComponent.fetch_symbol_detail(symbol)
+    if not detail:
+        return dbc.Alert(f"Could not load details for {symbol}", color="warning")
+
+    return SymbolSearchComponent.create_symbol_detail_card(detail)
+
+
+@app.callback(
+    Output('symbol-search-input', 'value'),
+    Input('symbol-search-clear-btn', 'n_clicks'),
+    prevent_initial_call=True,
+)
+def clear_search(_):
+    return ""
+
+
+@app.callback(
+    [Output('nav-dashboard', 'n_clicks', allow_duplicate=True),
+     Output('symbol-input', 'value', allow_duplicate=True)],
+    Input('search-detail-analyze-btn', 'n_clicks'),
+    State('symbol-detail-section', 'children'),
+    prevent_initial_call=True,
+)
+def navigate_to_analyze(n_clicks, detail_children):
+    """When user clicks 'Full Analysis' on search detail, switch to dashboard and set symbol"""
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+    # Try to extract the ticker from the detail card
+    # The ticker is in the card header as the first H4 element
+    try:
+        if detail_children and isinstance(detail_children, dict):
+            # Walk the children tree to find the ticker
+            # The card header H4 contains the ticker text
+            header = detail_children.get("props", {}).get("children", [{}])[0]
+            header_body = header.get("props", {}).get("children", {})
+            if isinstance(header_body, dict):
+                h_div = header_body.get("props", {}).get("children", [{}])[0]
+                h4 = h_div.get("props", {}).get("children", [{}])[0]
+                ticker = h4.get("props", {}).get("children", "")
+                if ticker:
+                    return 1, ticker
+    except Exception:
+        pass
+    return 1, dash.no_update
 
 
 if __name__ == '__main__':

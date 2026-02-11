@@ -1,5 +1,6 @@
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use rust_decimal::prelude::*;
 
 use crate::models::{BacktestTrade, MonteCarloResult};
 
@@ -11,7 +12,7 @@ use crate::models::{BacktestTrade, MonteCarloResult};
 /// distribution of outcomes (final return, max drawdown, Sharpe).
 pub fn run_monte_carlo(
     trades: &[BacktestTrade],
-    initial_capital: f64,
+    initial_capital: Decimal,
     num_simulations: i32,
 ) -> MonteCarloResult {
     if trades.is_empty() || num_simulations <= 0 {
@@ -42,13 +43,14 @@ pub fn run_monte_carlo(
     let mut ruin_count = 0u32; // losing > 50%
 
     let trade_pcts: Vec<f64> = trades.iter().map(|t| t.profit_loss_percent / 100.0).collect();
+    let initial_capital_f64 = initial_capital.to_f64().unwrap_or(100000.0);
 
     for _ in 0..num_simulations {
         let mut shuffled = trade_pcts.clone();
         shuffled.shuffle(&mut rng);
 
-        let mut equity = initial_capital;
-        let mut peak = initial_capital;
+        let mut equity = initial_capital_f64;
+        let mut peak = initial_capital_f64;
         let mut max_dd = 0.0_f64;
         let mut daily_returns: Vec<f64> = Vec::with_capacity(shuffled.len());
 
@@ -69,7 +71,7 @@ pub fn run_monte_carlo(
             daily_returns.push(equity / prev - 1.0);
         }
 
-        let total_return_pct = (equity / initial_capital - 1.0) * 100.0;
+        let total_return_pct = (equity / initial_capital_f64 - 1.0) * 100.0;
         returns.push(total_return_pct);
         drawdowns.push(max_dd);
 

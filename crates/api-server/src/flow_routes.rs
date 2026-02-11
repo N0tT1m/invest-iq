@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
 };
 use flow_map::{
-    FlowMapData, RotationDetector, RotationPattern, SectorETF, SectorETFTracker, SectorNode,
+    FlowMapData, RotationDetector, RotationPattern, SectorETF, SectorNode,
 };
 use serde::{Deserialize, Serialize};
 

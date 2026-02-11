@@ -1,6 +1,6 @@
 //! Smart Watchlist Data Models
 
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Type of upcoming event

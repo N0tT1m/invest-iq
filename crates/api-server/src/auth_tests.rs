@@ -52,7 +52,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_api_key_from_query_param() {
+    fn test_extract_api_key_query_param_not_supported() {
+        // Query param auth was removed for security — only header-based auth supported
         let headers = HeaderMap::new();
 
         let request = Request::builder()
@@ -61,8 +62,8 @@ mod tests {
             .unwrap();
 
         let result = extract_api_key(&headers, &request);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "query_key_789");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), AuthError::MissingApiKey));
     }
 
     #[test]
@@ -104,9 +105,9 @@ mod tests {
 
         let keys = get_valid_api_keys();
         assert_eq!(keys.len(), 3);
-        assert!(keys.contains("key1"));
-        assert!(keys.contains("key2"));
-        assert!(keys.contains("key3"));
+        assert!(keys.contains_key("key1"));
+        assert!(keys.contains_key("key2"));
+        assert!(keys.contains_key("key3"));
 
         std::env::remove_var("API_KEYS");
     }
@@ -117,9 +118,9 @@ mod tests {
 
         let keys = get_valid_api_keys();
         assert_eq!(keys.len(), 3);
-        assert!(keys.contains("key1"));
-        assert!(keys.contains("key2"));
-        assert!(keys.contains("key3"));
+        assert!(keys.contains_key("key1"));
+        assert!(keys.contains_key("key2"));
+        assert!(keys.contains_key("key3"));
 
         std::env::remove_var("API_KEYS");
     }
@@ -129,9 +130,58 @@ mod tests {
 
     #[test]
     fn test_validated_api_key_clone() {
-        let key1 = ValidatedApiKey("test_key".to_string());
+        let key1 = ValidatedApiKey {
+            key: "test_key".to_string(),
+            role: Role::Admin,
+        };
         let key2 = key1.clone();
 
-        assert_eq!(key1.0, key2.0);
+        assert_eq!(key1.key, key2.key);
+        assert_eq!(key1.role, key2.role);
+    }
+
+    #[test]
+    fn test_get_valid_api_keys_with_roles() {
+        std::env::set_var("API_KEYS", "key1:admin,key2:trader,key3:viewer,key4");
+
+        let keys = get_valid_api_keys();
+        assert_eq!(keys.len(), 4);
+        assert_eq!(keys.get("key1"), Some(&Role::Admin));
+        assert_eq!(keys.get("key2"), Some(&Role::Trader));
+        assert_eq!(keys.get("key3"), Some(&Role::Viewer));
+        assert_eq!(keys.get("key4"), Some(&Role::Admin)); // Default to Admin
+
+        std::env::remove_var("API_KEYS");
+    }
+
+    #[test]
+    fn test_get_valid_api_keys_backwards_compatible() {
+        std::env::set_var("API_KEYS", "key1,key2,key3");
+
+        let keys = get_valid_api_keys();
+        assert_eq!(keys.len(), 3);
+        // All should default to Admin for backwards compatibility
+        assert_eq!(keys.get("key1"), Some(&Role::Admin));
+        assert_eq!(keys.get("key2"), Some(&Role::Admin));
+        assert_eq!(keys.get("key3"), Some(&Role::Admin));
+
+        std::env::remove_var("API_KEYS");
+    }
+
+    #[test]
+    fn test_role_hierarchy() {
+        assert!(Role::Admin > Role::Trader);
+        assert!(Role::Trader > Role::Viewer);
+        assert!(Role::Admin >= Role::Admin);
+        assert!(Role::Trader >= Role::Viewer);
+    }
+
+    #[test]
+    fn test_role_from_str() {
+        assert_eq!(Role::from_str("viewer"), Some(Role::Viewer));
+        assert_eq!(Role::from_str("trader"), Some(Role::Trader));
+        assert_eq!(Role::from_str("admin"), Some(Role::Admin));
+        assert_eq!(Role::from_str("ADMIN"), Some(Role::Admin));
+        assert_eq!(Role::from_str("invalid"), None);
     }
 }

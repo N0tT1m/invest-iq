@@ -36,6 +36,7 @@ impl DiscordNotifier {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn send_daily_report(&self, report: &DailyReport) -> Result<()> {
         let message = format!(
             r#"**Daily Trading Report**
@@ -64,6 +65,7 @@ impl DiscordNotifier {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct DailyReport {
     pub pnl: f64,
     pub pnl_percent: f64,

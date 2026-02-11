@@ -16,6 +16,7 @@ pub struct TradingSignal {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TradeExecution {
     pub symbol: String,
     pub action: String,

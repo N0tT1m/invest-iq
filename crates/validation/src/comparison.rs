@@ -1,9 +1,8 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
-use crate::alpha_vantage::{AlphaVantageClient, TechnicalIndicatorData};
-use crate::yahoo_finance::{YahooFinanceClient, YahooFundamentals};
+use crate::alpha_vantage::AlphaVantageClient;
+use crate::yahoo_finance::YahooFinanceClient;
 
 #[derive(Clone)]
 pub struct ComparisonEngine {

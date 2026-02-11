@@ -2,7 +2,7 @@
 //!
 //! Calculates tax implications for different jurisdictions.
 
-use chrono::{Datelike, Duration, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Supported tax jurisdictions
@@ -522,6 +522,7 @@ impl TaxCalculator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     #[test]
     fn test_tax_rules_us() {

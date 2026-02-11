@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
@@ -15,6 +17,23 @@ pub struct Account {
     pub transfers_blocked: bool,
     pub account_blocked: bool,
     pub daytrade_count: i32,
+}
+
+impl Account {
+    /// Parse buying_power as Decimal
+    pub fn buying_power_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.buying_power).unwrap_or_default()
+    }
+
+    /// Parse cash as Decimal
+    pub fn cash_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.cash).unwrap_or_default()
+    }
+
+    /// Parse portfolio_value as Decimal
+    pub fn portfolio_value_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.portfolio_value).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +142,22 @@ pub struct Order {
     pub extended_hours: bool,
 }
 
+impl Order {
+    /// Parse filled_quantity as Decimal
+    pub fn filled_quantity_decimal(&self) -> Option<Decimal> {
+        self.filled_quantity
+            .as_ref()
+            .and_then(|s| Decimal::from_str(s).ok())
+    }
+
+    /// Parse filled_avg_price as Decimal
+    pub fn filled_avg_price_decimal(&self) -> Option<Decimal> {
+        self.filled_avg_price
+            .as_ref()
+            .and_then(|s| Decimal::from_str(s).ok())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Position {
     pub asset_id: String,
@@ -143,15 +178,47 @@ pub struct Position {
     pub change_today: String,
 }
 
+impl Position {
+    /// Parse avg_entry_price as Decimal
+    pub fn avg_entry_price_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.avg_entry_price).unwrap_or_default()
+    }
+
+    /// Parse qty as Decimal
+    pub fn qty_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.qty).unwrap_or_default()
+    }
+
+    /// Parse market_value as Decimal
+    pub fn market_value_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.market_value).unwrap_or_default()
+    }
+
+    /// Parse cost_basis as Decimal
+    pub fn cost_basis_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.cost_basis).unwrap_or_default()
+    }
+
+    /// Parse unrealized_pl as Decimal
+    pub fn unrealized_pl_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.unrealized_pl).unwrap_or_default()
+    }
+
+    /// Parse current_price as Decimal
+    pub fn current_price_decimal(&self) -> Decimal {
+        Decimal::from_str(&self.current_price).unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MarketOrderRequest {
     pub symbol: String,
-    pub qty: f64,
+    pub qty: Decimal,
     pub side: OrderSide,
 }
 
 impl MarketOrderRequest {
-    pub fn buy(symbol: impl Into<String>, qty: f64) -> Self {
+    pub fn buy(symbol: impl Into<String>, qty: Decimal) -> Self {
         Self {
             symbol: symbol.into(),
             qty,
@@ -159,7 +226,7 @@ impl MarketOrderRequest {
         }
     }
 
-    pub fn sell(symbol: impl Into<String>, qty: f64) -> Self {
+    pub fn sell(symbol: impl Into<String>, qty: Decimal) -> Self {
         Self {
             symbol: symbol.into(),
             qty,

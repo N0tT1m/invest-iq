@@ -1,0 +1,2721 @@
+openapi: 3.0.3
+info:
+  title: InvestIQ API
+  description: |
+    InvestIQ is a comprehensive algorithmic trading platform with multi-engine analysis,
+    backtesting, portfolio management, and autonomous trading capabilities.
+
+    ## Authentication
+    All endpoints (except `/health` and `/metrics`) require authentication via the `X-API-Key` header or Bearer token.
+
+    ## Live Trading Protection
+    Broker write endpoints (POST /api/broker/execute, DELETE /api/broker/positions/:symbol, POST /api/broker/orders/:id/cancel)
+    require an additional `X-Live-Trading-Key` header for safety.
+
+    ## Response Format
+    All API responses follow a standard wrapper:
+    ```json
+    {
+      "success": true,
+      "data": { ... },
+      "error": null
+    }
+    ```
+  version: 1.0.0
+  contact:
+    name: InvestIQ Support
+    url: https://github.com/yourusername/invest-iq
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+  - url: https://api.investiq.io
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Health
+    description: System health and metrics
+  - name: Analysis
+    description: Stock analysis endpoints (technical, fundamental, quantitative, sentiment)
+  - name: Broker
+    description: Alpaca broker integration (accounts, positions, orders, trading)
+  - name: Backtest
+    description: Backtesting engine and results
+  - name: Portfolio
+    description: Portfolio management and tracking
+  - name: Risk
+    description: Risk management and circuit breakers
+  - name: Agent Trades
+    description: Autonomous agent trade proposals and approvals
+  - name: Alpha Decay
+    description: Strategy health monitoring
+  - name: Flow Map
+    description: Sector flow and rotation analysis
+  - name: Watchlist
+    description: Personalized watchlist and opportunity feed
+  - name: Tax
+    description: Tax optimization and wash sale monitoring
+  - name: Calibration
+    description: Confidence calibration and uncertainty analysis
+  - name: Symbols
+    description: Symbol search and ticker details
+  - name: Retention
+    description: Data retention and archival (admin only)
+  - name: Time Machine
+    description: Historical replay sessions
+  - name: Panels
+    description: Data-rich panel endpoints (earnings, dividends, options, etc.)
+
+paths:
+  # ============================================================================
+  # Health & Metrics
+  # ============================================================================
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check with dependency status
+      description: Returns overall health status and checks for database, Polygon, Redis, Alpaca, and ML service
+      security: []
+      responses:
+        '200':
+          description: System is healthy or degraded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [healthy, degraded, unhealthy]
+                  service:
+                    type: string
+                    example: invest-iq-api
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        status:
+                          type: string
+                        latency_ms:
+                          type: integer
+                        error:
+                          type: string
+        '503':
+          description: Critical dependencies are down
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics endpoint
+      security: []
+      responses:
+        '200':
+          description: Metrics in Prometheus exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /metrics/json:
+    get:
+      tags: [Health]
+      summary: JSON metrics for dashboard
+      security: []
+      responses:
+        '200':
+          description: Metrics as JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsJson'
+
+  # ============================================================================
+  # Analysis
+  # ============================================================================
+  /api/analyze/{symbol}:
+    get:
+      tags: [Analysis]
+      summary: Analyze a stock symbol
+      description: Returns unified analysis from all engines (technical, fundamental, quantitative, sentiment)
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+          example: AAPL
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            enum: ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w', '1M']
+            default: '1d'
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 365
+        - name: cache_ttl
+          in: query
+          schema:
+            type: integer
+            default: 300
+          description: Cache TTL in seconds
+      responses:
+        '200':
+          description: Analysis result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/bars/{symbol}:
+    get:
+      tags: [Analysis]
+      summary: Get historical price bars
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            default: '1d'
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 90
+      responses:
+        '200':
+          description: Historical bars
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/ticker/{symbol}:
+    get:
+      tags: [Analysis]
+      summary: Get ticker details
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ticker details from Polygon
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/suggest:
+    get:
+      tags: [Analysis]
+      summary: Stock screener with filters
+      parameters:
+        - name: universe
+          in: query
+          schema:
+            type: string
+            enum: [tech, bluechip, popular]
+            default: popular
+        - name: min_confidence
+          in: query
+          schema:
+            type: number
+            default: 0.5
+        - name: min_signal
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Screener results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/validate/{symbol}:
+    get:
+      tags: [Analysis]
+      summary: Validate analysis against Alpha Vantage
+      description: Requires ALPHA_VANTAGE_API_KEY to be set
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Comparison result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Broker (Alpaca Integration)
+  # ============================================================================
+  /api/broker/account:
+    get:
+      tags: [Broker]
+      summary: Get Alpaca account info
+      responses:
+        '200':
+          description: Account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/broker/positions:
+    get:
+      tags: [Broker]
+      summary: Get all Alpaca positions
+      responses:
+        '200':
+          description: List of positions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/broker/positions/{symbol}:
+    delete:
+      tags: [Broker]
+      summary: Close a position (sell all shares)
+      description: Requires X-Live-Trading-Key header
+      security:
+        - ApiKeyAuth: []
+        - LiveTradingAuth: []
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Order submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/broker/orders:
+    get:
+      tags: [Broker]
+      summary: Get order history
+      responses:
+        '200':
+          description: List of orders
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/broker/orders/{id}:
+    get:
+      tags: [Broker]
+      summary: Get a specific order
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/broker/orders/{id}/cancel:
+    post:
+      tags: [Broker]
+      summary: Cancel an order
+      description: Requires X-Live-Trading-Key header
+      security:
+        - ApiKeyAuth: []
+        - LiveTradingAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order canceled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/broker/execute:
+    post:
+      tags: [Broker]
+      summary: Execute a trade
+      description: |
+        Submit a market order. Requires X-Live-Trading-Key header.
+        Performs pre-trade risk checks and circuit breaker validation.
+      security:
+        - ApiKeyAuth: []
+        - LiveTradingAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteTradeRequest'
+      responses:
+        '200':
+          description: Trade executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Backtest
+  # ============================================================================
+  /api/backtest/{symbol}:
+    get:
+      tags: [Backtest]
+      summary: Run a point-in-time backtest for a symbol
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 365
+      responses:
+        '200':
+          description: Backtest result with equity curve and trades
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/backtest/run:
+    post:
+      tags: [Backtest]
+      summary: Run a custom backtest with full configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunBacktestRequest'
+      responses:
+        '200':
+          description: Backtest completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/backtest/results:
+    get:
+      tags: [Backtest]
+      summary: Get all backtest results
+      responses:
+        '200':
+          description: List of backtest results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/backtest/results/{id}:
+    get:
+      tags: [Backtest]
+      summary: Get a specific backtest result
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Backtest result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    delete:
+      tags: [Backtest]
+      summary: Delete a backtest result
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Backtest deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/backtest/results/{id}/trades:
+    get:
+      tags: [Backtest]
+      summary: Get trades for a backtest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of trades
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/backtest/results/{id}/monte-carlo:
+    get:
+      tags: [Backtest]
+      summary: Run Monte Carlo simulation on backtest trades
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: simulations
+          in: query
+          schema:
+            type: integer
+            default: 1000
+            minimum: 100
+            maximum: 10000
+      responses:
+        '200':
+          description: Monte Carlo result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/backtest/strategy/{name}:
+    get:
+      tags: [Backtest]
+      summary: Get backtests by strategy name
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of backtest results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/backtest/walk-forward:
+    post:
+      tags: [Backtest]
+      summary: Run walk-forward validation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunBacktestRequest'
+      responses:
+        '200':
+          description: Walk-forward result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Portfolio
+  # ============================================================================
+  /api/portfolio:
+    get:
+      tags: [Portfolio]
+      summary: Get portfolio summary
+      responses:
+        '200':
+          description: Portfolio summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/portfolio/positions:
+    get:
+      tags: [Portfolio]
+      summary: Get all positions
+      responses:
+        '200':
+          description: List of positions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Portfolio]
+      summary: Add a new position
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddPositionRequest'
+      responses:
+        '200':
+          description: Position added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/portfolio/positions/{symbol}:
+    get:
+      tags: [Portfolio]
+      summary: Get a specific position
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Position details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    put:
+      tags: [Portfolio]
+      summary: Update a position
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePositionRequest'
+      responses:
+        '200':
+          description: Position updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    delete:
+      tags: [Portfolio]
+      summary: Delete a position
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Position deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/portfolio/snapshots:
+    get:
+      tags: [Portfolio]
+      summary: Get portfolio snapshots
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: List of snapshots
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Portfolio]
+      summary: Save a portfolio snapshot
+      responses:
+        '200':
+          description: Snapshot saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/trades:
+    get:
+      tags: [Portfolio]
+      summary: Get all trades
+      responses:
+        '200':
+          description: List of trades
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Portfolio]
+      summary: Log a trade
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogTradeRequest'
+      responses:
+        '200':
+          description: Trade logged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/trades/{id}:
+    get:
+      tags: [Portfolio]
+      summary: Get a specific trade
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Trade details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    put:
+      tags: [Portfolio]
+      summary: Update a trade
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogTradeRequest'
+      responses:
+        '200':
+          description: Trade updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    delete:
+      tags: [Portfolio]
+      summary: Delete a trade
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Trade deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/trades/performance:
+    get:
+      tags: [Portfolio]
+      summary: Get trading performance metrics
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Performance metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/alerts:
+    get:
+      tags: [Portfolio]
+      summary: Get active alerts
+      responses:
+        '200':
+          description: List of alerts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Portfolio]
+      summary: Create an alert
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAlertRequest'
+      responses:
+        '200':
+          description: Alert created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/alerts/{id}:
+    get:
+      tags: [Portfolio]
+      summary: Get an alert
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Alert details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    delete:
+      tags: [Portfolio]
+      summary: Delete an alert
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Alert deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/alerts/{id}/complete:
+    post:
+      tags: [Portfolio]
+      summary: Mark alert as completed
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Alert completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/alerts/{id}/ignore:
+    post:
+      tags: [Portfolio]
+      summary: Ignore an alert
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Alert ignored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/alerts/actions:
+    get:
+      tags: [Portfolio]
+      summary: Get action items from alerts
+      responses:
+        '200':
+          description: List of action items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/watchlist:
+    get:
+      tags: [Portfolio]
+      summary: Get watchlist items
+      responses:
+        '200':
+          description: List of watchlist items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Portfolio]
+      summary: Add to watchlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [symbol]
+              properties:
+                symbol:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Added to watchlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/watchlist/{symbol}:
+    delete:
+      tags: [Portfolio]
+      summary: Remove from watchlist
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Removed from watchlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Risk Management
+  # ============================================================================
+  /api/risk/parameters:
+    get:
+      tags: [Risk]
+      summary: Get risk parameters
+      responses:
+        '200':
+          description: Risk parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    put:
+      tags: [Risk]
+      summary: Update risk parameters (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RiskParameters'
+      responses:
+        '200':
+          description: Parameters updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/position-size:
+    post:
+      tags: [Risk]
+      summary: Calculate position size
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entry_price, account_balance, current_positions_value]
+              properties:
+                entry_price:
+                  type: number
+                account_balance:
+                  type: number
+                current_positions_value:
+                  type: number
+      responses:
+        '200':
+          description: Position size calculation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/check:
+    post:
+      tags: [Risk]
+      summary: Check if a trade meets risk requirements
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confidence, account_balance, current_positions_value, active_positions_count]
+              properties:
+                confidence:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                account_balance:
+                  type: number
+                current_positions_value:
+                  type: number
+                active_positions_count:
+                  type: integer
+      responses:
+        '200':
+          description: Risk check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/positions:
+    get:
+      tags: [Risk]
+      summary: Get active risk positions (stop-loss/take-profit monitoring)
+      responses:
+        '200':
+          description: List of active risk positions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/stop-loss/check:
+    post:
+      tags: [Risk]
+      summary: Check stop losses for price updates
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required: [symbol, price]
+                properties:
+                  symbol:
+                    type: string
+                  price:
+                    type: number
+      responses:
+        '200':
+          description: Stop loss alerts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/trailing-stop/{symbol}:
+    post:
+      tags: [Risk]
+      summary: Update trailing stop for a symbol
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: number
+      responses:
+        '200':
+          description: Trailing stop updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/position/{symbol}/close:
+    post:
+      tags: [Risk]
+      summary: Close a risk position
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Position closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/circuit-breakers:
+    get:
+      tags: [Risk]
+      summary: Get circuit breaker status
+      responses:
+        '200':
+          description: Circuit breaker check
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/trading-halt:
+    post:
+      tags: [Risk]
+      summary: Manually halt or resume trading (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [halted]
+              properties:
+                halted:
+                  type: boolean
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Trading halted/resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/radar:
+    get:
+      tags: [Risk]
+      summary: Get portfolio-wide risk radar
+      parameters:
+        - name: include_target
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Risk radar profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/radar/{symbol}:
+    get:
+      tags: [Risk]
+      summary: Get risk radar for a specific symbol
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: include_target
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Risk radar profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/risk/target:
+    get:
+      tags: [Risk]
+      summary: Get target risk profile
+      responses:
+        '200':
+          description: Target risk profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    put:
+      tags: [Risk]
+      summary: Update target risk profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                market_risk:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                volatility_risk:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                liquidity_risk:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                event_risk:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                concentration_risk:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+                sentiment_risk:
+                  type: number
+                  minimum: 0
+                  maximum: 100
+      responses:
+        '200':
+          description: Target profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Agent Trades (Human-in-the-Loop)
+  # ============================================================================
+  /api/agent/trades:
+    get:
+      tags: [Agent Trades]
+      summary: List pending agent trade proposals
+      responses:
+        '200':
+          description: List of pending trades
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Agent Trades]
+      summary: Agent proposes a new trade
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeTrade'
+      responses:
+        '200':
+          description: Trade proposed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/agent/trades/{id}:
+    get:
+      tags: [Agent Trades]
+      summary: Get a pending trade
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Pending trade details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/agent/trades/{id}/review:
+    post:
+      tags: [Agent Trades]
+      summary: Approve or reject an agent trade
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [approve, reject]
+      responses:
+        '200':
+          description: Trade reviewed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Alpha Decay Monitoring
+  # ============================================================================
+  /api/strategies/health:
+    get:
+      tags: [Alpha Decay]
+      summary: Get health status for all strategies
+      responses:
+        '200':
+          description: Strategies health summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/strategies/{name}/health:
+    get:
+      tags: [Alpha Decay]
+      summary: Get health status for a strategy
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Strategy health
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/strategies/{name}/history:
+    get:
+      tags: [Alpha Decay]
+      summary: Get performance history for a strategy
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Performance snapshots
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/strategies/{name}/decay:
+    get:
+      tags: [Alpha Decay]
+      summary: Get decay analysis with change detection
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Decay analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/strategies/{name}/report:
+    get:
+      tags: [Alpha Decay]
+      summary: Get full health report
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Health report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/strategies/snapshot:
+    post:
+      tags: [Alpha Decay]
+      summary: Record a performance snapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [strategy_name, snapshot_date, rolling_sharpe, win_rate, profit_factor, trades_count]
+              properties:
+                strategy_name:
+                  type: string
+                snapshot_date:
+                  type: string
+                  format: date
+                rolling_sharpe:
+                  type: number
+                win_rate:
+                  type: number
+                profit_factor:
+                  type: number
+                trades_count:
+                  type: integer
+      responses:
+        '200':
+          description: Snapshot recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/strategies/{name}/retire:
+    post:
+      tags: [Alpha Decay]
+      summary: Mark a strategy as retired
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Strategy retired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Flow Map (Sector Rotation)
+  # ============================================================================
+  /api/flows/sectors:
+    get:
+      tags: [Flow Map]
+      summary: Get sector flow data
+      parameters:
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            default: '1W'
+      responses:
+        '200':
+          description: Sector performance and flow data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/flows/rotations:
+    get:
+      tags: [Flow Map]
+      summary: Get detected rotation patterns
+      responses:
+        '200':
+          description: List of rotation patterns
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/flows/etfs:
+    get:
+      tags: [Flow Map]
+      summary: Get list of sector ETFs being tracked
+      responses:
+        '200':
+          description: List of sector ETFs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Smart Watchlist
+  # ============================================================================
+  /api/watchlist/personalized:
+    get:
+      tags: [Watchlist]
+      summary: Get personalized opportunity feed
+      parameters:
+        - name: user_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: min_confidence
+          in: query
+          schema:
+            type: number
+            default: 0.3
+      responses:
+        '200':
+          description: Personalized opportunities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/watchlist/interaction:
+    post:
+      tags: [Watchlist]
+      summary: Record a user interaction (for learning)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, symbol, action]
+              properties:
+                user_id:
+                  type: string
+                symbol:
+                  type: string
+                action:
+                  type: string
+                  enum: [view, click, watchlist_add, watchlist_remove, trade, dismiss]
+                context:
+                  type: string
+      responses:
+        '200':
+          description: Interaction recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/watchlist/preferences:
+    get:
+      tags: [Watchlist]
+      summary: Get user preferences
+      parameters:
+        - name: user_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Watchlist]
+      summary: Update user preferences
+      parameters:
+        - name: user_id
+          in: query
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sectors:
+                  type: array
+                  items:
+                    type: string
+                risk_tolerance:
+                  type: number
+                excluded_symbols:
+                  type: array
+                  items:
+                    type: string
+                min_confidence:
+                  type: number
+      responses:
+        '200':
+          description: Preferences updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/watchlist/items:
+    get:
+      tags: [Watchlist]
+      summary: Get watchlist items
+      parameters:
+        - name: user_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Watchlist items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Watchlist]
+      summary: Add to watchlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, symbol]
+              properties:
+                user_id:
+                  type: string
+                symbol:
+                  type: string
+                notes:
+                  type: string
+                target_price:
+                  type: number
+                stop_loss:
+                  type: number
+      responses:
+        '200':
+          description: Added to watchlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/watchlist/items/{symbol}:
+    delete:
+      tags: [Watchlist]
+      summary: Remove from watchlist
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Removed from watchlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/watchlist/scan:
+    get:
+      tags: [Watchlist]
+      summary: Scan opportunities without personalization
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: min_confidence
+          in: query
+          schema:
+            type: number
+            default: 0.3
+      responses:
+        '200':
+          description: List of opportunities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Tax Optimization
+  # ============================================================================
+  /api/tax/settings:
+    get:
+      tags: [Tax]
+      summary: Get tax settings
+      parameters:
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+            enum: [US, UK, CA, AU, DE]
+      responses:
+        '200':
+          description: Tax settings and supported jurisdictions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/rules/{jurisdiction}:
+    get:
+      tags: [Tax]
+      summary: Get rules for a jurisdiction
+      parameters:
+        - name: jurisdiction
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tax rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/harvest-opportunities:
+    get:
+      tags: [Tax]
+      summary: Get all harvest opportunities
+      parameters:
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Harvest opportunities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/harvest-opportunities/{symbol}:
+    get:
+      tags: [Tax]
+      summary: Get harvest opportunities for a symbol
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Symbol harvest opportunities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/execute-harvest:
+    post:
+      tags: [Tax]
+      summary: Execute a harvest (simulation)
+      parameters:
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [symbol, lot_id]
+              properties:
+                symbol:
+                  type: string
+                lot_id:
+                  type: string
+                substitute_symbol:
+                  type: string
+      responses:
+        '200':
+          description: Harvest result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/substitutes/{symbol}:
+    get:
+      tags: [Tax]
+      summary: Get substitute securities for wash sale avoidance
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of substitutes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/wash-sales:
+    get:
+      tags: [Tax]
+      summary: Get all wash sale windows and violations
+      parameters:
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Wash sales summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/wash-sales/{symbol}:
+    get:
+      tags: [Tax]
+      summary: Get wash sales for a symbol
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Wash sale windows
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/wash-sale-calendar/{symbol}:
+    get:
+      tags: [Tax]
+      summary: Get wash sale calendar
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Wash sale calendar
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/lots:
+    get:
+      tags: [Tax]
+      summary: Get all tax lots
+      responses:
+        '200':
+          description: List of tax lots
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    post:
+      tags: [Tax]
+      summary: Add a new tax lot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [symbol, shares, cost_basis_per_share, purchase_date]
+              properties:
+                symbol:
+                  type: string
+                shares:
+                  type: number
+                cost_basis_per_share:
+                  type: number
+                purchase_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Lot added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/lots/{id}/sell:
+    post:
+      tags: [Tax]
+      summary: Record a lot sale
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sale_date]
+              properties:
+                lot_id:
+                  type: string
+                sale_price:
+                  type: number
+                sale_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Sale recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/tax/year-end-summary:
+    get:
+      tags: [Tax]
+      summary: Get year-end tax summary
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: jurisdiction
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Year-end summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Calibration
+  # ============================================================================
+  /api/calibration/calibrate:
+    post:
+      tags: [Calibration]
+      summary: Calibrate a confidence prediction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [raw_confidence]
+              properties:
+                raw_confidence:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                source:
+                  type: string
+      responses:
+        '200':
+          description: Calibrated prediction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/calibration/uncertainty:
+    post:
+      tags: [Calibration]
+      summary: Analyze prediction uncertainty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confidence]
+              properties:
+                confidence:
+                  type: number
+                context:
+                  type: object
+                  properties:
+                    regime_change_probability:
+                      type: number
+                    model_disagreement:
+                      type: number
+                    market_volatility:
+                      type: number
+                    days_to_earnings:
+                      type: integer
+                    news_sentiment_variance:
+                      type: number
+      responses:
+        '200':
+          description: Uncertainty analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/calibration/stats:
+    get:
+      tags: [Calibration]
+      summary: Get calibration statistics
+      parameters:
+        - name: source
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Calibration stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/analyze/{symbol}/calibrated:
+    get:
+      tags: [Calibration]
+      summary: Get calibrated analysis for a symbol
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Calibrated analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/calibration/fit:
+    post:
+      tags: [Calibration]
+      summary: Fit calibrator with historical data
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [predictions]
+              properties:
+                predictions:
+                  type: array
+                  items:
+                    type: object
+                    required: [confidence, outcome]
+                    properties:
+                      confidence:
+                        type: number
+                      outcome:
+                        type: boolean
+                method:
+                  type: string
+                  enum: [platt, isotonic, temperature]
+      responses:
+        '200':
+          description: Calibrator fitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Symbol Search
+  # ============================================================================
+  /api/symbols/search:
+    get:
+      tags: [Symbols]
+      summary: Search for stock symbols
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query (company name or ticker)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 50
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/symbols/{symbol}:
+    get:
+      tags: [Symbols]
+      summary: Get detailed symbol information
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Symbol details with current price
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Data Retention (Admin)
+  # ============================================================================
+  /api/admin/retention:
+    get:
+      tags: [Retention]
+      summary: Get retention run history (admin only)
+      security:
+        - ApiKeyAuth: []
+        - AdminAuth: []
+      responses:
+        '200':
+          description: List of retention runs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/admin/retention/run:
+    post:
+      tags: [Retention]
+      summary: Run data retention archival (admin only)
+      security:
+        - ApiKeyAuth: []
+        - AdminAuth: []
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 365
+        - name: dry_run
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Retention result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/admin/retention/policy:
+    get:
+      tags: [Retention]
+      summary: Get configured retention policy (admin only)
+      security:
+        - ApiKeyAuth: []
+        - AdminAuth: []
+      responses:
+        '200':
+          description: Retention policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/admin/audit/verify:
+    get:
+      tags: [Retention]
+      summary: Verify audit log hash chain (admin only)
+      security:
+        - ApiKeyAuth: []
+        - AdminAuth: []
+      responses:
+        '200':
+          description: Chain verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # ============================================================================
+  # Time Machine
+  # ============================================================================
+  /api/time-machine/scenarios:
+    get:
+      tags: [Time Machine]
+      summary: List available scenarios
+      parameters:
+        - name: difficulty
+          in: query
+          schema:
+            type: string
+            enum: [beginner, intermediate, advanced, expert]
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: featured_only
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of scenarios
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/time-machine/scenarios/{id}:
+    get:
+      tags: [Time Machine]
+      summary: Get a specific scenario
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Scenario details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/time-machine/start:
+    post:
+      tags: [Time Machine]
+      summary: Start a new time machine session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scenario_id:
+                  type: string
+                symbol:
+                  type: string
+                start_date:
+                  type: string
+                  format: date
+                end_date:
+                  type: string
+                  format: date
+                starting_capital:
+                  type: number
+                  default: 10000
+                user_id:
+                  type: string
+      responses:
+        '200':
+          description: Session started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/time-machine/session/{id}:
+    get:
+      tags: [Time Machine]
+      summary: Get current session state
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/time-machine/session/{id}/decide:
+    post:
+      tags: [Time Machine]
+      summary: Make a trading decision
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [buy, sell, hold]
+                shares:
+                  type: integer
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/time-machine/session/{id}/advance:
+    post:
+      tags: [Time Machine]
+      summary: Advance to next day (auto-hold)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Advanced to next day
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/time-machine/session/{id}/abandon:
+    post:
+      tags: [Time Machine]
+      summary: Abandon a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session abandoned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/time-machine/session/{id}/score:
+    get:
+      tags: [Time Machine]
+      summary: Get score for a completed session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Score card
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  /api/time-machine/leaderboard:
+    get:
+      tags: [Time Machine]
+      summary: Get leaderboard for a scenario
+      parameters:
+        - name: scenario_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Leaderboard
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication. Can also use Bearer token in Authorization header.
+
+    LiveTradingAuth:
+      type: apiKey
+      in: header
+      name: X-Live-Trading-Key
+      description: Additional key required for live trading write operations.
+
+    AdminAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Admin-level API key required for privileged operations.
+
+  schemas:
+    ApiResponse:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          description: Response data (structure varies by endpoint)
+        error:
+          type: string
+          nullable: true
+
+    MetricsJson:
+      type: object
+      properties:
+        request_count:
+          type: integer
+        error_count:
+          type: integer
+        active_connections:
+          type: integer
+        analysis_count:
+          type: integer
+        trade_count:
+          type: integer
+        latency_histogram:
+          type: object
+          additionalProperties:
+            type: integer
+
+    ExecuteTradeRequest:
+      type: object
+      required: [symbol, action, shares]
+      properties:
+        symbol:
+          type: string
+          example: AAPL
+        action:
+          type: string
+          enum: [buy, sell]
+        shares:
+          type: number
+          example: 10
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        notes:
+          type: string
+        idempotency_key:
+          type: string
+          description: Optional key for idempotent trades (24h expiry)
+
+    RunBacktestRequest:
+      type: object
+      required: [strategy_name, symbols, start_date, end_date, initial_capital, position_size_percent, confidence_threshold]
+      properties:
+        strategy_name:
+          type: string
+        symbols:
+          type: array
+          items:
+            type: string
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        initial_capital:
+          type: number
+          example: 100000
+        position_size_percent:
+          type: number
+          example: 95
+        stop_loss_percent:
+          type: number
+        take_profit_percent:
+          type: number
+        confidence_threshold:
+          type: number
+          example: 0.5
+        allocation_strategy:
+          type: string
+          enum: [equal_weight, custom]
+        symbol_weights:
+          type: object
+          additionalProperties:
+            type: number
+        rebalance_interval_days:
+          type: integer
+
+    AddPositionRequest:
+      type: object
+      required: [symbol, shares, entry_price, entry_date]
+      properties:
+        symbol:
+          type: string
+        shares:
+          type: number
+        entry_price:
+          type: number
+        entry_date:
+          type: string
+          format: date
+        notes:
+          type: string
+
+    UpdatePositionRequest:
+      type: object
+      required: [shares, entry_price, entry_date]
+      properties:
+        shares:
+          type: number
+        entry_price:
+          type: number
+        entry_date:
+          type: string
+          format: date
+        notes:
+          type: string
+
+    LogTradeRequest:
+      type: object
+      required: [symbol, action, shares, price, trade_date]
+      properties:
+        symbol:
+          type: string
+        action:
+          type: string
+          enum: [buy, sell]
+        shares:
+          type: number
+        price:
+          type: number
+        trade_date:
+          type: string
+          format: date
+        commission:
+          type: number
+        notes:
+          type: string
+
+    CreateAlertRequest:
+      type: object
+      required: [symbol, alert_type, signal, confidence]
+      properties:
+        symbol:
+          type: string
+        alert_type:
+          type: string
+          enum: [buy, sell, stop_loss, take_profit, watch]
+        signal:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        current_price:
+          type: number
+        target_price:
+          type: number
+        stop_loss_price:
+          type: number
+        reason:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    RiskParameters:
+      type: object
+      properties:
+        max_risk_per_trade_percent:
+          type: number
+          default: 2.0
+        max_portfolio_risk_percent:
+          type: number
+          default: 10.0
+        max_position_size_percent:
+          type: number
+          default: 20.0
+        default_stop_loss_percent:
+          type: number
+          default: 5.0
+        default_take_profit_percent:
+          type: number
+          default: 10.0
+        trailing_stop_enabled:
+          type: boolean
+          default: false
+        trailing_stop_percent:
+          type: number
+          default: 3.0
+        min_confidence_threshold:
+          type: number
+          default: 0.70
+        min_win_rate_threshold:
+          type: number
+          default: 0.55
+        daily_loss_limit_percent:
+          type: number
+          default: 5.0
+        max_consecutive_losses:
+          type: integer
+          default: 3
+        account_drawdown_limit_percent:
+          type: number
+          default: 10.0
+        trading_halted:
+          type: boolean
+        halt_reason:
+          type: string
+        halted_at:
+          type: string
+          format: date-time
+
+    ProposeTrade:
+      type: object
+      required: [symbol, action, shares]
+      properties:
+        symbol:
+          type: string
+        action:
+          type: string
+          enum: [buy, sell]
+        shares:
+          type: number
+        confidence:
+          type: number
+        reason:
+          type: string
+        signal_type:
+          type: string

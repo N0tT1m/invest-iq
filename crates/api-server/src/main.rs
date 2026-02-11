@@ -20,6 +20,9 @@ mod insider_routes;
 mod correlation_routes;
 mod macro_routes;
 mod agent_trade_routes;
+mod audit;
+mod retention_routes;
+mod symbol_routes;
 mod python_manager;
 
 use analysis_core::{Bar, Timeframe, UnifiedAnalysis};
@@ -27,6 +30,8 @@ use analysis_orchestrator::{AnalysisOrchestrator, StockScreener, StockUniverse, 
 use alpaca_broker::AlpacaClient;
 use backtest_engine::{BacktestConfig, BacktestDb, BacktestEngine as BtEngine, BacktestResult as BtResult, HistoricalBar, Signal as BtSignal};
 use risk_manager::RiskManager;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 use analytics::{PerformanceTracker, SignalAnalyzer};
 use axum::{
     extract::{Path, Query, State},
@@ -50,9 +55,34 @@ use tower_http::trace::TraceLayer;
 use tower_governor::{
     governor::GovernorConfigBuilder,
     GovernorLayer,
+    key_extractor::SmartIpKeyExtractor,
 };
+use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use validation::{ComparisonEngine, ComparisonResult};
+
+/// Read a secret from environment variable or Docker secret file.
+/// Checks env var first, then falls back to /run/secrets/{name}.
+fn read_secret(env_var: &str) -> Option<String> {
+    if let Ok(val) = std::env::var(env_var) {
+        if !val.is_empty() {
+            return Some(val);
+        }
+    }
+    let secret_name = env_var.to_lowercase();
+    let path = format!("/run/secrets/{}", secret_name);
+    match std::fs::read_to_string(&path) {
+        Ok(val) => {
+            let trimmed = val.trim().to_string();
+            if !trimmed.is_empty() {
+                Some(trimmed)
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
 
 /// Simple in-process metrics counters.
 pub(crate) struct Metrics {
@@ -60,6 +90,9 @@ pub(crate) struct Metrics {
     pub error_count: AtomicU64,
     /// Latency histogram buckets (ms): <10, <50, <100, <250, <500, <1000, >=1000
     pub latency_buckets: [AtomicU64; 7],
+    pub analysis_count: AtomicU64,
+    pub trade_count: AtomicU64,
+    pub active_connections: AtomicU64,
 }
 
 impl Metrics {
@@ -72,6 +105,9 @@ impl Metrics {
                 AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
                 AtomicU64::new(0),
             ],
+            analysis_count: AtomicU64::new(0),
+            trade_count: AtomicU64::new(0),
+            active_connections: AtomicU64::new(0),
         }
     }
 
@@ -154,6 +190,7 @@ struct CachedAnalysis {
 #[derive(Deserialize)]
 struct AnalyzeQuery {
     #[serde(default = "default_cache_duration")]
+    #[allow(dead_code)]
     cache_ttl: u64,
     timeframe: Option<String>,
     days: Option<i64>,
@@ -344,10 +381,10 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::warn!("No .env file loaded: {}", e),
     }
 
-    // Get Polygon API key from environment
-    let polygon_api_key = match std::env::var("POLYGON_API_KEY") {
-        Ok(key) if !key.is_empty() => key,
-        _ => {
+    // Get Polygon API key from environment or Docker secret
+    let polygon_api_key = match read_secret("POLYGON_API_KEY") {
+        Some(key) => key,
+        None => {
             tracing::error!("POLYGON_API_KEY must be set in environment or .env file");
             #[cfg(windows)]
             {
@@ -473,7 +510,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Err(e) => {
             tracing::warn!("⚠️  Alpaca broker not configured: {}. Trading features disabled.", e);
-            tracing::info!("   Set ALPACA_API_KEY and ALPACA_SECRET_KEY to enable broker integration.");
+            tracing::info!("   Set APCA_API_KEY_ID and APCA_API_SECRET_KEY to enable broker integration.");
             None
         }
     };
@@ -500,8 +537,17 @@ async fn main() -> anyhow::Result<()> {
     // --- Startup environment validation ---
     {
         let api_keys = auth::get_valid_api_keys();
+        let require_auth = std::env::var("REQUIRE_AUTH")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(false);
+
         if api_keys.is_empty() {
+            if require_auth {
+                tracing::error!("REQUIRE_AUTH is set but API_KEYS is empty. Cannot start without authentication in production mode.");
+                std::process::exit(1);
+            }
             tracing::warn!("API_KEYS is not set. API authentication is DISABLED. Set API_KEYS=<key1>,<key2> for production.");
+            tracing::warn!("Set REQUIRE_AUTH=true to enforce authentication.");
         } else {
             tracing::info!("API authentication enabled ({} key(s) configured)", api_keys.len());
         }
@@ -510,7 +556,13 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("Portfolio features disabled (database unavailable)");
         }
         if state.alpaca_client.is_none() {
-            tracing::warn!("Trading features disabled (ALPACA_API_KEY/ALPACA_SECRET_KEY not set)");
+            tracing::warn!("Trading features disabled (APCA_API_KEY_ID/APCA_API_SECRET_KEY not set)");
+        }
+        if std::env::var("FINNHUB_API_KEY").is_err() {
+            tracing::info!("FINNHUB_API_KEY not set — Finnhub news source disabled");
+        }
+        if std::env::var("LIVE_TRADING_KEY").is_err() && state.alpaca_client.is_some() {
+            tracing::info!("LIVE_TRADING_KEY not set — broker write endpoints disabled (safe default)");
         }
     }
 
@@ -542,14 +594,31 @@ async fn main() -> anyhow::Result<()> {
             axum::http::HeaderName::from_static("x-live-trading-key"),
         ]);
 
-    // Rate limiting temporarily disabled - was causing "Unable To Extract Key!" errors
-    // TODO: Properly configure tower_governor with key extractor
-    // let rate_limit_per_minute = std::env::var("RATE_LIMIT_PER_MINUTE")
-    //     .ok()
-    //     .and_then(|s| s.parse::<u64>().ok())
-    //     .unwrap_or(60);
+    // Rate limiting: uses SmartIpKeyExtractor (X-Forwarded-For → X-Real-Ip → Forwarded → peer IP)
+    let rate_limit_per_minute = std::env::var("RATE_LIMIT_PER_MINUTE")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(60);
 
-    tracing::info!("ℹ️  Rate limiting temporarily disabled");
+    // period = time between token replenishments; burst_size = max tokens (burst capacity)
+    let replenish_interval_ms = 60_000u64.checked_div(rate_limit_per_minute.max(1)).unwrap_or(1000);
+    let burst = (rate_limit_per_minute / 6).max(5).min(100) as u32;
+
+    let mut governor_builder = GovernorConfigBuilder::default()
+        .key_extractor(SmartIpKeyExtractor);
+    governor_builder.per_millisecond(replenish_interval_ms);
+    governor_builder.burst_size(burst);
+    let governor_conf = std::sync::Arc::new(
+        governor_builder
+            .use_headers()
+            .finish()
+            .expect("Invalid rate limit configuration"),
+    );
+
+    tracing::info!(
+        "Rate limiting enabled: {} req/min, burst size {}, replenish every {}ms",
+        rate_limit_per_minute, burst, replenish_interval_ms
+    );
 
     // Pre-warm ETF bar caches in the background — all 6 fire in parallel.
     // With Starter plan (unlimited API calls), this completes in ~1-2s.
@@ -589,6 +658,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(health_check))
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_endpoint))
+        .route("/metrics/json", get(metrics_json_endpoint))
         .route("/api/analyze/:symbol", get(analyze_symbol))
         .route("/api/bars/:symbol", get(get_bars))
         .route("/api/ticker/:symbol", get(get_ticker))
@@ -597,7 +667,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/backtest/:symbol", get(backtest_symbol))
         .merge(portfolio_routes::portfolio_routes())
         .merge(broker_routes::broker_read_routes())
-        .merge(broker_routes::broker_write_routes())
+        .merge(
+            broker_routes::broker_write_routes()
+                .layer(middleware::from_fn(auth::require_trader_middleware))
+        )
         .merge(agent_trade_routes::agent_trade_routes())
         .merge(risk_routes::risk_routes())
         .merge(backtest_routes::backtest_routes())
@@ -616,10 +689,16 @@ async fn main() -> anyhow::Result<()> {
         .merge(insider_routes::insider_routes())
         .merge(correlation_routes::correlation_routes())
         .merge(macro_routes::macro_routes())
+        .merge(symbol_routes::symbol_routes())
+        .merge(
+            retention_routes::retention_routes()
+                .layer(middleware::from_fn(auth::require_admin_middleware))
+        )
         .layer(
             ServiceBuilder::new()
                 .layer(axum::extract::DefaultBodyLimit::max(1_048_576)) // 1MB
                 .layer(TraceLayer::new_for_http())
+                .layer(GovernorLayer { config: governor_conf })
                 .layer(middleware::from_fn_with_state(state.clone(), metrics_middleware))
                 .layer(middleware::from_fn(auth::auth_middleware))
                 .layer(cors)
@@ -654,9 +733,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("🚀 API Server starting on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     // Shutdown: abort the frontend supervisor (which kills the child)
     if let Some(handle) = frontend_handle {
@@ -674,15 +756,119 @@ async fn metrics_middleware(
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> Response {
+    // Track active connections
+    state.metrics.active_connections.fetch_add(1, Ordering::Relaxed);
+
+    // Track analysis requests
+    let uri_path = request.uri().path();
+    if uri_path.starts_with("/api/analyze/") {
+        state.metrics.analysis_count.fetch_add(1, Ordering::Relaxed);
+    }
+
     let start = std::time::Instant::now();
     let response = next.run(request).await;
     let latency_ms = start.elapsed().as_millis() as u64;
     let is_error = response.status().is_server_error();
     state.metrics.record(latency_ms, is_error);
+
+    // Decrement active connections
+    state.metrics.active_connections.fetch_sub(1, Ordering::Relaxed);
+
     response
 }
 
+/// Prometheus exposition format endpoint
 async fn metrics_endpoint(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    use axum::http::{HeaderName, HeaderValue};
+
+    let m = &state.metrics;
+
+    // Load all metrics once
+    let request_count = m.request_count.load(Ordering::Relaxed);
+    let error_count = m.error_count.load(Ordering::Relaxed);
+    let active_connections = m.active_connections.load(Ordering::Relaxed);
+    let analysis_count = m.analysis_count.load(Ordering::Relaxed);
+    let trade_count = m.trade_count.load(Ordering::Relaxed);
+
+    // Calculate cumulative bucket counts
+    let bucket_counts: Vec<u64> = (0..7)
+        .map(|i| m.latency_buckets[i].load(Ordering::Relaxed))
+        .collect();
+
+    let cumulative_10 = bucket_counts[0];
+    let cumulative_50 = cumulative_10 + bucket_counts[1];
+    let cumulative_100 = cumulative_50 + bucket_counts[2];
+    let cumulative_250 = cumulative_100 + bucket_counts[3];
+    let cumulative_500 = cumulative_250 + bucket_counts[4];
+    let cumulative_1000 = cumulative_500 + bucket_counts[5];
+    let cumulative_inf = cumulative_1000 + bucket_counts[6];
+
+    // Total request count equals sum of all buckets
+    let histogram_count = cumulative_inf;
+
+    // Build Prometheus exposition format
+    let output = format!(
+        r#"# HELP investiq_requests_total Total HTTP requests
+# TYPE investiq_requests_total counter
+investiq_requests_total {}
+
+# HELP investiq_errors_total Total HTTP 5xx errors
+# TYPE investiq_errors_total counter
+investiq_errors_total {}
+
+# HELP investiq_active_connections Current active HTTP connections
+# TYPE investiq_active_connections gauge
+investiq_active_connections {}
+
+# HELP investiq_analysis_total Total analysis requests
+# TYPE investiq_analysis_total counter
+investiq_analysis_total {}
+
+# HELP investiq_trades_total Total trade executions
+# TYPE investiq_trades_total counter
+investiq_trades_total {}
+
+# HELP investiq_request_duration_milliseconds HTTP request latency histogram
+# TYPE investiq_request_duration_milliseconds histogram
+investiq_request_duration_milliseconds_bucket{{le="10"}} {}
+investiq_request_duration_milliseconds_bucket{{le="50"}} {}
+investiq_request_duration_milliseconds_bucket{{le="100"}} {}
+investiq_request_duration_milliseconds_bucket{{le="250"}} {}
+investiq_request_duration_milliseconds_bucket{{le="500"}} {}
+investiq_request_duration_milliseconds_bucket{{le="1000"}} {}
+investiq_request_duration_milliseconds_bucket{{le="+Inf"}} {}
+investiq_request_duration_milliseconds_count {}
+investiq_request_duration_milliseconds_sum 0
+"#,
+        request_count,
+        error_count,
+        active_connections,
+        analysis_count,
+        trade_count,
+        cumulative_10,
+        cumulative_50,
+        cumulative_100,
+        cumulative_250,
+        cumulative_500,
+        cumulative_1000,
+        cumulative_inf,
+        histogram_count,
+    );
+
+    (
+        StatusCode::OK,
+        [(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+        )],
+        output,
+    )
+}
+
+/// JSON metrics endpoint for dashboard
+async fn metrics_json_endpoint(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let m = &state.metrics;
@@ -694,6 +880,9 @@ async fn metrics_endpoint(
     Json(serde_json::json!({
         "request_count": m.request_count.load(Ordering::Relaxed),
         "error_count": m.error_count.load(Ordering::Relaxed),
+        "active_connections": m.active_connections.load(Ordering::Relaxed),
+        "analysis_count": m.analysis_count.load(Ordering::Relaxed),
+        "trade_count": m.trade_count.load(Ordering::Relaxed),
         "latency_histogram": latency,
     }))
 }
@@ -1126,10 +1315,10 @@ async fn backtest_symbol(
     // Convert bars to HistoricalBar format for the engine
     let hist_bars: Vec<HistoricalBar> = bars.iter().map(|bar| HistoricalBar {
         date: bar.timestamp.format("%Y-%m-%d").to_string(),
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
+        open: Decimal::from_f64(bar.open).unwrap_or_default(),
+        high: Decimal::from_f64(bar.high).unwrap_or_default(),
+        low: Decimal::from_f64(bar.low).unwrap_or_default(),
+        close: Decimal::from_f64(bar.close).unwrap_or_default(),
         volume: bar.volume,
     }).collect();
 
@@ -1163,7 +1352,7 @@ async fn backtest_symbol(
                 symbol: symbol.clone(),
                 signal_type: signal_to_display(&signal_strength).to_string(),
                 confidence,
-                price: bar.close,
+                price: Decimal::from_f64(bar.close).unwrap_or_default(),
                 reason: format!("{:?} signal at {:.0}% confidence (point-in-time)",
                     signal_strength, confidence * 100.0),
             });
@@ -1178,10 +1367,10 @@ async fn backtest_symbol(
     let benchmark_bars = if spy_bars.len() >= 30 {
         Some(spy_bars.iter().map(|b| HistoricalBar {
             date: b.timestamp.format("%Y-%m-%d").to_string(),
-            open: b.open,
-            high: b.high,
-            low: b.low,
-            close: b.close,
+            open: Decimal::from_f64(b.open).unwrap_or_default(),
+            high: Decimal::from_f64(b.high).unwrap_or_default(),
+            low: Decimal::from_f64(b.low).unwrap_or_default(),
+            close: Decimal::from_f64(b.close).unwrap_or_default(),
             volume: b.volume,
         }).collect())
     } else {
@@ -1194,7 +1383,7 @@ async fn backtest_symbol(
         symbols: vec![symbol.clone()],
         start_date: first_date,
         end_date: last_date,
-        initial_capital: 10000.0,
+        initial_capital: Decimal::new(10000, 0),
         position_size_percent: 95.0,
         stop_loss_percent: Some(0.05),
         take_profit_percent: Some(0.15),
@@ -1378,6 +1567,7 @@ mod tests {
             .route("/", get(health_check))
             .route("/health", get(health_check))
             .route("/metrics", get(metrics_endpoint))
+            .route("/metrics/json", get(metrics_json_endpoint))
             .route("/api/analyze/:symbol", get(analyze_symbol))
             .merge(broker_routes::broker_read_routes())
             .merge(broker_routes::broker_write_routes())
@@ -1419,10 +1609,11 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json.get("request_count").is_some());
-        assert!(json.get("error_count").is_some());
-        assert!(json.get("latency_histogram").is_some());
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        // Verify Prometheus format
+        assert!(text.contains("# HELP investiq_requests_total"));
+        assert!(text.contains("# TYPE investiq_requests_total counter"));
+        assert!(text.contains("investiq_active_connections"));
     }
 
     #[tokio::test]

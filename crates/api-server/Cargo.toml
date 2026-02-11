@@ -51,6 +51,7 @@ rust-embed = { workspace = true }
 dirs = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+rust_decimal = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

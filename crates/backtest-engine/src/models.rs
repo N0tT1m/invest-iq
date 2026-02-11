@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use rust_decimal::Decimal;
 
 /// Configuration for a backtest run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8,7 +9,7 @@ pub struct BacktestConfig {
     pub symbols: Vec<String>,
     pub start_date: String,
     pub end_date: String,
-    pub initial_capital: f64,
+    pub initial_capital: Decimal,
     pub position_size_percent: f64, // 0-100
     pub stop_loss_percent: Option<f64>, // as decimal, e.g. 0.05 = 5%
     pub take_profit_percent: Option<f64>,
@@ -33,10 +34,10 @@ pub struct BacktestConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoricalBar {
     pub date: String,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
     pub volume: f64,
 }
 
@@ -47,7 +48,7 @@ pub struct Signal {
     pub symbol: String,
     pub signal_type: String, // "buy", "sell", "Buy", "StrongBuy", etc.
     pub confidence: f64,
-    pub price: f64,
+    pub price: Decimal,
     pub reason: String,
 }
 
@@ -59,9 +60,9 @@ pub struct BacktestResult {
     pub symbols: Vec<String>,
     pub start_date: String,
     pub end_date: String,
-    pub initial_capital: f64,
-    pub final_capital: f64,
-    pub total_return: f64,
+    pub initial_capital: Decimal,
+    pub final_capital: Decimal,
+    pub total_return: Decimal,
     pub total_return_percent: f64,
     pub total_trades: i32,
     pub winning_trades: i32,
@@ -77,13 +78,13 @@ pub struct BacktestResult {
     pub avg_holding_period_days: Option<f64>,
     pub exposure_time_percent: Option<f64>,
     pub recovery_factor: Option<f64>,
-    pub average_win: Option<f64>,
-    pub average_loss: Option<f64>,
-    pub largest_win: Option<f64>,
-    pub largest_loss: Option<f64>,
+    pub average_win: Option<Decimal>,
+    pub average_loss: Option<Decimal>,
+    pub largest_win: Option<Decimal>,
+    pub largest_loss: Option<Decimal>,
     pub avg_trade_return_percent: Option<f64>,
-    pub total_commission_paid: f64,
-    pub total_slippage_cost: f64,
+    pub total_commission_paid: Decimal,
+    pub total_slippage_cost: Decimal,
     pub equity_curve: Vec<EquityPoint>,
     pub trades: Vec<BacktestTrade>,
     pub created_at: Option<String>,
@@ -99,7 +100,7 @@ pub struct BacktestResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EquityPoint {
     pub timestamp: String,
-    pub equity: f64,
+    pub equity: Decimal,
     pub drawdown_percent: f64,
 }
 
@@ -112,14 +113,14 @@ pub struct BacktestTrade {
     pub signal: String,
     pub entry_date: String,
     pub exit_date: String,
-    pub entry_price: f64,
-    pub exit_price: f64,
-    pub shares: f64,
-    pub profit_loss: f64,
+    pub entry_price: Decimal,
+    pub exit_price: Decimal,
+    pub shares: Decimal,
+    pub profit_loss: Decimal,
     pub profit_loss_percent: f64,
     pub holding_period_days: i64,
-    pub commission_cost: f64,
-    pub slippage_cost: f64,
+    pub commission_cost: Decimal,
+    pub slippage_cost: Decimal,
     pub exit_reason: String,
 }
 
@@ -191,7 +192,7 @@ pub struct SymbolResult {
     pub total_trades: i32,
     pub winning_trades: i32,
     pub win_rate: f64,
-    pub total_return: f64,
+    pub total_return: Decimal,
     pub total_return_percent: f64,
     pub weight: f64,
 }

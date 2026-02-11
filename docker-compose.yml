@@ -29,7 +29,18 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - RUST_LOG=${RUST_LOG:-info}
-      - API_BASE_URL=http://localhost:3000
+      - RUST_LOG_FORMAT=${RUST_LOG_FORMAT:-json}
+      - DATABASE_URL=sqlite:/app/data/portfolio.db
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-120}
+      - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
+      - ML_SIGNAL_MODELS_URL=http://signal-models:8004
+    secrets:
+      - polygon_api_key
+      - alpaca_api_key
+      - alpaca_secret_key
+      - api_keys
+    volumes:
+      - db_data:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -42,6 +53,66 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  signal-models:
+    build:
+      context: ./ml-services
+      dockerfile: Dockerfile
+    container_name: investiq-signal-models
+    ports:
+      - "8004:8004"
+    env_file:
+      - .env
+    environment:
+      - MODEL_DIR=/app/models
+    volumes:
+      - ml_models:/app/models
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8004/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  trading-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: investiq-trading-agent
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - DATABASE_URL=sqlite:/app/data/portfolio.db
+      - ML_SIGNAL_MODELS_URL=http://signal-models:8004
+    volumes:
+      - db_data:/app/data
+    depends_on:
+      - api-server
+      - signal-models
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - agent  # Only start if explicitly requested: docker compose --profile agent up
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   discord-bot:
     build:
@@ -59,9 +130,136 @@ services:
     restart: unless-stopped
     profiles:
       - discord  # Only start if explicitly requested
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # Scheduled database backup (runs daily at 2am)
+  db-backup:
+    image: alpine:3.19
+    container_name: investiq-backup
+    volumes:
+      - db_data:/data:ro
+      - db_backups:/backups
+    entrypoint: /bin/sh
+    command: >
+      -c 'while true; do
+        STAMP=$$(date +%Y%m%d_%H%M%S);
+        cp /data/portfolio.db /backups/portfolio_$$STAMP.db 2>/dev/null || true;
+        find /backups -name "portfolio_*.db" -mtime +7 -delete 2>/dev/null || true;
+        echo "Backup completed: portfolio_$$STAMP.db";
+        sleep 86400;
+      done'
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - backup  # docker compose --profile backup up
+
+  # Prometheus metrics and alerting
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: investiq-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - monitoring  # docker compose --profile monitoring up
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # Grafana dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: investiq-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - monitoring  # docker compose --profile monitoring up
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # PostgreSQL (optional, for production deployments)
+  postgres:
+    image: postgres:16-alpine
+    container_name: investiq-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-investiq}
+      - POSTGRES_USER=${POSTGRES_USER:-investiq}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-investiq_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-investiq}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - postgres  # docker compose --profile postgres up
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+secrets:
+  polygon_api_key:
+    file: ./secrets/polygon_api_key.txt
+  alpaca_api_key:
+    file: ./secrets/alpaca_api_key.txt
+  alpaca_secret_key:
+    file: ./secrets/alpaca_secret_key.txt
+  api_keys:
+    file: ./secrets/api_keys.txt
 
 volumes:
   redis_data:
+  db_data:
+  db_backups:
+  ml_models:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   investiq-network:

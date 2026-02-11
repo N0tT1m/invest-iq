@@ -6,11 +6,40 @@ use axum::{
     Json,
 };
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 #[cfg(test)]
 #[path = "auth_tests.rs"]
 mod auth_tests;
+
+/// Role hierarchy for RBAC
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    Viewer = 0,
+    Trader = 1,
+    Admin = 2,
+}
+
+impl Role {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "viewer" => Some(Role::Viewer),
+            "trader" => Some(Role::Trader),
+            "admin" => Some(Role::Admin),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Role::Viewer => write!(f, "viewer"),
+            Role::Trader => write!(f, "trader"),
+            Role::Admin => write!(f, "admin"),
+        }
+    }
+}
 
 /// API key authentication middleware
 ///
@@ -28,7 +57,7 @@ pub async fn auth_middleware(
 
     // Skip authentication for health check and metrics endpoints
     let path = request.uri().path();
-    if path == "/" || path == "/health" || path == "/metrics" {
+    if path == "/" || path == "/health" || path == "/metrics" || path == "/metrics/json" {
         return Ok(next.run(request).await);
     }
 
@@ -40,16 +69,26 @@ pub async fn auth_middleware(
     // Try to extract API key from various sources
     let api_key = extract_api_key(&headers, &request)?;
 
-    // Validate the API key
-    if !valid_keys.contains(api_key.as_str()) {
-        tracing::warn!("Invalid API key attempted: {}", mask_api_key(&api_key));
-        return Err(AuthError::InvalidApiKey);
-    }
+    // Validate the API key and get role
+    let role = match valid_keys.get(api_key.as_str()) {
+        Some(role) => *role,
+        None => {
+            tracing::warn!("Invalid API key attempted: {}", mask_api_key(&api_key));
+            return Err(AuthError::InvalidApiKey);
+        }
+    };
 
-    tracing::debug!("Valid API key: {}", mask_api_key(&api_key));
+    tracing::debug!(
+        "Valid API key: {} (role: {})",
+        mask_api_key(&api_key),
+        role
+    );
 
-    // Add the validated API key to request extensions for potential future use
-    request.extensions_mut().insert(ValidatedApiKey(api_key));
+    // Add the validated API key and role to request extensions
+    request.extensions_mut().insert(ValidatedApiKey {
+        key: api_key,
+        role,
+    });
 
     Ok(next.run(request).await)
 }
@@ -79,16 +118,32 @@ pub(crate) fn extract_api_key(headers: &HeaderMap, _request: &Request) -> Result
     Err(AuthError::MissingApiKey)
 }
 
-/// Get valid API keys from environment
+/// Get valid API keys from environment with roles
 ///
-/// Supports multiple API keys separated by commas:
-/// API_KEYS=key1,key2,key3
-pub(crate) fn get_valid_api_keys() -> HashSet<String> {
+/// Supports multiple API keys separated by commas with optional role suffix:
+/// API_KEYS=key1:admin,key2:trader,key3:viewer,key4
+///
+/// If no role is specified, defaults to Admin for backwards compatibility.
+pub(crate) fn get_valid_api_keys() -> HashMap<String, Role> {
     std::env::var("API_KEYS")
         .unwrap_or_default()
         .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+
+            // Parse "key:role" format, default to Admin if no role specified
+            if let Some((key, role_str)) = entry.split_once(':') {
+                let key = key.trim().to_string();
+                let role = Role::from_str(role_str.trim()).unwrap_or(Role::Admin);
+                Some((key, role))
+            } else {
+                // No role specified, default to Admin (backwards compatible)
+                Some((entry.to_string(), Role::Admin))
+            }
+        })
         .collect()
 }
 
@@ -100,9 +155,13 @@ pub(crate) fn mask_api_key(key: &str) -> String {
     format!("{}...{}", &key[..4], &key[key.len() - 4..])
 }
 
-/// Extension type to store validated API key in request
-#[derive(Clone)]
-pub struct ValidatedApiKey(pub String);
+/// Extension type to store validated API key and role in request
+#[derive(Clone, Debug)]
+pub struct ValidatedApiKey {
+    #[allow(dead_code)]
+    pub key: String,
+    pub role: Role,
+}
 
 /// Live trading auth middleware — extra gate for broker write endpoints.
 ///
@@ -152,33 +211,53 @@ pub async fn live_trading_auth_middleware(
 pub enum AuthError {
     MissingApiKey,
     InvalidApiKey,
+    InsufficientRole(Role),
     LiveTradingNotConfigured,
     MissingLiveTradingKey,
     InvalidLiveTradingKey,
 }
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthError::MissingApiKey => write!(f, "Missing API key"),
+            AuthError::InvalidApiKey => write!(f, "Invalid API key"),
+            AuthError::InsufficientRole(role) => write!(f, "Insufficient permissions. Required role: {}", role),
+            AuthError::LiveTradingNotConfigured => write!(f, "Live trading key not configured"),
+            AuthError::MissingLiveTradingKey => write!(f, "Missing live trading key"),
+            AuthError::InvalidLiveTradingKey => write!(f, "Invalid live trading key"),
+        }
+    }
+}
+
+impl std::error::Error for AuthError {}
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             AuthError::MissingApiKey => (
                 StatusCode::UNAUTHORIZED,
-                "Missing API key. Provide via X-API-Key header, Authorization: Bearer header, or api_key query parameter.",
+                "Missing API key. Provide via X-API-Key header, Authorization: Bearer header, or api_key query parameter.".to_string(),
             ),
             AuthError::InvalidApiKey => (
                 StatusCode::FORBIDDEN,
-                "Invalid API key.",
+                "Invalid API key.".to_string(),
+            ),
+            AuthError::InsufficientRole(required_role) => (
+                StatusCode::FORBIDDEN,
+                format!("Insufficient permissions. Required role: {}", required_role),
             ),
             AuthError::LiveTradingNotConfigured => (
                 StatusCode::FORBIDDEN,
-                "Live trading key not configured. Set LIVE_TRADING_KEY env var to enable broker write endpoints.",
+                "Live trading key not configured. Set LIVE_TRADING_KEY env var to enable broker write endpoints.".to_string(),
             ),
             AuthError::MissingLiveTradingKey => (
                 StatusCode::UNAUTHORIZED,
-                "Missing live trading key. Provide via X-Live-Trading-Key header.",
+                "Missing live trading key. Provide via X-Live-Trading-Key header.".to_string(),
             ),
             AuthError::InvalidLiveTradingKey => (
                 StatusCode::FORBIDDEN,
-                "Invalid live trading key.",
+                "Invalid live trading key.".to_string(),
             ),
         };
 
@@ -190,5 +269,48 @@ impl IntoResponse for AuthError {
             })),
         )
             .into_response()
+    }
+}
+
+/// Check if request has sufficient role
+fn check_role(required: Role, request: &Request) -> Result<(), AuthError> {
+    match request.extensions().get::<ValidatedApiKey>() {
+        Some(key) if key.role >= required => Ok(()),
+        Some(_) => Err(AuthError::InsufficientRole(required)),
+        None => Ok(()), // No auth configured (dev mode) - allow through
+    }
+}
+
+/// Middleware to require trader role or higher
+pub async fn require_trader_middleware(
+    request: Request,
+    next: Next,
+) -> Result<Response, AuthError> {
+    check_role(Role::Trader, &request)?;
+    Ok(next.run(request).await)
+}
+
+/// Middleware to require admin role
+pub async fn require_admin_middleware(
+    request: Request,
+    next: Next,
+) -> Result<Response, AuthError> {
+    check_role(Role::Admin, &request)?;
+    Ok(next.run(request).await)
+}
+
+/// Extract role from request extensions and check it meets minimum
+/// Returns Ok(()) in dev mode (no API_KEYS configured).
+///
+/// This is useful for checking roles within handler functions.
+#[allow(dead_code)]
+pub fn check_role_from_extensions(
+    extensions: &axum::http::Extensions,
+    required: Role,
+) -> Result<(), AuthError> {
+    match extensions.get::<ValidatedApiKey>() {
+        Some(key) if key.role >= required => Ok(()),
+        Some(_) => Err(AuthError::InsufficientRole(required)),
+        None => Ok(()), // Dev mode - allow through
     }
 }

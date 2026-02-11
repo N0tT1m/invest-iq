@@ -1,4 +1,8 @@
 """PatchTST Training Script."""
+import os
+from dotenv import load_dotenv
+load_dotenv()                       # ml-services/.env
+load_dotenv(dotenv_path="../.env")  # project root .env
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -11,9 +15,9 @@ import sys
 from loguru import logger
 import json
 from tqdm import tqdm
-import yfinance as yf
+import requests
 from datetime import datetime, timedelta
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 sys.path.append(str(Path(__file__).parent.parent))
 from shared.config import config
@@ -113,7 +117,6 @@ class PatchTSTTrainer:
             mode='min',
             factor=0.5,
             patience=5,
-            verbose=True
         )
 
         # Loss functions
@@ -235,33 +238,97 @@ class PatchTSTTrainer:
         logger.info(f"Saved checkpoint to {path}")
 
 
+def _polygon_timespan(interval: str) -> Tuple[int, str]:
+    """Map user interval string to Polygon (multiplier, timespan)."""
+    mapping = {
+        "1m": (1, "minute"), "5m": (5, "minute"),
+        "15m": (15, "minute"), "1h": (1, "hour"),
+        "1d": (1, "day"),
+    }
+    return mapping.get(interval, (15, "minute"))
+
+
+def _fetch_polygon_bars(
+    symbol: str, start_date: str, end_date: str, interval: str, api_key: str
+) -> pd.DataFrame:
+    """Fetch OHLCV bars from Polygon REST API."""
+    mult, span = _polygon_timespan(interval)
+    url = (
+        f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range"
+        f"/{mult}/{span}/{start_date}/{end_date}"
+        f"?adjusted=true&sort=asc&limit=50000&apiKey={api_key}"
+    )
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    results = data.get("results", [])
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results)
+    df = df.rename(columns={
+        "o": "Open", "h": "High", "l": "Low", "c": "Close",
+        "v": "Volume", "vw": "vwap", "t": "timestamp",
+    })
+    df.index = pd.to_datetime(df["timestamp"], unit="ms")
+    df["symbol"] = symbol
+    if "vwap" not in df.columns:
+        df["vwap"] = (df["High"] + df["Low"] + df["Close"]) / 3
+    return df[["Open", "High", "Low", "Close", "Volume", "vwap", "symbol"]]
+
+
+def _fetch_yfinance_bars(
+    symbol: str, start_date: str, end_date: str, interval: str
+) -> pd.DataFrame:
+    """Fetch OHLCV bars from yfinance (fallback)."""
+    import yfinance as yf
+
+    ticker = yf.Ticker(symbol)
+    df = ticker.history(start=start_date, end=end_date, interval=interval)
+    if len(df) > 0:
+        df["symbol"] = symbol
+        df["vwap"] = (df["High"] + df["Low"] + df["Close"]) / 3
+    return df
+
+
 def fetch_market_data(
     symbols: List[str],
     start_date: str,
     end_date: str,
-    interval: str = "15m"
+    interval: str = "15m",
+    use_polygon: bool = False,
 ) -> pd.DataFrame:
-    """Fetch market data from yfinance."""
-    logger.info(f"Fetching data for {len(symbols)} symbols from {start_date} to {end_date}")
+    """Fetch market data from Polygon (preferred) or yfinance (fallback)."""
+    polygon_key = os.environ.get("POLYGON_API_KEY", "")
+    source = "polygon" if (use_polygon and polygon_key) else "yfinance"
+    if use_polygon and not polygon_key:
+        logger.warning("POLYGON_API_KEY not set, falling back to yfinance")
+
+    logger.info(f"Fetching data for {len(symbols)} symbols via {source} "
+                f"({start_date} to {end_date}, interval={interval})")
 
     all_data = []
     for symbol in symbols:
         try:
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(start=start_date, end=end_date, interval=interval)
+            if source == "polygon":
+                df = _fetch_polygon_bars(symbol, start_date, end_date, interval, polygon_key)
+            else:
+                df = _fetch_yfinance_bars(symbol, start_date, end_date, interval)
 
             if len(df) > 0:
-                df['symbol'] = symbol
-                df['vwap'] = ((df['High'] + df['Low'] + df['Close']) / 3)
                 all_data.append(df)
                 logger.info(f"  {symbol}: {len(df)} bars")
+            else:
+                logger.warning(f"  {symbol}: no data returned")
         except Exception as e:
             logger.error(f"  {symbol}: Error - {e}")
 
     if not all_data:
-        raise ValueError("No data fetched")
+        raise ValueError("No data fetched for any symbol")
 
     combined = pd.concat(all_data, axis=0)
+    # Normalize column names to lowercase for consistency across sources
+    combined.columns = [c.lower() for c in combined.columns]
     logger.info(f"Total bars: {len(combined)}")
 
     return combined
@@ -273,7 +340,7 @@ def prepare_training_data(
 ) -> Tuple[np.ndarray, Dict]:
     """Prepare and normalize training data."""
     # Extract features
-    data = df[features].values
+    data = df[features].values.copy()
 
     # Compute normalization statistics
     norm_stats = {}
@@ -302,8 +369,17 @@ def main():
     parser.add_argument("--output-dir", type=str, default="./models/price_predictor/trained",
                        help="Output directory")
     parser.add_argument("--early-stopping", type=int, default=10, help="Early stopping patience")
+    parser.add_argument("--use-polygon", action="store_true",
+                       help="Use Polygon.io for market data (requires POLYGON_API_KEY env var)")
+    parser.add_argument("--db-path", type=str, default="../portfolio.db", help="Path to portfolio.db")
 
     args = parser.parse_args()
+
+    # Auto-enable polygon if key is available and not explicitly using yfinance
+    use_polygon = args.use_polygon
+    if not use_polygon and os.environ.get("POLYGON_API_KEY"):
+        logger.info("POLYGON_API_KEY found, auto-enabling Polygon data source")
+        use_polygon = True
 
     # Setup
     output_dir = Path(args.output_dir)
@@ -320,7 +396,8 @@ def main():
         symbols=args.symbols,
         start_date=start_date.strftime("%Y-%m-%d"),
         end_date=end_date.strftime("%Y-%m-%d"),
-        interval=args.interval
+        interval=args.interval,
+        use_polygon=use_polygon,
     )
 
     # Prepare data

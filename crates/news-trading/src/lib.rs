@@ -1,11 +1,10 @@
-use analysis_core::{NewsArticle, AnalysisError};
+use analysis_core::NewsArticle;
 use anyhow::Result;
 use chrono::{DateTime, Utc, Duration};
 use polygon_client::PolygonClient;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use log::{info, debug, warn};
+use log::warn;
 
 /// News sentiment classification
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -127,6 +126,7 @@ pub struct NewsScanner {
     polygon_client: PolygonClient,
     sentiment_service_url: Option<String>,
     http_client: Client,
+    #[allow(dead_code)]
     scan_interval_seconds: u64,
 }
 
@@ -149,10 +149,46 @@ impl NewsScanner {
         }
     }
 
-    /// Scan for recent news articles
+    /// Scan for recent news articles from both Polygon and Finnhub
     pub async fn scan_news(&self, symbol: Option<&str>, limit: u32) -> Result<Vec<NewsArticle>> {
-        self.polygon_client.get_news(symbol, limit).await
-            .map_err(|e| anyhow::anyhow!("Failed to fetch news: {}", e))
+        // Fetch from both sources concurrently
+        let polygon_future = self.polygon_client.get_news(symbol, limit);
+        let finnhub_future = async {
+            if let Some(sym) = symbol {
+                self.polygon_client.get_finnhub_news(sym, 7).await.unwrap_or_default()
+            } else {
+                // For general news, try Finnhub general news endpoint
+                self.polygon_client.get_finnhub_general_news().await.unwrap_or_default()
+            }
+        };
+
+        let (polygon_result, finnhub_articles) = tokio::join!(polygon_future, finnhub_future);
+
+        let mut articles = polygon_result
+            .map_err(|e| anyhow::anyhow!("Failed to fetch news: {}", e))?;
+
+        // Merge Finnhub articles, deduplicate by title similarity
+        for fa in finnhub_articles {
+            // Simple deduplication: check if any existing article has a similar title
+            let is_duplicate = articles.iter().any(|a| {
+                let a_title_lower = a.title.to_lowercase();
+                let fa_title_lower = fa.title.to_lowercase();
+                let a_prefix: String = a_title_lower.chars().take(30).collect();
+                let fa_prefix: String = fa_title_lower.chars().take(30).collect();
+
+                a_title_lower.contains(&fa_prefix) || fa_title_lower.contains(&a_prefix)
+            });
+
+            if !is_duplicate {
+                articles.push(fa);
+            }
+        }
+
+        // Sort by published date descending, limit
+        articles.sort_by(|a, b| b.published_utc.cmp(&a.published_utc));
+        articles.truncate(limit as usize);
+
+        Ok(articles)
     }
 
     /// Analyze sentiment of a single article
@@ -334,6 +370,7 @@ impl NewsScanner {
 
         #[derive(Deserialize)]
         struct SentimentResponse {
+            #[allow(dead_code)]
             sentiment: String,
             score: f64,
         }

@@ -39,6 +39,7 @@ pub struct UpdatePreferencesRequest {
     pub sectors: Option<Vec<String>>,
     pub risk_tolerance: Option<f64>,
     pub excluded_symbols: Option<Vec<String>>,
+    #[allow(dead_code)]
     pub min_confidence: Option<f64>,
 }
 
@@ -290,9 +291,27 @@ async fn get_watchlist_items(
         .map(|pm| pm.db().pool().clone())
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?;
 
-    // For now, return empty - would need watchlist table queries
-    // This is a placeholder for the full implementation
-    let items: Vec<WatchlistItem> = Vec::new();
+    let rows: Vec<(i64, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT id, symbol, notes, added_at FROM watchlist ORDER BY added_at DESC"
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
+    let items: Vec<WatchlistItem> = rows.into_iter().map(|(id, symbol, notes, added_at)| {
+        WatchlistItem {
+            id: Some(id),
+            user_id: user_id.clone(),
+            symbol,
+            added_at: chrono::DateTime::parse_from_str(&added_at, "%Y-%m-%d %H:%M:%S")
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            notes,
+            target_price: None,
+            stop_loss: None,
+            alert_enabled: false,
+        }
+    }).collect();
 
     Ok(Json(ApiResponse::success(items)))
 }
@@ -303,7 +322,9 @@ pub struct AddWatchlistRequest {
     pub user_id: String,
     pub symbol: String,
     pub notes: Option<String>,
+    #[allow(dead_code)]
     pub target_price: Option<f64>,
+    #[allow(dead_code)]
     pub stop_loss: Option<f64>,
 }
 
@@ -311,23 +332,36 @@ async fn add_to_watchlist(
     State(state): State<AppState>,
     Json(req): Json<AddWatchlistRequest>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    let symbol = req.symbol.to_uppercase();
+
+    // Insert into watchlist table (ignore if already exists)
+    sqlx::query(
+        "INSERT OR IGNORE INTO watchlist (symbol, notes) VALUES (?, ?)"
+    )
+    .bind(&symbol)
+    .bind(&req.notes)
+    .execute(pool)
+    .await?;
+
     // Record as interaction for learning
-    if let Some(pm) = &state.portfolio_manager {
-        let learner = PreferenceLearner::new(pm.db().pool().clone());
-        let interaction = SymbolInteraction {
-            id: None,
-            user_id: req.user_id.clone(),
-            symbol: req.symbol.to_uppercase(),
-            action: InteractionType::WatchlistAdd,
-            context: None,
-            created_at: Utc::now(),
-        };
-        let _ = learner.record_interaction(&interaction).await;
-    }
+    let learner = PreferenceLearner::new(pool.clone());
+    let interaction = SymbolInteraction {
+        id: None,
+        user_id: req.user_id.clone(),
+        symbol: symbol.clone(),
+        action: InteractionType::WatchlistAdd,
+        context: None,
+        created_at: Utc::now(),
+    };
+    let _ = learner.record_interaction(&interaction).await;
 
     Ok(Json(ApiResponse::success(format!(
         "{} added to watchlist",
-        req.symbol
+        symbol
     ))))
 }
 
@@ -337,22 +371,30 @@ async fn remove_from_watchlist(
     Path(symbol): Path<String>,
     Query(query): Query<FeedQuery>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
     let user_id = query.user_id.clone().unwrap_or_else(|| "default".to_string());
     let symbol = symbol.to_uppercase();
 
+    // Delete from watchlist table
+    sqlx::query("DELETE FROM watchlist WHERE symbol = ?")
+        .bind(&symbol)
+        .execute(pool)
+        .await?;
+
     // Record as interaction
-    if let Some(pm) = &state.portfolio_manager {
-        let learner = PreferenceLearner::new(pm.db().pool().clone());
-        let interaction = SymbolInteraction {
-            id: None,
-            user_id,
-            symbol: symbol.clone(),
-            action: InteractionType::WatchlistRemove,
-            context: None,
-            created_at: Utc::now(),
-        };
-        let _ = learner.record_interaction(&interaction).await;
-    }
+    let learner = PreferenceLearner::new(pool.clone());
+    let interaction = SymbolInteraction {
+        id: None,
+        user_id,
+        symbol: symbol.clone(),
+        action: InteractionType::WatchlistRemove,
+        context: None,
+        created_at: Utc::now(),
+    };
+    let _ = learner.record_interaction(&interaction).await;
 
     Ok(Json(ApiResponse::success(format!(
         "{} removed from watchlist",

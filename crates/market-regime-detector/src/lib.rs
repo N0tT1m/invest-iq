@@ -1,9 +1,9 @@
-use analysis_core::{Bar, AnalysisError};
+use analysis_core::Bar;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use log::{info, debug, warn};
+use log::warn;
 
 /// Market regime classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -221,7 +221,7 @@ impl MarketRegimeDetector {
             return 0.0;
         }
 
-        let n = bars.len() as f64;
+        let _n = bars.len() as f64;
         let recent_bars = &bars[bars.len() - 20..];
 
         // Simple linear regression

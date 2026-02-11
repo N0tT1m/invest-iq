@@ -22,12 +22,16 @@ impl AlpacaClient {
         })
     }
 
-    /// Create client from environment variables
+    /// Create client from environment variables.
+    /// Accepts both APCA_API_KEY_ID / APCA_API_SECRET_KEY (standard Alpaca names)
+    /// and ALPACA_API_KEY / ALPACA_SECRET_KEY as fallbacks.
     pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("ALPACA_API_KEY")
-            .map_err(|_| anyhow!("ALPACA_API_KEY not set"))?;
-        let secret_key = std::env::var("ALPACA_SECRET_KEY")
-            .map_err(|_| anyhow!("ALPACA_SECRET_KEY not set"))?;
+        let api_key = std::env::var("APCA_API_KEY_ID")
+            .or_else(|_| std::env::var("ALPACA_API_KEY"))
+            .map_err(|_| anyhow!("APCA_API_KEY_ID (or ALPACA_API_KEY) not set"))?;
+        let secret_key = std::env::var("APCA_API_SECRET_KEY")
+            .or_else(|_| std::env::var("ALPACA_SECRET_KEY"))
+            .map_err(|_| anyhow!("APCA_API_SECRET_KEY (or ALPACA_SECRET_KEY) not set"))?;
         let base_url = std::env::var("ALPACA_BASE_URL")
             .unwrap_or_else(|_| "https://paper-api.alpaca.markets".to_string());
 
@@ -39,11 +43,13 @@ impl AlpacaClient {
         let mut headers = header::HeaderMap::new();
         headers.insert(
             "APCA-API-KEY-ID",
-            header::HeaderValue::from_str(&self.api_key).unwrap(),
+            header::HeaderValue::from_str(&self.api_key)
+                .expect("API key contains invalid header characters"),
         );
         headers.insert(
             "APCA-API-SECRET-KEY",
-            header::HeaderValue::from_str(&self.secret_key).unwrap(),
+            header::HeaderValue::from_str(&self.secret_key)
+                .expect("Secret key contains invalid header characters"),
         );
         headers
     }
@@ -237,6 +243,8 @@ impl AlpacaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
 
     #[tokio::test]
     #[ignore] // Only run with valid credentials
@@ -257,7 +265,7 @@ mod tests {
         let client = AlpacaClient::from_env().unwrap();
 
         // Submit a small test order
-        let order = MarketOrderRequest::buy("AAPL", 1.0);
+        let order = MarketOrderRequest::buy("AAPL", Decimal::from_str("1.0").unwrap());
         let result = client.submit_market_order(order).await.unwrap();
 
         println!("Order submitted: {}", result.id);

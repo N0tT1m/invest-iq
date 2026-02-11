@@ -1,6 +1,7 @@
 use crate::models::*;
 use crate::db::PortfolioDb;
 use anyhow::Result;
+use rust_decimal::prelude::*;
 
 pub struct AlertManager {
     db: PortfolioDb,
@@ -13,26 +14,27 @@ impl AlertManager {
 
     /// Create a new alert
     pub async fn create_alert(&self, alert: AlertInput) -> Result<i64> {
-        let result = sqlx::query(
+        let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO alerts
             (symbol, alert_type, signal, confidence, current_price, target_price, stop_loss_price, reason, expires_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             "#
         )
         .bind(&alert.symbol)
         .bind(&alert.alert_type)
         .bind(&alert.signal)
         .bind(alert.confidence)
-        .bind(alert.current_price)
-        .bind(alert.target_price)
-        .bind(alert.stop_loss_price)
+        .bind(alert.current_price.map(|p| p.to_f64().unwrap_or(0.0)))
+        .bind(alert.target_price.map(|p| p.to_f64().unwrap_or(0.0)))
+        .bind(alert.stop_loss_price.map(|p| p.to_f64().unwrap_or(0.0)))
         .bind(&alert.reason)
         .bind(&alert.expires_at)
-        .execute(self.db.pool())
+        .fetch_one(self.db.pool())
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Get all active alerts
@@ -177,9 +179,9 @@ mod tests {
             alert_type: "buy".to_string(),
             signal: "StrongBuy".to_string(),
             confidence: 0.85,
-            current_price: Some(150.0),
-            target_price: Some(180.0),
-            stop_loss_price: Some(140.0),
+            current_price: Some(Decimal::from(150)),
+            target_price: Some(Decimal::from(180)),
+            stop_loss_price: Some(Decimal::from(140)),
             reason: Some("Bullish signals".to_string()),
             expires_at: None,
         };
@@ -202,7 +204,7 @@ mod tests {
             alert_type: "buy".to_string(),
             signal: "Buy".to_string(),
             confidence: 0.75,
-            current_price: Some(150.0),
+            current_price: Some(Decimal::from(150)),
             target_price: None,
             stop_loss_price: None,
             reason: None,

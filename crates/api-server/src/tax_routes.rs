@@ -11,13 +11,14 @@ use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tax_optimizer::{
-    HarvestOpportunity, HarvestResult, HarvestSummary, HarvestingConfig, HarvestingEngine,
+    HarvestOpportunity, HarvestResult, HarvestSummary, HarvestingEngine,
     SubstituteFinder, SubstituteSecurity, TaxCalculator, TaxJurisdiction, TaxLot, TaxRules,
     WashSaleCalendar, WashSaleMonitor, WashSaleSummary, WashSaleViolation, WashSaleWindow,
     YearEndSummary,
 };
 
 use crate::{get_default_analysis, ApiResponse, AppError, AppState};
+use rust_decimal::prelude::*;
 
 /// Query params for jurisdiction
 #[derive(Deserialize)]
@@ -44,7 +45,9 @@ pub struct AddLotRequest {
 /// Request to record a sale
 #[derive(Deserialize)]
 pub struct RecordSaleRequest {
+    #[allow(dead_code)]
     pub lot_id: String,
+    #[allow(dead_code)]
     pub sale_price: f64,
     pub sale_date: String,
 }
@@ -465,8 +468,8 @@ async fn get_portfolio_lots(state: &AppState) -> Result<Vec<TaxLot>, AppError> {
                     lots.push(TaxLot::new(
                         uuid::Uuid::new_v4().to_string(),
                         pos.symbol.clone(),
-                        pos.shares,
-                        pos.entry_price,
+                        pos.shares.to_f64().unwrap_or(0.0),
+                        pos.entry_price.to_f64().unwrap_or(0.0),
                         chrono::NaiveDate::parse_from_str(&pos.entry_date, "%Y-%m-%d")
                             .unwrap_or_else(|_| chrono::Utc::now().date_naive() - chrono::Duration::days(180)),
                     ));

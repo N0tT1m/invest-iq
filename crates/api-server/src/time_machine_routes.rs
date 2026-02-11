@@ -48,6 +48,7 @@ pub struct DecisionRequest {
 #[derive(Deserialize)]
 pub struct ScenarioQuery {
     pub difficulty: Option<String>,
+    #[allow(dead_code)]
     pub category: Option<String>,
     pub featured_only: Option<bool>,
 }
@@ -101,6 +102,7 @@ pub struct BarResponse {
 #[derive(Deserialize)]
 pub struct LeaderboardQuery {
     pub scenario_id: String,
+    #[allow(dead_code)]
     pub limit: Option<usize>,
 }
 

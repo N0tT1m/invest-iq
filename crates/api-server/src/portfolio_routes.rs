@@ -4,6 +4,7 @@ use axum::{
     Json, Router,
 };
 use portfolio_manager::*;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::{ApiResponse, AppError, AppState};
@@ -11,16 +12,16 @@ use crate::{ApiResponse, AppError, AppState};
 #[derive(Deserialize)]
 pub struct AddPositionRequest {
     pub symbol: String,
-    pub shares: f64,
-    pub entry_price: f64,
+    pub shares: Decimal,
+    pub entry_price: Decimal,
     pub entry_date: String,
     pub notes: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct UpdatePositionRequest {
-    pub shares: f64,
-    pub entry_price: f64,
+    pub shares: Decimal,
+    pub entry_price: Decimal,
     pub entry_date: String,
     pub notes: Option<String>,
 }
@@ -29,10 +30,10 @@ pub struct UpdatePositionRequest {
 pub struct LogTradeRequest {
     pub symbol: String,
     pub action: String,
-    pub shares: f64,
-    pub price: f64,
+    pub shares: Decimal,
+    pub price: Decimal,
     pub trade_date: String,
-    pub commission: Option<f64>,
+    pub commission: Option<Decimal>,
     pub notes: Option<String>,
 }
 
@@ -41,10 +42,10 @@ pub struct CreateAlertRequest {
     pub symbol: String,
     pub alert_type: String,
     pub signal: String,
-    pub confidence: f64,
-    pub current_price: Option<f64>,
-    pub target_price: Option<f64>,
-    pub stop_loss_price: Option<f64>,
+    pub confidence: f64, // Confidence is a ratio, not money - stays f64
+    pub current_price: Option<Decimal>,
+    pub target_price: Option<Decimal>,
+    pub stop_loss_price: Option<Decimal>,
     pub reason: Option<String>,
     pub expires_at: Option<String>,
 }
@@ -483,7 +484,14 @@ async fn get_action_items(
         .into_iter()
         .map(|alert| {
             let in_portfolio = position_map.contains_key(&alert.symbol);
-            let position_pnl = None; // TODO: Calculate PnL if in portfolio
+            let position_pnl = if let Some(pos) = position_map.get(&alert.symbol) {
+                alert.current_price.and_then(|cp| {
+                    let current = Decimal::from_f64_retain(cp)?;
+                    Some((current - pos.entry_price) * pos.shares)
+                })
+            } else {
+                None
+            };
 
             let (priority, title, description) = match alert.alert_type.as_str() {
                 "buy" => (
@@ -530,9 +538,9 @@ async fn get_action_items(
                 description,
                 signal: alert.signal.clone(),
                 confidence: alert.confidence,
-                current_price: alert.current_price,
-                target_price: alert.target_price,
-                stop_loss_price: alert.stop_loss_price,
+                current_price: alert.current_price.and_then(|p| Decimal::from_f64_retain(p)),
+                target_price: alert.target_price.and_then(|p| Decimal::from_f64_retain(p)),
+                stop_loss_price: alert.stop_loss_price.and_then(|p| Decimal::from_f64_retain(p)),
                 in_portfolio,
                 position_pnl,
                 alert_id: alert.id,

@@ -109,15 +109,16 @@ def generate_training_data(
         time.sleep(delay)
 
         for trade in trades:
+            pnl = trade.get("profit_loss_percent", 0) or 0
             sample = {
                 "symbol": symbol,
-                "signal_type": trade.get("signal_type", "Neutral"),
+                "signal_type": trade.get("signal", "Neutral"),
                 "confidence": trade.get("confidence", 0.5),
                 "entry_price": trade.get("entry_price", 0),
                 "exit_price": trade.get("exit_price", 0),
-                "pnl_pct": trade.get("pnl_pct", 0),
-                "trade_date": trade.get("trade_date", ""),
-                "profitable": 1 if (trade.get("pnl_pct", 0) or 0) > 0 else 0,
+                "pnl_pct": pnl,
+                "trade_date": trade.get("entry_date", ""),
+                "profitable": 1 if pnl > 0 else 0,
                 "analysis_features": analysis if analysis else None,
             }
             all_samples.append(sample)

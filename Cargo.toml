@@ -61,7 +61,7 @@ serenity = { version = "0.12", default-features = false, features = ["client", "
 
 # Database/Cache
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "any", "postgres", "sqlite", "chrono"] }
 
 # Error handling
 anyhow = "1.0"
@@ -77,6 +77,10 @@ dotenvy = "0.15"
 # Math and statistics
 nalgebra = "0.33"
 statrs = "0.17"
+
+# Financial precision
+rust_decimal = { version = "1.36", features = ["serde-with-float"] }
+rust_decimal_macros = "1.36"
 
 # Data structures
 dashmap = "6.1"

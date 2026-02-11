@@ -1,4 +1,6 @@
 use sqlx::SqlitePool;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::{ToPrimitive, FromPrimitive};
 
 use crate::models::{BacktestResult, BacktestTrade, BenchmarkComparison, EquityPoint, SymbolResult};
 
@@ -14,94 +16,7 @@ impl BacktestDb {
 
     /// Initialize backtest tables if they don't exist.
     pub async fn init_tables(&self) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS backtests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                strategy_name TEXT NOT NULL,
-                symbols TEXT NOT NULL,
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                initial_capital REAL NOT NULL,
-                final_capital REAL NOT NULL,
-                total_return REAL NOT NULL DEFAULT 0,
-                total_return_percent REAL NOT NULL,
-                total_trades INTEGER NOT NULL,
-                winning_trades INTEGER NOT NULL,
-                losing_trades INTEGER NOT NULL,
-                win_rate REAL NOT NULL,
-                profit_factor REAL,
-                sharpe_ratio REAL,
-                sortino_ratio REAL,
-                max_drawdown REAL,
-                calmar_ratio REAL,
-                max_consecutive_wins INTEGER NOT NULL DEFAULT 0,
-                max_consecutive_losses INTEGER NOT NULL DEFAULT 0,
-                avg_holding_period_days REAL,
-                exposure_time_percent REAL,
-                recovery_factor REAL,
-                average_win REAL,
-                average_loss REAL,
-                largest_win REAL,
-                largest_loss REAL,
-                avg_trade_return_percent REAL,
-                total_commission_paid REAL NOT NULL DEFAULT 0,
-                total_slippage_cost REAL NOT NULL DEFAULT 0,
-                equity_curve_json TEXT,
-                benchmark_json TEXT,
-                per_symbol_results_json TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS backtest_trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                backtest_id INTEGER NOT NULL,
-                symbol TEXT NOT NULL,
-                signal TEXT NOT NULL DEFAULT '',
-                entry_date TEXT NOT NULL,
-                exit_date TEXT NOT NULL DEFAULT '',
-                entry_price REAL NOT NULL,
-                exit_price REAL NOT NULL DEFAULT 0,
-                shares REAL NOT NULL,
-                profit_loss REAL NOT NULL DEFAULT 0,
-                profit_loss_percent REAL NOT NULL DEFAULT 0,
-                holding_period_days INTEGER NOT NULL DEFAULT 0,
-                commission_cost REAL NOT NULL DEFAULT 0,
-                slippage_cost REAL NOT NULL DEFAULT 0,
-                exit_reason TEXT NOT NULL DEFAULT '',
-                FOREIGN KEY (backtest_id) REFERENCES backtests(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // Migrate existing tables — add any columns that may be missing
-        for col in [
-            "total_return REAL NOT NULL DEFAULT 0",
-            "sortino_ratio REAL",
-            "calmar_ratio REAL",
-            "max_consecutive_wins INTEGER NOT NULL DEFAULT 0",
-            "max_consecutive_losses INTEGER NOT NULL DEFAULT 0",
-            "avg_holding_period_days REAL",
-            "exposure_time_percent REAL",
-            "recovery_factor REAL",
-            "average_win REAL",
-            "average_loss REAL",
-            "largest_win REAL",
-            "largest_loss REAL",
-            "total_commission_paid REAL NOT NULL DEFAULT 0",
-            "total_slippage_cost REAL NOT NULL DEFAULT 0",
-            "equity_curve_json TEXT",
-            "benchmark_json TEXT",
-            "per_symbol_results_json TEXT",
-        ] {
-            let sql = format!("ALTER TABLE backtests ADD COLUMN {}", col);
-            let _ = sqlx::query(&sql).execute(&self.pool).await;
-        }
-
+        // Tables are created by sqlx migrations in portfolio-manager.
         Ok(())
     }
 
@@ -118,7 +33,7 @@ impl BacktestDb {
             .map(|r| serde_json::to_string(r))
             .transpose()?;
 
-        let row = sqlx::query(
+        let (backtest_id,): (i64,) = sqlx::query_as(
             "INSERT INTO backtests (
                 strategy_name, symbols, start_date, end_date,
                 initial_capital, final_capital, total_return, total_return_percent,
@@ -129,15 +44,16 @@ impl BacktestDb {
                 average_win, average_loss, largest_win, largest_loss,
                 avg_trade_return_percent, total_commission_paid, total_slippage_cost,
                 equity_curve_json, benchmark_json, per_symbol_results_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id",
         )
         .bind(&result.strategy_name)
         .bind(&symbols_json)
         .bind(&result.start_date)
         .bind(&result.end_date)
-        .bind(result.initial_capital)
-        .bind(result.final_capital)
-        .bind(result.total_return)
+        .bind(result.initial_capital.to_f64().unwrap_or(0.0))
+        .bind(result.final_capital.to_f64().unwrap_or(0.0))
+        .bind(result.total_return.to_f64().unwrap_or(0.0))
         .bind(result.total_return_percent)
         .bind(result.total_trades)
         .bind(result.winning_trades)
@@ -153,20 +69,18 @@ impl BacktestDb {
         .bind(result.avg_holding_period_days)
         .bind(result.exposure_time_percent)
         .bind(result.recovery_factor)
-        .bind(result.average_win)
-        .bind(result.average_loss)
-        .bind(result.largest_win)
-        .bind(result.largest_loss)
+        .bind(result.average_win.map(|v| v.to_f64().unwrap_or(0.0)))
+        .bind(result.average_loss.map(|v| v.to_f64().unwrap_or(0.0)))
+        .bind(result.largest_win.map(|v| v.to_f64().unwrap_or(0.0)))
+        .bind(result.largest_loss.map(|v| v.to_f64().unwrap_or(0.0)))
         .bind(result.avg_trade_return_percent)
-        .bind(result.total_commission_paid)
-        .bind(result.total_slippage_cost)
+        .bind(result.total_commission_paid.to_f64().unwrap_or(0.0))
+        .bind(result.total_slippage_cost.to_f64().unwrap_or(0.0))
         .bind(&equity_json)
         .bind(&benchmark_json)
         .bind(&per_symbol_json)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-
-        let backtest_id = row.last_insert_rowid();
 
         // Save trades
         for trade in &result.trades {
@@ -183,14 +97,14 @@ impl BacktestDb {
             .bind(&trade.signal)
             .bind(&trade.entry_date)
             .bind(&trade.exit_date)
-            .bind(trade.entry_price)
-            .bind(trade.exit_price)
-            .bind(trade.shares)
-            .bind(trade.profit_loss)
+            .bind(trade.entry_price.to_f64().unwrap_or(0.0))
+            .bind(trade.exit_price.to_f64().unwrap_or(0.0))
+            .bind(trade.shares.to_f64().unwrap_or(0.0))
+            .bind(trade.profit_loss.to_f64().unwrap_or(0.0))
             .bind(trade.profit_loss_percent)
             .bind(trade.holding_period_days)
-            .bind(trade.commission_cost)
-            .bind(trade.slippage_cost)
+            .bind(trade.commission_cost.to_f64().unwrap_or(0.0))
+            .bind(trade.slippage_cost.to_f64().unwrap_or(0.0))
             .bind(&trade.exit_reason)
             .execute(&self.pool)
             .await?;
@@ -282,14 +196,14 @@ impl BacktestDb {
                 signal: r.signal,
                 entry_date: r.entry_date,
                 exit_date: r.exit_date,
-                entry_price: r.entry_price,
-                exit_price: r.exit_price,
-                shares: r.shares,
-                profit_loss: r.profit_loss,
+                entry_price: Decimal::from_f64(r.entry_price).unwrap_or_default(),
+                exit_price: Decimal::from_f64(r.exit_price).unwrap_or_default(),
+                shares: Decimal::from_f64(r.shares).unwrap_or_default(),
+                profit_loss: Decimal::from_f64(r.profit_loss).unwrap_or_default(),
                 profit_loss_percent: r.profit_loss_percent,
                 holding_period_days: r.holding_period_days,
-                commission_cost: r.commission_cost,
-                slippage_cost: r.slippage_cost,
+                commission_cost: Decimal::from_f64(r.commission_cost).unwrap_or_default(),
+                slippage_cost: Decimal::from_f64(r.slippage_cost).unwrap_or_default(),
                 exit_reason: r.exit_reason,
             })
             .collect())
@@ -376,9 +290,9 @@ impl BacktestRow {
             symbols,
             start_date: self.start_date,
             end_date: self.end_date,
-            initial_capital: self.initial_capital,
-            final_capital: self.final_capital,
-            total_return: self.total_return,
+            initial_capital: Decimal::from_f64(self.initial_capital).unwrap_or_default(),
+            final_capital: Decimal::from_f64(self.final_capital).unwrap_or_default(),
+            total_return: Decimal::from_f64(self.total_return).unwrap_or_default(),
             total_return_percent: self.total_return_percent,
             total_trades: self.total_trades,
             winning_trades: self.winning_trades,
@@ -394,13 +308,13 @@ impl BacktestRow {
             avg_holding_period_days: self.avg_holding_period_days,
             exposure_time_percent: self.exposure_time_percent,
             recovery_factor: self.recovery_factor,
-            average_win: self.average_win,
-            average_loss: self.average_loss,
-            largest_win: self.largest_win,
-            largest_loss: self.largest_loss,
+            average_win: self.average_win.and_then(|v| Decimal::from_f64(v)),
+            average_loss: self.average_loss.and_then(|v| Decimal::from_f64(v)),
+            largest_win: self.largest_win.and_then(|v| Decimal::from_f64(v)),
+            largest_loss: self.largest_loss.and_then(|v| Decimal::from_f64(v)),
             avg_trade_return_percent: self.avg_trade_return_percent,
-            total_commission_paid: self.total_commission_paid,
-            total_slippage_cost: self.total_slippage_cost,
+            total_commission_paid: Decimal::from_f64(self.total_commission_paid).unwrap_or_default(),
+            total_slippage_cost: Decimal::from_f64(self.total_slippage_cost).unwrap_or_default(),
             equity_curve,
             trades: Vec::new(),
             created_at: self.created_at,

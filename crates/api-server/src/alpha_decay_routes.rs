@@ -9,11 +9,10 @@ use axum::{
 };
 use alpha_decay::{
     AlphaDecayMonitor, ChangeDetector, DecayMetrics, HealthReport, HealthReportBuilder,
-    HealthStatus, PerformanceSnapshot, StrategyHealth, StrategyPerformance,
+    HealthStatus, PerformanceSnapshot, StrategyHealth,
 };
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::{ApiResponse, AppError, AppState};
 
@@ -254,15 +253,21 @@ async fn record_snapshot(
 
 /// Mark a strategy as retired
 async fn retire_strategy(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
-    // TODO: Implement strategy retirement in database
-    // For now, just return success message
-    Ok(Json(ApiResponse::success(format!(
-        "Strategy '{}' marked for retirement",
-        name
-    ))))
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    sqlx::query(
+        "UPDATE strategy_health_snapshots SET status = 'retired' WHERE strategy_name = ?"
+    )
+    .bind(&name)
+    .execute(pool)
+    .await?;
+
+    Ok(Json(ApiResponse::success(format!("Strategy '{}' retired", name))))
 }
 
 fn calculate_quick_health_score(metrics: &DecayMetrics, status: &HealthStatus) -> f64 {

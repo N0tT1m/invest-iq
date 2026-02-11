@@ -273,6 +273,7 @@ impl TimeMachineSession {
 /// Engine for running time machine replays
 pub struct ReplayEngine {
     /// Historical price data cache
+    #[allow(dead_code)]
     price_cache: std::collections::HashMap<String, Vec<BarData>>,
 }
 

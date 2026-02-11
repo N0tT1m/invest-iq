@@ -7,13 +7,14 @@ use risk_manager::{
     CircuitBreakerCheck, PositionSizeCalculation, RiskCheck, RiskParameters, RiskProfile,
     RiskRadar, RiskRadarCalculator, RiskTargetProfile, StopLossAlert,
 };
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::{get_default_analysis, ApiResponse, AppError, AppState};
 
 #[derive(Deserialize)]
 pub struct PositionSizeRequest {
-    pub entry_price: f64,
+    pub entry_price: Decimal,
     pub account_balance: f64,
     pub current_positions_value: f64,
 }
@@ -29,7 +30,7 @@ pub struct RiskCheckRequest {
 #[derive(Deserialize)]
 pub struct PriceUpdate {
     pub symbol: String,
-    pub price: f64,
+    pub price: Decimal,
 }
 
 /// Request for target risk profile update
@@ -90,8 +91,16 @@ async fn get_risk_parameters(
 
 async fn update_risk_parameters(
     State(state): State<AppState>,
+    key_ext: Option<axum::extract::Extension<crate::auth::ValidatedApiKey>>,
     Json(params): Json<RiskParameters>,
 ) -> Result<Json<ApiResponse<RiskParameters>>, AppError> {
+    // Check admin role (skip in dev mode when no API_KEYS configured)
+    if let Some(axum::extract::Extension(key)) = key_ext {
+        if key.role < crate::auth::Role::Admin {
+            return Err(crate::auth::AuthError::InsufficientRole(crate::auth::Role::Admin).into());
+        }
+    }
+
     let risk_manager = state.risk_manager.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
 
@@ -151,7 +160,7 @@ async fn check_stop_losses(
     let risk_manager = state.risk_manager.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
 
-    let price_tuples: Vec<(String, f64)> = prices.iter()
+    let price_tuples: Vec<(String, Decimal)> = prices.iter()
         .map(|p| (p.symbol.clone(), p.price))
         .collect();
 
@@ -163,7 +172,7 @@ async fn check_stop_losses(
 async fn update_trailing_stop(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
-    Json(price): Json<f64>,
+    Json(price): Json<Decimal>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
     let risk_manager = state.risk_manager.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
@@ -288,43 +297,132 @@ async fn get_symbol_risk_radar(
 
 /// Get target risk profile
 async fn get_target_profile(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<RiskTargetProfile>>, AppError> {
-    // TODO: Load from database
-    // For now, return default
-    Ok(Json(ApiResponse::success(RiskTargetProfile::default())))
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Portfolio manager not configured"))?
+        .db()
+        .pool();
+
+    // Query the database for the target profile
+    let row: Option<(String, f64, f64, f64, f64, f64, f64, String)> = sqlx::query_as(
+        "SELECT user_id, market_risk_target, volatility_risk_target,
+                liquidity_risk_target, event_risk_target,
+                concentration_risk_target, sentiment_risk_target, updated_at
+         FROM risk_target_profile
+         WHERE user_id = 'default'"
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    let profile = if let Some((user_id, market, volatility, liquidity, event, concentration, sentiment, updated_at_str)) = row {
+        RiskTargetProfile {
+            user_id,
+            target: RiskRadar {
+                market_risk: market,
+                volatility_risk: volatility,
+                liquidity_risk: liquidity,
+                event_risk: event,
+                concentration_risk: concentration,
+                sentiment_risk: sentiment,
+            },
+            updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now()),
+        }
+    } else {
+        RiskTargetProfile::default()
+    };
+
+    Ok(Json(ApiResponse::success(profile)))
 }
 
 /// Update target risk profile
 async fn update_target_profile(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<UpdateTargetRequest>,
 ) -> Result<Json<ApiResponse<RiskTargetProfile>>, AppError> {
-    let mut profile = RiskTargetProfile::default();
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Portfolio manager not configured"))?
+        .db()
+        .pool();
 
-    // Update with provided values
+    // First, get the current profile (or default)
+    let current: Option<(f64, f64, f64, f64, f64, f64)> = sqlx::query_as(
+        "SELECT market_risk_target, volatility_risk_target,
+                liquidity_risk_target, event_risk_target,
+                concentration_risk_target, sentiment_risk_target
+         FROM risk_target_profile
+         WHERE user_id = 'default'"
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    // Build updated values (use current or default, then override with request values)
+    let default = RiskTargetProfile::default();
+    let (mut market, mut volatility, mut liquidity, mut event, mut concentration, mut sentiment) =
+        if let Some((m, v, l, e, c, s)) = current {
+            (m, v, l, e, c, s)
+        } else {
+            (default.target.market_risk, default.target.volatility_risk,
+             default.target.liquidity_risk, default.target.event_risk,
+             default.target.concentration_risk, default.target.sentiment_risk)
+        };
+
+    // Apply updates from request
     if let Some(v) = req.market_risk {
-        profile.target.market_risk = v.clamp(0.0, 100.0);
+        market = v.clamp(0.0, 100.0);
     }
     if let Some(v) = req.volatility_risk {
-        profile.target.volatility_risk = v.clamp(0.0, 100.0);
+        volatility = v.clamp(0.0, 100.0);
     }
     if let Some(v) = req.liquidity_risk {
-        profile.target.liquidity_risk = v.clamp(0.0, 100.0);
+        liquidity = v.clamp(0.0, 100.0);
     }
     if let Some(v) = req.event_risk {
-        profile.target.event_risk = v.clamp(0.0, 100.0);
+        event = v.clamp(0.0, 100.0);
     }
     if let Some(v) = req.concentration_risk {
-        profile.target.concentration_risk = v.clamp(0.0, 100.0);
+        concentration = v.clamp(0.0, 100.0);
     }
     if let Some(v) = req.sentiment_risk {
-        profile.target.sentiment_risk = v.clamp(0.0, 100.0);
+        sentiment = v.clamp(0.0, 100.0);
     }
 
-    profile.updated_at = chrono::Utc::now();
+    let updated_at = chrono::Utc::now();
+    let updated_at_str = updated_at.to_rfc3339();
 
-    // TODO: Save to database
+    // Insert or replace the profile in the database
+    sqlx::query(
+        "INSERT OR REPLACE INTO risk_target_profile
+            (user_id, market_risk_target, volatility_risk_target,
+             liquidity_risk_target, event_risk_target,
+             concentration_risk_target, sentiment_risk_target, updated_at)
+         VALUES ('default', ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(market)
+    .bind(volatility)
+    .bind(liquidity)
+    .bind(event)
+    .bind(concentration)
+    .bind(sentiment)
+    .bind(&updated_at_str)
+    .execute(pool)
+    .await?;
+
+    // Build the response profile
+    let profile = RiskTargetProfile {
+        user_id: "default".to_string(),
+        target: RiskRadar {
+            market_risk: market,
+            volatility_risk: volatility,
+            liquidity_risk: liquidity,
+            event_risk: event,
+            concentration_risk: concentration,
+            sentiment_risk: sentiment,
+        },
+        updated_at,
+    };
 
     Ok(Json(ApiResponse::success(profile)))
 }
@@ -364,8 +462,16 @@ async fn get_circuit_breakers(
 /// Manually halt or resume trading
 async fn set_trading_halt(
     State(state): State<AppState>,
+    key_ext: Option<axum::extract::Extension<crate::auth::ValidatedApiKey>>,
     Json(req): Json<TradingHaltRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    // Check admin role (skip in dev mode when no API_KEYS configured)
+    if let Some(axum::extract::Extension(key)) = key_ext {
+        if key.role < crate::auth::Role::Admin {
+            return Err(crate::auth::AuthError::InsufficientRole(crate::auth::Role::Admin).into());
+        }
+    }
+
     let risk_manager = state.risk_manager.as_ref()
         .ok_or_else(|| anyhow::anyhow!("Risk manager not configured"))?;
 
@@ -373,6 +479,15 @@ async fn set_trading_halt(
 
     let status = if req.halted { "halted" } else { "resumed" };
     tracing::info!("Trading {}: {:?}", status, req.reason);
+
+    // Audit log the halt/resume
+    if let Some(pm) = state.portfolio_manager.as_ref() {
+        let event = if req.halted { "trading_halted" } else { "trading_resumed" };
+        crate::audit::log_audit(
+            pm.db().pool(), event, None, None,
+            req.reason.as_deref(), "user", None,
+        ).await;
+    }
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "trading_halted": req.halted,

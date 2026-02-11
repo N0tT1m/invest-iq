@@ -1,6 +1,6 @@
 # Multi-stage build for InvestIQ API Server
 
-# Stage 1: Build
+# Stage 1: Build Rust binary
 FROM rust:slim AS builder
 
 # Install build dependencies
@@ -8,10 +8,9 @@ RUN apt-get update && \
     apt-get install -y pkg-config libssl-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Create a new empty shell project
 WORKDIR /app
 
-# Copy manifests
+# Copy manifests and source
 COPY Cargo.toml Cargo.lock schema.sql ./
 COPY crates ./crates
 
@@ -26,15 +25,22 @@ RUN apt-get update && \
     apt-get install -y curl ca-certificates libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
+# Create non-root user and data directory
 RUN useradd -m -u 1000 investiq && \
-    mkdir -p /app && \
+    mkdir -p /app /app/data && \
     chown -R investiq:investiq /app
 
 WORKDIR /app
 
+# Copy frontend requirements and install Python deps
+COPY frontend/requirements.txt ./frontend/requirements.txt
+RUN pip install --no-cache-dir -r frontend/requirements.txt
+
 # Copy the build artifact from the build stage
 COPY --from=builder /app/target/release/api-server ./api-server
+
+# Copy frontend source
+COPY --chown=investiq:investiq frontend ./frontend
 
 # Change ownership
 RUN chown investiq:investiq ./api-server
@@ -45,12 +51,13 @@ USER investiq
 # Expose the API port and frontend port
 EXPOSE 3000 8050
 
-# Health check using curl against the real health endpoint
+# Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:3000/health || exit 1
 
-# Set environment variables
+# Environment defaults
 ENV RUST_LOG=info
+ENV DATABASE_URL=sqlite:/app/data/portfolio.db
 
 # Run the binary
 CMD ["./api-server"]

@@ -143,25 +143,8 @@ async fn main() -> anyhow::Result<()> {
         total_symbols, db_path, dry_run, concurrency
     );
 
-    // Open DB and ensure table exists
+    // Open DB (migrations handle table schema via sqlx::migrate!())
     let pool = Arc::new(SqlitePool::connect(&format!("sqlite:{}?mode=rwc", db_path)).await?);
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS analysis_features (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            analysis_date TEXT NOT NULL,
-            features_json TEXT NOT NULL,
-            overall_signal TEXT NOT NULL,
-            overall_confidence REAL NOT NULL,
-            actual_return_5d REAL,
-            actual_return_20d REAL,
-            evaluated INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )"
-    ).execute(pool.as_ref()).await?;
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_analysis_feat_symbol ON analysis_features(symbol, analysis_date)"
-    ).execute(pool.as_ref()).await?;
 
     // Enable WAL mode for concurrent writes from parallel tasks
     sqlx::query("PRAGMA journal_mode=WAL").execute(pool.as_ref()).await?;

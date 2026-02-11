@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 
-use crate::models::{SignalQuality, SignalQualityReport, TradeOutcome};
+use crate::models::{SignalQuality, SignalQualityReport};
 
 pub struct SignalAnalyzer {
     pool: SqlitePool,

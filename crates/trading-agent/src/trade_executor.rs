@@ -4,6 +4,8 @@ use alpaca_broker::{AlpacaClient, MarketOrderRequest};
 use anyhow::Result;
 use chrono::Utc;
 use risk_manager::RiskManager;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::*;
 use sqlx::SqlitePool;
 
 use crate::config::AgentConfig;
@@ -79,10 +81,14 @@ impl TradeExecutor {
         // 6. Position sizing
         let sizing = self
             .risk_manager
-            .calculate_position_size(signal.entry_price, cash, positions_value)
+            .calculate_position_size(
+                Decimal::from_f64(signal.entry_price).unwrap_or_default(),
+                cash,
+                positions_value,
+            )
             .await?;
 
-        let shares = sizing.recommended_shares.floor() as i32;
+        let shares = sizing.recommended_shares.floor().to_i32().unwrap_or(0);
         if shares < 1 {
             return Err(anyhow::anyhow!("Position size too small (0 shares)"));
         }
@@ -102,9 +108,9 @@ impl TradeExecutor {
 
         // 7. Submit order via Alpaca
         let order_request = if signal.action == "BUY" {
-            MarketOrderRequest::buy(&signal.symbol, shares as f64)
+            MarketOrderRequest::buy(&signal.symbol, Decimal::from(shares))
         } else {
-            MarketOrderRequest::sell(&signal.symbol, shares as f64)
+            MarketOrderRequest::sell(&signal.symbol, Decimal::from(shares))
         };
 
         let order = self.alpaca.submit_market_order(order_request).await?;
@@ -116,18 +122,24 @@ impl TradeExecutor {
 
         // 9. Register stop-loss with risk manager (for BUY orders)
         if signal.action == "BUY" {
+            let shares_dec = Decimal::from_f64(filled_qty as f64).unwrap_or(Decimal::ZERO);
+            let fill_price_dec = Decimal::from_f64(fill_price).unwrap_or(Decimal::ZERO);
+            let stop_loss_dec = Decimal::from_f64(signal.stop_loss).unwrap_or(Decimal::ZERO);
+            let take_profit_dec = Decimal::from_f64(signal.take_profit).unwrap_or(Decimal::ZERO);
+            let risk_amount_dec = (fill_price_dec - stop_loss_dec).abs() * shares_dec;
+
             let risk_position = risk_manager::ActiveRiskPosition {
                 id: None,
                 symbol: signal.symbol.clone(),
-                shares: filled_qty as f64,
-                entry_price: fill_price,
+                shares: shares_dec,
+                entry_price: fill_price_dec,
                 entry_date: Utc::now().format("%Y-%m-%d").to_string(),
-                stop_loss_price: Some(signal.stop_loss),
-                take_profit_price: Some(signal.take_profit),
+                stop_loss_price: Some(stop_loss_dec),
+                take_profit_price: Some(take_profit_dec),
                 trailing_stop_enabled: false,
                 trailing_stop_percent: None,
-                max_price_seen: Some(fill_price),
-                risk_amount: Some((fill_price - signal.stop_loss).abs() * filled_qty as f64),
+                max_price_seen: Some(fill_price_dec),
+                risk_amount: Some(risk_amount_dec),
                 position_size_percent: Some(sizing.position_size_percent),
                 status: "active".to_string(),
                 created_at: None,
@@ -271,6 +283,20 @@ impl TradeExecutor {
             .await
         {
             tracing::warn!("Failed to close risk position for {}: {}", action.symbol, e);
+        }
+
+        // Record trade outcome for circuit breaker tracking
+        if let Err(e) = self
+            .risk_manager
+            .record_trade_outcome(
+                &action.symbol,
+                Some(&order.id),
+                "sell",
+                action.pnl,
+            )
+            .await
+        {
+            tracing::warn!("Failed to record trade outcome for {}: {}", action.symbol, e);
         }
 
         // Log the closure to pending_trades

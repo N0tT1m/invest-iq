@@ -5,19 +5,21 @@ use axum::{
     Json, Router,
 };
 use alpaca_broker::MarketOrderRequest;
-use portfolio_manager::{Position, TradeInput};
-use risk_manager::ActiveRiskPosition;
+use portfolio_manager::TradeInput;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::*;
 use serde::Deserialize;
 
-use crate::{auth, ApiResponse, AppError, AppState};
+use crate::{audit, auth, ApiResponse, AppError, AppState};
 
 #[derive(Deserialize)]
 pub struct ExecuteTradeRequest {
     pub symbol: String,
     pub action: String, // "buy" or "sell"
-    pub shares: f64,
+    pub shares: Decimal,
     pub confidence: Option<f64>,
     pub notes: Option<String>,
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,43 +80,65 @@ async fn execute_trade(
     let symbol = req.symbol.to_uppercase();
     let is_buy = req.action.to_lowercase() == "buy";
 
+    // Get DB pool for audit logging, idempotency, and transactions
+    let pool = state.portfolio_manager.as_ref().map(|pm| pm.db().pool().clone());
+
+    // --- Idempotency check ---
+    if let (Some(ref idem_key), Some(ref pool)) = (&req.idempotency_key, &pool) {
+        let existing: Option<(String,)> = sqlx::query_as(
+            "SELECT response_json FROM trade_idempotency WHERE idempotency_key = ? AND expires_at > datetime('now')"
+        )
+        .bind(idem_key)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+
+        if let Some((response_json,)) = existing {
+            tracing::info!("Idempotency hit for key={}", idem_key);
+            if let Ok(cached_order) = serde_json::from_str::<alpaca_broker::Order>(&response_json) {
+                return Ok(Json(ApiResponse::success(cached_order)));
+            }
+        }
+    }
+
     // Pre-trade risk checks for buy orders
     if is_buy {
         if let Some(risk_manager) = state.risk_manager.as_ref() {
-            // Fetch account data from Alpaca
             let account = alpaca_client.get_account().await?;
             let portfolio_value = account.portfolio_value.parse::<f64>().unwrap_or(0.0);
             let cash = account.cash.parse::<f64>().unwrap_or(0.0);
             let buying_power = account.buying_power.parse::<f64>().unwrap_or(0.0);
 
-            // Get positions for count and total market value
             let positions = alpaca_client.get_positions().await.unwrap_or_default();
             let positions_count = positions.len() as i32;
             let positions_value: f64 = positions.iter()
                 .filter_map(|p| p.market_value.parse::<f64>().ok())
                 .sum();
 
-            // Check circuit breakers
             let daily_pl = account_daily_pl(alpaca_client).await;
             let cb_check = risk_manager.check_circuit_breakers(portfolio_value, daily_pl).await?;
             if !cb_check.can_trade {
+                if let Some(ref pool) = pool {
+                    audit::log_audit(pool, "circuit_breaker_triggered", Some(&symbol), Some(&req.action),
+                        Some(&cb_check.reason), "user", None).await;
+                }
                 return Err(anyhow::anyhow!("Circuit breaker: {}", cb_check.reason).into());
             }
 
-            // Check per-trade risk (skip confidence gate for paper trading)
             if !alpaca_client.is_paper() {
                 let confidence = req.confidence.unwrap_or(0.5);
                 let risk_check = risk_manager.check_trade_risk(
                     confidence, cash, positions_value, positions_count,
                 ).await?;
                 if !risk_check.can_trade {
+                    if let Some(ref pool) = pool {
+                        audit::log_audit(pool, "risk_check_failed", Some(&symbol), Some(&req.action),
+                            Some(&risk_check.reason), "user", None).await;
+                    }
                     return Err(anyhow::anyhow!("Risk check failed: {}", risk_check.reason).into());
                 }
             }
 
-            // Verify we have sufficient buying power
-            // (rough check — actual order might differ slightly)
-            // We don't have a live price here, so just check buying_power > 0
             if buying_power <= 0.0 {
                 return Err(anyhow::anyhow!("Insufficient buying power: ${:.2}", buying_power).into());
             }
@@ -135,95 +159,171 @@ async fn execute_trade(
 
     tracing::info!("Order submitted successfully: {} ({})", order.id, order.status);
 
-    // Auto-log the trade if trade logger is available
+    // Audit: order submitted
+    if let Some(ref pool) = pool {
+        let details = serde_json::json!({
+            "shares": req.shares.to_f64().unwrap_or(0.0),
+            "status": order.status,
+        }).to_string();
+        audit::log_audit(pool, "order_submitted", Some(&symbol), Some(&req.action),
+            Some(&details), "user", Some(&order.id)).await;
+    }
+
+    // --- Post-fill: log trade, register risk, update portfolio in a transaction ---
     if let Some(trade_logger) = state.trade_logger.as_ref() {
-        // Wait a moment for order to fill
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        // Get updated order status
         let filled_order = alpaca_client.get_order(&order.id).await.unwrap_or(order.clone());
 
-        // Get fill price (use average fill price if available)
-        let fill_price = if let Some(avg_price_str) = &filled_order.filled_avg_price {
+        let fill_price_f64 = if let Some(avg_price_str) = &filled_order.filled_avg_price {
             avg_price_str.parse::<f64>().unwrap_or(0.0)
         } else {
-            0.0 // Will be updated later when order fills
+            0.0
         };
 
-        if fill_price > 0.0 {
-            let trade = TradeInput {
-                symbol: symbol.clone(),
-                action: req.action.clone(),
-                shares: req.shares,
-                price: fill_price,
-                trade_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-                commission: Some(0.0), // Alpaca is commission-free
-                notes: req.notes.or(Some(format!("Auto-logged from Alpaca order {}", filled_order.id))),
-            };
+        if fill_price_f64 > 0.0 {
+            let fill_price = Decimal::from_f64(fill_price_f64).unwrap_or(Decimal::ZERO);
 
-            match trade_logger.log_trade(trade).await {
-                Ok(id) => tracing::info!("Trade auto-logged with ID: {}", id),
-                Err(e) => tracing::warn!("Failed to auto-log trade: {}", e),
-            }
+            // Use a DB transaction for all post-fill writes
+            if let Some(ref pool) = pool {
+                let mut tx = pool.begin().await.map_err(|e| anyhow::anyhow!("Transaction start failed: {}", e))?;
 
-            // Register with risk manager for stop-loss tracking
-            if req.action == "buy" {
-                if let Some(risk_manager) = state.risk_manager.as_ref() {
-                    let params = risk_manager.get_parameters().await.unwrap_or_default();
-                    let stop_loss_price = fill_price * (1.0 - params.default_stop_loss_percent / 100.0);
-                    let take_profit_price = fill_price * (1.0 + params.default_take_profit_percent / 100.0);
+                // 1. Log trade
+                let trade_result = sqlx::query(
+                    "INSERT INTO trades (symbol, action, shares, price, trade_date, commission, notes)
+                     VALUES (?, ?, ?, ?, ?, 0.0, ?)"
+                )
+                .bind(&symbol)
+                .bind(&req.action)
+                .bind(req.shares.to_f64().unwrap_or(0.0))
+                .bind(fill_price_f64)
+                .bind(chrono::Utc::now().format("%Y-%m-%d").to_string())
+                .bind(req.notes.as_deref().unwrap_or(&format!("Auto-logged from Alpaca order {}", filled_order.id)))
+                .execute(&mut *tx)
+                .await;
 
-                    let risk_position = ActiveRiskPosition {
-                        id: None,
-                        symbol: symbol.clone(),
-                        shares: req.shares,
-                        entry_price: fill_price,
-                        entry_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-                        stop_loss_price: Some(stop_loss_price),
-                        take_profit_price: Some(take_profit_price),
-                        trailing_stop_enabled: params.trailing_stop_enabled,
-                        trailing_stop_percent: if params.trailing_stop_enabled { Some(params.trailing_stop_percent) } else { None },
-                        max_price_seen: Some(fill_price),
-                        risk_amount: None,
-                        position_size_percent: None,
-                        status: "active".to_string(),
-                        created_at: None,
-                        closed_at: None,
-                    };
+                if let Err(e) = trade_result {
+                    tracing::warn!("Failed to log trade in tx: {}", e);
+                    let _ = tx.rollback().await;
+                } else {
+                    // 2. Register risk position for buys
+                    if is_buy {
+                        if let Some(risk_manager) = state.risk_manager.as_ref() {
+                            let params = risk_manager.get_parameters().await.unwrap_or_default();
+                            let stop_loss_price = fill_price_f64 * (1.0 - params.default_stop_loss_percent / 100.0);
+                            let take_profit_price = fill_price_f64 * (1.0 + params.default_take_profit_percent / 100.0);
 
-                    match risk_manager.add_active_position(&risk_position).await {
-                        Ok(id) => tracing::info!("Risk position registered (id: {}, SL: ${:.2}, TP: ${:.2})", id, stop_loss_price, take_profit_price),
-                        Err(e) => tracing::warn!("Failed to register risk position: {}", e),
+                            let _ = sqlx::query(
+                                "INSERT OR REPLACE INTO active_risk_positions
+                                 (symbol, shares, entry_price, entry_date, stop_loss_price, take_profit_price,
+                                  trailing_stop_enabled, trailing_stop_percent, max_price_seen, status)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')"
+                            )
+                            .bind(&symbol)
+                            .bind(req.shares.to_f64().unwrap_or(0.0))
+                            .bind(fill_price_f64)
+                            .bind(chrono::Utc::now().format("%Y-%m-%d").to_string())
+                            .bind(stop_loss_price)
+                            .bind(take_profit_price)
+                            .bind(params.trailing_stop_enabled)
+                            .bind(if params.trailing_stop_enabled { Some(params.trailing_stop_percent) } else { None })
+                            .bind(fill_price_f64)
+                            .execute(&mut *tx)
+                            .await;
+                        }
+                    }
+
+                    // 3. Update portfolio
+                    if is_buy {
+                        let _ = sqlx::query(
+                            "INSERT OR REPLACE INTO positions (symbol, shares, entry_price, entry_date, notes)
+                             VALUES (?, ?, ?, ?, 'Auto-added from Alpaca trade')"
+                        )
+                        .bind(&symbol)
+                        .bind(req.shares.to_f64().unwrap_or(0.0))
+                        .bind(fill_price_f64)
+                        .bind(chrono::Utc::now().format("%Y-%m-%d").to_string())
+                        .execute(&mut *tx)
+                        .await;
+                    } else {
+                        let _ = sqlx::query(
+                            "UPDATE positions SET shares = shares - ? WHERE symbol = ?"
+                        )
+                        .bind(req.shares.to_f64().unwrap_or(0.0))
+                        .bind(&symbol)
+                        .execute(&mut *tx)
+                        .await;
+
+                        // Remove position if shares <= 0
+                        let _ = sqlx::query(
+                            "DELETE FROM positions WHERE symbol = ? AND shares <= 0"
+                        )
+                        .bind(&symbol)
+                        .execute(&mut *tx)
+                        .await;
+                    }
+
+                    // 4. Audit log within transaction
+                    let details = serde_json::json!({
+                        "fill_price": fill_price_f64,
+                        "shares": req.shares.to_f64().unwrap_or(0.0),
+                        "order_status": filled_order.status,
+                    }).to_string();
+                    let _ = sqlx::query(
+                        "INSERT INTO audit_log (event_type, symbol, action, details, user_id, order_id)
+                         VALUES ('trade_executed', ?, ?, ?, 'user', ?)"
+                    )
+                    .bind(&symbol)
+                    .bind(&req.action)
+                    .bind(&details)
+                    .bind(&order.id)
+                    .execute(&mut *tx)
+                    .await;
+
+                    // Commit all writes atomically
+                    if let Err(e) = tx.commit().await {
+                        tracing::error!("Transaction commit failed: {}", e);
+                    } else {
+                        tracing::info!("Trade logged, risk registered, portfolio updated (tx committed)");
+                        // Increment trade counter metric
+                        state.metrics.trade_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
-            }
-
-            // Also update portfolio if it's a buy
-            if req.action == "buy" {
-                if let Some(portfolio_manager) = state.portfolio_manager.as_ref() {
-                    let position = Position {
-                        id: None,
-                        symbol: symbol.clone(),
-                        shares: req.shares,
-                        entry_price: fill_price,
-                        entry_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-                        notes: Some("Auto-added from Alpaca trade".to_string()),
-                        created_at: None,
-                    };
-
-                    match portfolio_manager.add_position(position).await {
-                        Ok(_) => tracing::info!("Portfolio updated with new position"),
-                        Err(e) => tracing::warn!("Failed to update portfolio: {}", e),
-                    }
-                }
-            } else if req.action == "sell" {
-                if let Some(portfolio_manager) = state.portfolio_manager.as_ref() {
-                    match portfolio_manager.remove_shares(&symbol, req.shares).await {
-                        Ok(_) => tracing::info!("Portfolio updated - shares removed"),
-                        Err(e) => tracing::warn!("Failed to update portfolio: {}", e),
-                    }
+            } else {
+                // Fallback: no pool, use trade_logger directly (no transaction)
+                let trade = TradeInput {
+                    symbol: symbol.clone(),
+                    action: req.action.clone(),
+                    shares: req.shares,
+                    price: fill_price,
+                    trade_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                    commission: Some(Decimal::ZERO),
+                    notes: req.notes.clone().or(Some(format!("Auto-logged from Alpaca order {}", filled_order.id))),
+                };
+                if trade_logger.log_trade(trade).await.is_ok() {
+                    // Increment trade counter metric
+                    state.metrics.trade_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+        }
+    }
+
+    // --- Store idempotency result ---
+    if let (Some(ref idem_key), Some(ref pool)) = (&req.idempotency_key, &pool) {
+        if let Ok(response_json) = serde_json::to_string(&order) {
+            let _ = sqlx::query(
+                "INSERT OR REPLACE INTO trade_idempotency (idempotency_key, order_id, symbol, action, shares, status, response_json, expires_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '+24 hours'))"
+            )
+            .bind(idem_key)
+            .bind(&order.id)
+            .bind(&symbol)
+            .bind(&req.action)
+            .bind(req.shares.to_f64().unwrap_or(0.0))
+            .bind(&order.status)
+            .bind(&response_json)
+            .execute(pool)
+            .await;
         }
     }
 
@@ -265,18 +365,23 @@ async fn close_broker_position(
         let filled_order = alpaca_client.get_order(&order.id).await.unwrap_or(order.clone());
 
         if let (Some(qty_str), Some(price_str)) = (&filled_order.filled_quantity, &filled_order.filled_avg_price) {
-            if let (Ok(qty), Ok(price)) = (qty_str.parse::<f64>(), price_str.parse::<f64>()) {
+            if let (Ok(qty_f64), Ok(price_f64)) = (qty_str.parse::<f64>(), price_str.parse::<f64>()) {
+                let qty = Decimal::from_f64(qty_f64).unwrap_or(Decimal::ZERO);
+                let price = Decimal::from_f64(price_f64).unwrap_or(Decimal::ZERO);
                 let trade = TradeInput {
                     symbol: symbol.clone(),
                     action: "sell".to_string(),
                     shares: qty,
                     price,
                     trade_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-                    commission: Some(0.0),
+                    commission: Some(Decimal::ZERO),
                     notes: req.notes.or(Some(format!("Closed position via Alpaca order {}", filled_order.id))),
                 };
 
-                let _ = trade_logger.log_trade(trade).await;
+                if trade_logger.log_trade(trade).await.is_ok() {
+                    // Increment trade counter metric
+                    state.metrics.trade_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
 

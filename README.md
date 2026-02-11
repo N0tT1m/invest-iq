@@ -107,6 +107,7 @@ python app.py
 | `LIVE_TRADING_APPROVED` | - | Set to `yes` to allow live (non-paper) trading |
 | `DISCORD_BOT_TOKEN` | - | Discord bot token |
 | `ALPHA_VANTAGE_API_KEY` | - | For validation features |
+| `FINNHUB_API_KEY` | - | Finnhub API key for supplemental news (free tier: 60 calls/min) |
 | `POLYGON_RATE_LIMIT` | `100` | Max Polygon requests per minute (free tier: set to 5) |
 | `ML_SIGNAL_MODELS_URL` | `http://localhost:8004` | Signal models service URL |
 | `REDIS_URL` | `redis://localhost:6379` | Redis cache (optional) |

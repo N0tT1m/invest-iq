@@ -21,6 +21,7 @@ use crate::{get_default_analysis, ApiResponse, AppError, AppState};
 #[derive(Deserialize)]
 pub struct CalibrateRequest {
     pub raw_confidence: f64,
+    #[allow(dead_code)]
     pub source: Option<String>,
 }
 
@@ -57,6 +58,7 @@ impl From<PredictionContextRequest> for PredictionContext {
 /// Query params for calibration stats
 #[derive(Deserialize)]
 pub struct StatsQuery {
+    #[allow(dead_code)]
     pub source: Option<String>,
 }
 

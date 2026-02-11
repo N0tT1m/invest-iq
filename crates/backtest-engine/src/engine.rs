@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
+use rust_decimal::prelude::*;
 
 use crate::models::*;
 
@@ -15,13 +16,13 @@ pub struct BacktestEngine {
 struct OpenPosition {
     symbol: String,
     entry_date: String,
-    entry_price: f64,
-    shares: f64,
-    stop_loss_price: Option<f64>,
-    take_profit_price: Option<f64>,
+    entry_price: Decimal,
+    shares: Decimal,
+    stop_loss_price: Option<Decimal>,
+    take_profit_price: Option<Decimal>,
     entry_signal: String,
-    entry_commission: f64,
-    entry_slippage: f64,
+    entry_commission: Decimal,
+    entry_slippage: Decimal,
 }
 
 impl BacktestEngine {
@@ -42,15 +43,15 @@ impl BacktestEngine {
         let mut positions: HashMap<String, OpenPosition> = HashMap::new();
         let mut trades: Vec<BacktestTrade> = Vec::new();
         let mut equity_curve: Vec<EquityPoint> = Vec::new();
-        let mut total_commission = 0.0;
-        let mut total_slippage = 0.0;
+        let mut total_commission = Decimal::ZERO;
+        let mut total_slippage = Decimal::ZERO;
         let mut peak_equity = self.config.initial_capital;
         let mut max_drawdown = 0.0;
         let mut total_bars: usize = 0;
         let mut exposed_bars: usize = 0;
 
         // Per-symbol P&L tracking
-        let mut symbol_pnl: HashMap<String, (f64, i32, i32)> = HashMap::new(); // (pnl, wins, total)
+        let mut symbol_pnl: HashMap<String, (Decimal, i32, i32)> = HashMap::new(); // (pnl, wins, total)
 
         // Build a unified timeline of all bars across all symbols
         let mut all_dates: Vec<String> = Vec::new();
@@ -119,7 +120,7 @@ impl BacktestEngine {
             }
 
             // 1. Check stop-loss / take-profit on open positions
-            let mut to_close: Vec<(String, f64, &str)> = Vec::new();
+            let mut to_close: Vec<(String, Decimal, &str)> = Vec::new();
             for (symbol, pos) in &positions {
                 if let Some(bars_map) = bars_by_symbol_date.get(symbol) {
                     if let Some(bar) = bars_map.get(date) {
@@ -170,18 +171,22 @@ impl BacktestEngine {
                             .get(&signal.symbol)
                             .copied()
                             .unwrap_or(self.config.position_size_percent / 100.0);
-                        let position_value = cash * weight;
+                        let weight_dec = Decimal::from_f64(weight).unwrap_or(Decimal::ZERO);
+                        let position_value = cash * weight_dec;
                         if position_value < signal.price {
                             continue;
                         }
 
                         let shares = (position_value / signal.price).floor();
-                        if shares < 1.0 {
+                        if shares < Decimal::ONE {
                             continue;
                         }
 
-                        let entry_commission = signal.price * shares * commission_rate;
-                        let entry_slippage = signal.price * shares * slippage_rate;
+                        let commission_dec = Decimal::from_f64(commission_rate).unwrap_or(Decimal::ZERO);
+                        let slippage_dec = Decimal::from_f64(slippage_rate).unwrap_or(Decimal::ZERO);
+
+                        let entry_commission = signal.price * shares * commission_dec;
+                        let entry_slippage = signal.price * shares * slippage_dec;
                         total_commission += entry_commission;
                         total_slippage += entry_slippage;
 
@@ -194,11 +199,11 @@ impl BacktestEngine {
                         let stop_loss_price = self
                             .config
                             .stop_loss_percent
-                            .map(|pct| signal.price * (1.0 - pct));
+                            .and_then(|pct| Decimal::from_f64(1.0 - pct).map(|d| signal.price * d));
                         let take_profit_price = self
                             .config
                             .take_profit_percent
-                            .map(|pct| signal.price * (1.0 + pct));
+                            .and_then(|pct| Decimal::from_f64(1.0 + pct).map(|d| signal.price * d));
 
                         let display_signal = Self::capitalize(&signal.signal_type);
 
@@ -243,7 +248,7 @@ impl BacktestEngine {
             }
 
             // 3. Mark-to-market
-            let mut positions_value = 0.0;
+            let mut positions_value = Decimal::ZERO;
             for (symbol, pos) in &positions {
                 if let Some(bars_map) = bars_by_symbol_date.get(symbol) {
                     if let Some(bar) = bars_map.get(date) {
@@ -258,8 +263,10 @@ impl BacktestEngine {
             if equity > peak_equity {
                 peak_equity = equity;
             }
-            let drawdown_pct = if peak_equity > 0.0 {
-                (peak_equity - equity) / peak_equity * 100.0
+            let peak_f64 = peak_equity.to_f64().unwrap_or(1.0);
+            let equity_f64 = equity.to_f64().unwrap_or(0.0);
+            let drawdown_pct = if peak_f64 > 0.0 {
+                (peak_f64 - equity_f64) / peak_f64 * 100.0
             } else {
                 0.0
             };
@@ -302,11 +309,12 @@ impl BacktestEngine {
         // 5. Compute aggregate metrics
         let final_capital = cash;
         let total_return = final_capital - self.config.initial_capital;
-        let total_return_percent =
-            (final_capital / self.config.initial_capital - 1.0) * 100.0;
+        let initial_f64 = self.config.initial_capital.to_f64().unwrap_or(1.0);
+        let final_f64 = final_capital.to_f64().unwrap_or(0.0);
+        let total_return_percent = (final_f64 / initial_f64 - 1.0) * 100.0;
 
         let total_trades = trades.len() as i32;
-        let winning_trades = trades.iter().filter(|t| t.profit_loss > 0.0).count() as i32;
+        let winning_trades = trades.iter().filter(|t| t.profit_loss > Decimal::ZERO).count() as i32;
         let losing_trades = total_trades - winning_trades;
         let win_rate = if total_trades > 0 {
             (winning_trades as f64 / total_trades as f64) * 100.0
@@ -314,14 +322,18 @@ impl BacktestEngine {
             0.0
         };
 
-        let gross_profits: f64 = trades.iter().filter(|t| t.profit_loss > 0.0).map(|t| t.profit_loss).sum();
-        let gross_losses: f64 = trades.iter().filter(|t| t.profit_loss < 0.0).map(|t| t.profit_loss.abs()).sum();
-        let profit_factor = if gross_losses > 0.0 {
-            Some(gross_profits / gross_losses)
-        } else if gross_profits > 0.0 {
-            Some(f64::INFINITY)
-        } else {
-            None
+        let gross_profits: Decimal = trades.iter().filter(|t| t.profit_loss > Decimal::ZERO).map(|t| t.profit_loss).sum();
+        let gross_losses: Decimal = trades.iter().filter(|t| t.profit_loss < Decimal::ZERO).map(|t| t.profit_loss.abs()).sum();
+        let profit_factor = {
+            let gp = gross_profits.to_f64().unwrap_or(0.0);
+            let gl = gross_losses.to_f64().unwrap_or(0.0);
+            if gl > 0.0 {
+                Some(gp / gl)
+            } else if gp > 0.0 {
+                Some(f64::INFINITY)
+            } else {
+                None
+            }
         };
 
         let (sharpe, sortino) = Self::compute_risk_ratios(&equity_curve);
@@ -331,10 +343,10 @@ impl BacktestEngine {
         } else {
             None
         };
-        let average_win = if winning_trades > 0 { Some(gross_profits / winning_trades as f64) } else { None };
-        let average_loss = if losing_trades > 0 { Some(gross_losses / losing_trades as f64) } else { None };
-        let largest_win = trades.iter().map(|t| t.profit_loss).filter(|p| *p > 0.0).fold(None, |a: Option<f64>, p| Some(a.map_or(p, |v| v.max(p))));
-        let largest_loss = trades.iter().map(|t| t.profit_loss).filter(|p| *p < 0.0).fold(None, |a: Option<f64>, p| Some(a.map_or(p, |v| v.min(p))));
+        let average_win = if winning_trades > 0 { Some(gross_profits / Decimal::from(winning_trades)) } else { None };
+        let average_loss = if losing_trades > 0 { Some(gross_losses / Decimal::from(losing_trades)) } else { None };
+        let largest_win = trades.iter().map(|t| t.profit_loss).filter(|p| *p > Decimal::ZERO).fold(None, |a: Option<Decimal>, p| Some(a.map_or(p, |v| v.max(p))));
+        let largest_loss = trades.iter().map(|t| t.profit_loss).filter(|p| *p < Decimal::ZERO).fold(None, |a: Option<Decimal>, p| Some(a.map_or(p, |v| v.min(p))));
         let (max_con_wins, max_con_losses) = Self::max_consecutive_streaks(&trades);
         let avg_holding = if !trades.is_empty() {
             Some(trades.iter().map(|t| t.holding_period_days).sum::<i64>() as f64 / trades.len() as f64)
@@ -406,17 +418,23 @@ impl BacktestEngine {
         pos: OpenPosition,
         symbol: &str,
         date: &str,
-        exit_price: f64,
+        exit_price: Decimal,
         commission_rate: f64,
         slippage_rate: f64,
         reason: &str,
-    ) -> (BacktestTrade, f64, f64) {
-        let exit_commission = exit_price * pos.shares * commission_rate;
-        let exit_slippage = exit_price * pos.shares * slippage_rate;
+    ) -> (BacktestTrade, Decimal, Decimal) {
+        let commission_dec = Decimal::from_f64(commission_rate).unwrap_or(Decimal::ZERO);
+        let slippage_dec = Decimal::from_f64(slippage_rate).unwrap_or(Decimal::ZERO);
+
+        let exit_commission = exit_price * pos.shares * commission_dec;
+        let exit_slippage = exit_price * pos.shares * slippage_dec;
         let gross_pnl = (exit_price - pos.entry_price) * pos.shares;
         let total_costs = pos.entry_commission + pos.entry_slippage + exit_commission + exit_slippage;
         let net_pnl = gross_pnl - total_costs;
-        let return_pct = (exit_price / pos.entry_price - 1.0) * 100.0;
+
+        let entry_f64 = pos.entry_price.to_f64().unwrap_or(1.0);
+        let exit_f64 = exit_price.to_f64().unwrap_or(0.0);
+        let return_pct = (exit_f64 / entry_f64 - 1.0) * 100.0;
         let holding_days = Self::date_diff(&pos.entry_date, date);
 
         let trade = BacktestTrade {
@@ -440,12 +458,12 @@ impl BacktestEngine {
     }
 
     fn record_symbol_pnl(
-        map: &mut HashMap<String, (f64, i32, i32)>,
+        map: &mut HashMap<String, (Decimal, i32, i32)>,
         trade: &BacktestTrade,
     ) {
-        let entry = map.entry(trade.symbol.clone()).or_insert((0.0, 0, 0));
+        let entry = map.entry(trade.symbol.clone()).or_insert((Decimal::ZERO, 0, 0));
         entry.0 += trade.profit_loss;
-        if trade.profit_loss > 0.0 {
+        if trade.profit_loss > Decimal::ZERO {
             entry.1 += 1;
         }
         entry.2 += 1;
@@ -515,7 +533,9 @@ impl BacktestEngine {
             if equity > bh_peak {
                 bh_peak = equity;
             }
-            let dd = if bh_peak > 0.0 { (bh_peak - equity) / bh_peak * 100.0 } else { 0.0 };
+            let peak_f64 = bh_peak.to_f64().unwrap_or(1.0);
+            let equity_f64 = equity.to_f64().unwrap_or(0.0);
+            let dd = if peak_f64 > 0.0 { (peak_f64 - equity_f64) / peak_f64 * 100.0 } else { 0.0 };
             bh_curve.push(EquityPoint {
                 timestamp: date.clone(),
                 equity,
@@ -524,11 +544,12 @@ impl BacktestEngine {
         }
 
         let bh_final = bh_curve.last().map(|p| p.equity).unwrap_or(self.config.initial_capital);
-        let buy_hold_return_percent = (bh_final / self.config.initial_capital - 1.0) * 100.0;
-        let strategy_return = (strategy_equity.last().map(|p| p.equity).unwrap_or(self.config.initial_capital)
-            / self.config.initial_capital
-            - 1.0)
-            * 100.0;
+        let initial_f64 = self.config.initial_capital.to_f64().unwrap_or(1.0);
+        let bh_final_f64 = bh_final.to_f64().unwrap_or(0.0);
+        let buy_hold_return_percent = (bh_final_f64 / initial_f64 - 1.0) * 100.0;
+        let strategy_final = strategy_equity.last().map(|p| p.equity).unwrap_or(self.config.initial_capital);
+        let strategy_final_f64 = strategy_final.to_f64().unwrap_or(0.0);
+        let strategy_return = (strategy_final_f64 / initial_f64 - 1.0) * 100.0;
         let alpha = strategy_return - buy_hold_return_percent;
 
         // SPY benchmark (if benchmark_bars provided)
@@ -582,7 +603,9 @@ impl BacktestEngine {
             if equity > spy_peak {
                 spy_peak = equity;
             }
-            let dd = if spy_peak > 0.0 { (spy_peak - equity) / spy_peak * 100.0 } else { 0.0 };
+            let peak_f64 = spy_peak.to_f64().unwrap_or(1.0);
+            let equity_f64 = equity.to_f64().unwrap_or(0.0);
+            let dd = if peak_f64 > 0.0 { (peak_f64 - equity_f64) / peak_f64 * 100.0 } else { 0.0 };
             spy_curve.push(EquityPoint {
                 timestamp: date.clone(),
                 equity,
@@ -591,11 +614,12 @@ impl BacktestEngine {
         }
 
         let spy_final = spy_curve.last().map(|p| p.equity).unwrap_or(self.config.initial_capital);
-        let spy_return = (spy_final / self.config.initial_capital - 1.0) * 100.0;
-        let strategy_return = (strategy_equity.last().map(|p| p.equity).unwrap_or(self.config.initial_capital)
-            / self.config.initial_capital
-            - 1.0)
-            * 100.0;
+        let initial_f64 = self.config.initial_capital.to_f64().unwrap_or(1.0);
+        let spy_final_f64 = spy_final.to_f64().unwrap_or(0.0);
+        let spy_return = (spy_final_f64 / initial_f64 - 1.0) * 100.0;
+        let strategy_final = strategy_equity.last().map(|p| p.equity).unwrap_or(self.config.initial_capital);
+        let strategy_final_f64 = strategy_final.to_f64().unwrap_or(0.0);
+        let strategy_return = (strategy_final_f64 / initial_f64 - 1.0) * 100.0;
         let spy_alpha = strategy_return - spy_return;
 
         // Information ratio: alpha / tracking error (std dev of daily return differences)
@@ -604,8 +628,12 @@ impl BacktestEngine {
                 .windows(2)
                 .zip(spy_curve.windows(2))
                 .map(|(s, b)| {
-                    let s_ret = (s[1].equity / s[0].equity) - 1.0;
-                    let b_ret = (b[1].equity / b[0].equity) - 1.0;
+                    let s0 = s[0].equity.to_f64().unwrap_or(1.0);
+                    let s1 = s[1].equity.to_f64().unwrap_or(1.0);
+                    let b0 = b[0].equity.to_f64().unwrap_or(1.0);
+                    let b1 = b[1].equity.to_f64().unwrap_or(1.0);
+                    let s_ret = (s1 / s0) - 1.0;
+                    let b_ret = (b1 / b0) - 1.0;
                     s_ret - b_ret
                 })
                 .collect();
@@ -632,23 +660,26 @@ impl BacktestEngine {
 
     fn compute_per_symbol_results(
         &self,
-        symbol_pnl: &HashMap<String, (f64, i32, i32)>,
+        symbol_pnl: &HashMap<String, (Decimal, i32, i32)>,
         weights: &HashMap<String, f64>,
     ) -> Vec<SymbolResult> {
         self.config
             .symbols
             .iter()
             .map(|sym| {
-                let (pnl, wins, total) = symbol_pnl.get(sym).copied().unwrap_or((0.0, 0, 0));
+                let (pnl, wins, total) = symbol_pnl.get(sym).copied().unwrap_or((Decimal::ZERO, 0, 0));
                 let w = weights.get(sym).copied().unwrap_or(0.0);
-                let invested = self.config.initial_capital * w;
+                let w_dec = Decimal::from_f64(w).unwrap_or(Decimal::ZERO);
+                let invested = self.config.initial_capital * w_dec;
+                let invested_f64 = invested.to_f64().unwrap_or(1.0);
+                let pnl_f64 = pnl.to_f64().unwrap_or(0.0);
                 SymbolResult {
                     symbol: sym.clone(),
                     total_trades: total,
                     winning_trades: wins,
                     win_rate: if total > 0 { (wins as f64 / total as f64) * 100.0 } else { 0.0 },
                     total_return: pnl,
-                    total_return_percent: if invested > 0.0 { (pnl / invested) * 100.0 } else { 0.0 },
+                    total_return_percent: if invested_f64 > 0.0 { (pnl_f64 / invested_f64) * 100.0 } else { 0.0 },
                     weight: w,
                 }
             })
@@ -663,7 +694,11 @@ impl BacktestEngine {
         }
         let returns: Vec<f64> = equity_curve
             .windows(2)
-            .map(|w| (w[1].equity / w[0].equity) - 1.0)
+            .map(|w| {
+                let e0 = w[0].equity.to_f64().unwrap_or(1.0);
+                let e1 = w[1].equity.to_f64().unwrap_or(1.0);
+                (e1 / e0) - 1.0
+            })
             .collect();
         if returns.is_empty() {
             return (None, None);
@@ -705,11 +740,11 @@ impl BacktestEngine {
         let mut w = 0;
         let mut l = 0;
         for t in trades {
-            if t.profit_loss > 0.0 {
+            if t.profit_loss > Decimal::ZERO {
                 w += 1;
                 l = 0;
                 max_w = max_w.max(w);
-            } else if t.profit_loss < 0.0 {
+            } else if t.profit_loss < Decimal::ZERO {
                 l += 1;
                 w = 0;
                 max_l = max_l.max(l);

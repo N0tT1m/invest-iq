@@ -77,7 +77,7 @@ class AlphaDecayComponent:
     @staticmethod
     def create_portfolio_health_card(data: Dict) -> dbc.Card:
         """Create overview card for portfolio-wide strategy health"""
-        if not data:
+        if not data or not data.get("strategies"):
             return dbc.Card(
                 dbc.CardBody(
                     [

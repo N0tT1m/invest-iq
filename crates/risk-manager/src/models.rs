@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct RiskParameters {
@@ -69,31 +71,73 @@ impl Default for RiskParameters {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PositionSizeCalculation {
-    pub recommended_shares: f64,
-    pub position_value: f64,
-    pub risk_amount: f64,
-    pub stop_loss_price: f64,
-    pub take_profit_price: f64,
+    pub recommended_shares: Decimal,
+    pub position_value: Decimal,
+    pub risk_amount: Decimal,
+    pub stop_loss_price: Decimal,
+    pub take_profit_price: Decimal,
     pub position_size_percent: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveRiskPosition {
     pub id: Option<i64>,
     pub symbol: String,
-    pub shares: f64,
-    pub entry_price: f64,
+    pub shares: Decimal,
+    pub entry_price: Decimal,
     pub entry_date: String,
-    pub stop_loss_price: Option<f64>,
-    pub take_profit_price: Option<f64>,
+    pub stop_loss_price: Option<Decimal>,
+    pub take_profit_price: Option<Decimal>,
     pub trailing_stop_enabled: bool,
     pub trailing_stop_percent: Option<f64>,
-    pub max_price_seen: Option<f64>,
-    pub risk_amount: Option<f64>,
+    pub max_price_seen: Option<Decimal>,
+    pub risk_amount: Option<Decimal>,
     pub position_size_percent: Option<f64>,
     pub status: String,
     pub created_at: Option<String>,
     pub closed_at: Option<String>,
+}
+
+// Helper struct for reading from DB (f64 values)
+#[derive(sqlx::FromRow)]
+pub(crate) struct ActiveRiskPositionRow {
+    id: Option<i64>,
+    symbol: String,
+    shares: f64,
+    entry_price: f64,
+    entry_date: String,
+    stop_loss_price: Option<f64>,
+    take_profit_price: Option<f64>,
+    trailing_stop_enabled: bool,
+    trailing_stop_percent: Option<f64>,
+    max_price_seen: Option<f64>,
+    risk_amount: Option<f64>,
+    position_size_percent: Option<f64>,
+    status: String,
+    created_at: Option<String>,
+    closed_at: Option<String>,
+}
+
+impl From<ActiveRiskPositionRow> for ActiveRiskPosition {
+    fn from(row: ActiveRiskPositionRow) -> Self {
+        Self {
+            id: row.id,
+            symbol: row.symbol,
+            shares: Decimal::from_f64(row.shares).unwrap_or_default(),
+            entry_price: Decimal::from_f64(row.entry_price).unwrap_or_default(),
+            entry_date: row.entry_date,
+            stop_loss_price: row.stop_loss_price.and_then(|v| Decimal::from_f64(v)),
+            take_profit_price: row.take_profit_price.and_then(|v| Decimal::from_f64(v)),
+            trailing_stop_enabled: row.trailing_stop_enabled,
+            trailing_stop_percent: row.trailing_stop_percent,
+            max_price_seen: row.max_price_seen.and_then(|v| Decimal::from_f64(v)),
+            risk_amount: row.risk_amount.and_then(|v| Decimal::from_f64(v)),
+            position_size_percent: row.position_size_percent,
+            status: row.status,
+            created_at: row.created_at,
+            closed_at: row.closed_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,9 +162,9 @@ pub struct CircuitBreakerCheck {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StopLossAlert {
     pub symbol: String,
-    pub current_price: f64,
-    pub stop_loss_price: f64,
+    pub current_price: Decimal,
+    pub stop_loss_price: Decimal,
     pub should_exit: bool,
-    pub loss_amount: f64,
+    pub loss_amount: Decimal,
     pub loss_percent: f64,
 }

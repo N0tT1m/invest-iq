@@ -234,7 +234,30 @@ async fn run_trading_cycle(
 
     tracing::info!("{} signals passed confidence/win-rate filter", filtered.len());
 
-    // 5. For each signal, run through ML gate then execute
+    // 5. Check if market is open for trading
+    let market_open = scanner.is_market_open();
+    if !market_open {
+        if !filtered.is_empty() {
+            tracing::info!(
+                "Market closed: {} signals identified but trade execution skipped",
+                filtered.len()
+            );
+            // Log signals for analysis
+            for sr in &filtered {
+                tracing::info!(
+                    "  Signal (analysis-only): {} {} @ ${:.2} (confidence: {:.1}%, win rate: {:.1}%)",
+                    sr.signal.action,
+                    sr.signal.symbol,
+                    sr.signal.entry_price,
+                    sr.signal.confidence * 100.0,
+                    sr.signal.historical_win_rate.unwrap_or(0.0) * 100.0
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    // 6. For each signal, run through ML gate then execute
     for sr in filtered {
         tracing::info!(
             "Evaluating: {} {} (confidence: {:.1}%)",

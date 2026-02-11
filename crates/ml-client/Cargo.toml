@@ -27,3 +27,6 @@ tracing = "0.1"
 
 # Config
 dotenvy = "0.15"
+
+# Data structures
+dashmap.workspace = true

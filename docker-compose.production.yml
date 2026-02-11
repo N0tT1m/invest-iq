@@ -1,0 +1,31 @@
+# Usage: docker compose -f docker-compose.yml -f docker-compose.production.yml up
+services:
+  traefik:
+    image: traefik:v3.0
+    container_name: investiq-traefik
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring/traefik.yml:/etc/traefik/traefik.yml:ro
+      - traefik_certs:/letsencrypt
+    networks:
+      - investiq-network
+    restart: unless-stopped
+
+  api-server:
+    ports: !override []
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.api.loadbalancer.server.port=3000"
+    environment:
+      - REQUIRE_AUTH=true
+      - RUST_LOG_FORMAT=json
+      - ALLOWED_ORIGINS=https://${DOMAIN:-localhost}
+
+volumes:
+  traefik_certs:

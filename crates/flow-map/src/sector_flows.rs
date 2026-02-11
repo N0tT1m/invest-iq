@@ -167,7 +167,7 @@ impl FlowMapData {
 
     fn detect_dominant_rotation(
         sectors: &[SectorNode],
-        flows: &[SectorFlow],
+        _flows: &[SectorFlow],
     ) -> Option<String> {
         // Look for patterns
         let tech_inflow = sectors.iter().any(|s| s.name == "Technology" && s.net_flow > 2.0);

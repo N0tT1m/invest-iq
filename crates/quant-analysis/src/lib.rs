@@ -20,6 +20,7 @@ impl QuantAnalysisEngine {
     }
 
     /// Calculate Sharpe Ratio (annualized)
+    #[allow(dead_code)]
     fn calculate_sharpe_ratio(&self, returns: &[f64], risk_free_rate: f64) -> f64 {
         if returns.is_empty() {
             return 0.0;

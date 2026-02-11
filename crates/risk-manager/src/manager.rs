@@ -1,5 +1,7 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
+use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 
 use crate::models::*;
 
@@ -72,42 +74,49 @@ impl RiskManager {
     /// Calculate position size based on risk parameters
     pub async fn calculate_position_size(
         &self,
-        entry_price: f64,
+        entry_price: Decimal,
         account_balance: f64,
         current_positions_value: f64,
     ) -> Result<PositionSizeCalculation> {
         let params = self.get_parameters().await?;
 
         // Calculate risk amount per trade
-        let risk_amount = account_balance * (params.max_risk_per_trade_percent / 100.0);
+        let risk_amount_f64 = account_balance * (params.max_risk_per_trade_percent / 100.0);
+        let risk_amount = Decimal::from_f64(risk_amount_f64).unwrap_or_default();
 
         // Calculate stop loss and take profit prices
-        let stop_loss_price = entry_price * (1.0 - params.default_stop_loss_percent / 100.0);
-        let take_profit_price = entry_price * (1.0 + params.default_take_profit_percent / 100.0);
+        let stop_loss_multiplier = Decimal::from_f64(1.0 - params.default_stop_loss_percent / 100.0).unwrap_or(Decimal::ONE);
+        let take_profit_multiplier = Decimal::from_f64(1.0 + params.default_take_profit_percent / 100.0).unwrap_or(Decimal::ONE);
+
+        let stop_loss_price = entry_price * stop_loss_multiplier;
+        let take_profit_price = entry_price * take_profit_multiplier;
 
         // Calculate position size based on stop loss distance
         let risk_per_share = entry_price - stop_loss_price;
-        let shares = if risk_per_share > 0.0 {
+        let shares = if risk_per_share > Decimal::ZERO {
             (risk_amount / risk_per_share).floor()
         } else {
-            0.0
+            Decimal::ZERO
         };
 
         let position_value = shares * entry_price;
 
         // Check if position exceeds max position size
         let total_portfolio_value = account_balance + current_positions_value;
-        let position_size_percent = (position_value / total_portfolio_value) * 100.0;
+        let position_value_f64 = position_value.to_f64().unwrap_or(0.0);
+        let position_size_percent = (position_value_f64 / total_portfolio_value) * 100.0;
 
         let adjusted_shares = if position_size_percent > params.max_position_size_percent {
             let max_position_value = total_portfolio_value * (params.max_position_size_percent / 100.0);
-            (max_position_value / entry_price).floor()
+            let max_position_value_dec = Decimal::from_f64(max_position_value).unwrap_or_default();
+            (max_position_value_dec / entry_price).floor()
         } else {
             shares
         };
 
         let final_position_value = adjusted_shares * entry_price;
-        let final_position_size_percent = (final_position_value / total_portfolio_value) * 100.0;
+        let final_position_value_f64 = final_position_value.to_f64().unwrap_or(0.0);
+        let final_position_size_percent = (final_position_value_f64 / total_portfolio_value) * 100.0;
 
         Ok(PositionSizeCalculation {
             recommended_shares: adjusted_shares,
@@ -194,7 +203,7 @@ impl RiskManager {
     pub async fn add_active_position(&self, position: &ActiveRiskPosition) -> Result<i64> {
         let trailing_stop_enabled = if position.trailing_stop_enabled { 1 } else { 0 };
 
-        let result = sqlx::query(
+        let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO active_risk_positions (
                 symbol, shares, entry_price, entry_date,
@@ -202,29 +211,32 @@ impl RiskManager {
                 trailing_stop_percent, max_price_seen, risk_amount,
                 position_size_percent, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             "#
         )
         .bind(&position.symbol)
-        .bind(position.shares)
-        .bind(position.entry_price)
+        .bind(position.shares.to_f64().unwrap_or(0.0))
+        .bind(position.entry_price.to_f64().unwrap_or(0.0))
         .bind(&position.entry_date)
-        .bind(position.stop_loss_price)
-        .bind(position.take_profit_price)
+        .bind(position.stop_loss_price.map(|d| d.to_f64().unwrap_or(0.0)))
+        .bind(position.take_profit_price.map(|d| d.to_f64().unwrap_or(0.0)))
         .bind(trailing_stop_enabled)
         .bind(position.trailing_stop_percent)
-        .bind(position.max_price_seen)
-        .bind(position.risk_amount)
+        .bind(position.max_price_seen.map(|d| d.to_f64().unwrap_or(0.0)))
+        .bind(position.risk_amount.map(|d| d.to_f64().unwrap_or(0.0)))
         .bind(position.position_size_percent)
         .bind(&position.status)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Get active risk positions
     pub async fn get_active_positions(&self) -> Result<Vec<ActiveRiskPosition>> {
-        let positions: Vec<ActiveRiskPosition> = sqlx::query_as(
+        use crate::models::ActiveRiskPositionRow;
+
+        let rows: Vec<ActiveRiskPositionRow> = sqlx::query_as(
             r#"
             SELECT
                 id, symbol, shares, entry_price, entry_date,
@@ -240,12 +252,14 @@ impl RiskManager {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(positions)
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Update trailing stop
-    pub async fn update_trailing_stop(&self, symbol: &str, current_price: f64) -> Result<()> {
-        let position: Option<ActiveRiskPosition> = sqlx::query_as(
+    pub async fn update_trailing_stop(&self, symbol: &str, current_price: Decimal) -> Result<()> {
+        use crate::models::ActiveRiskPositionRow;
+
+        let row: Option<ActiveRiskPositionRow> = sqlx::query_as(
             r#"
             SELECT
                 id, symbol, shares, entry_price, entry_date,
@@ -261,21 +275,24 @@ impl RiskManager {
         .fetch_optional(&self.pool)
         .await?;
 
-        if let Some(mut pos) = position {
+        if let Some(row) = row {
+            let pos: ActiveRiskPosition = row.into();
+
             if pos.trailing_stop_enabled {
                 let max_price = pos.max_price_seen.unwrap_or(pos.entry_price).max(current_price);
 
                 if let Some(trailing_pct) = pos.trailing_stop_percent {
-                    let new_stop = max_price * (1.0 - trailing_pct / 100.0);
+                    let trailing_multiplier = Decimal::from_f64(1.0 - trailing_pct / 100.0).unwrap_or(Decimal::ONE);
+                    let new_stop = max_price * trailing_multiplier;
 
                     // Only update if new stop is higher than current stop
-                    let current_stop = pos.stop_loss_price.unwrap_or(0.0);
+                    let current_stop = pos.stop_loss_price.unwrap_or(Decimal::ZERO);
                     if new_stop > current_stop {
                         sqlx::query(
                             "UPDATE active_risk_positions SET stop_loss_price = ?, max_price_seen = ? WHERE id = ?"
                         )
-                        .bind(new_stop)
-                        .bind(max_price)
+                        .bind(new_stop.to_f64().unwrap_or(0.0))
+                        .bind(max_price.to_f64().unwrap_or(0.0))
                         .bind(pos.id)
                         .execute(&self.pool)
                         .await?;
@@ -293,7 +310,7 @@ impl RiskManager {
     }
 
     /// Check stop losses for all active positions
-    pub async fn check_stop_losses(&self, current_prices: Vec<(String, f64)>) -> Result<Vec<StopLossAlert>> {
+    pub async fn check_stop_losses(&self, current_prices: Vec<(String, Decimal)>) -> Result<Vec<StopLossAlert>> {
         let mut alerts = Vec::new();
 
         for (symbol, current_price) in current_prices {
@@ -305,8 +322,10 @@ impl RiskManager {
         Ok(alerts)
     }
 
-    async fn check_position_stop_loss(&self, symbol: &str, current_price: f64) -> Result<Option<StopLossAlert>> {
-        let position: Option<ActiveRiskPosition> = sqlx::query_as(
+    async fn check_position_stop_loss(&self, symbol: &str, current_price: Decimal) -> Result<Option<StopLossAlert>> {
+        use crate::models::ActiveRiskPositionRow;
+
+        let row: Option<ActiveRiskPositionRow> = sqlx::query_as(
             r#"
             SELECT
                 id, symbol, shares, entry_price, entry_date,
@@ -322,11 +341,14 @@ impl RiskManager {
         .fetch_optional(&self.pool)
         .await?;
 
-        if let Some(pos) = position {
+        if let Some(row) = row {
+            let pos: ActiveRiskPosition = row.into();
+
             if let Some(stop_loss_price) = pos.stop_loss_price {
                 if current_price <= stop_loss_price {
                     let loss_amount = (pos.entry_price - current_price) * pos.shares;
-                    let loss_percent = ((current_price - pos.entry_price) / pos.entry_price) * 100.0;
+                    let loss_percent_dec = ((current_price - pos.entry_price) / pos.entry_price) * Decimal::from(100);
+                    let loss_percent = loss_percent_dec.to_f64().unwrap_or(0.0);
 
                     return Ok(Some(StopLossAlert {
                         symbol: symbol.to_string(),
@@ -345,35 +367,7 @@ impl RiskManager {
 
     /// Initialize circuit breaker tables (called on startup)
     pub async fn init_circuit_breaker_tables(&self) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS portfolio_peak (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                peak_value REAL NOT NULL,
-                peak_date TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            "#
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // Migrate: add circuit breaker columns to risk_parameters if missing
-        for (col, col_type) in &[
-            ("daily_loss_limit_percent", "REAL NOT NULL DEFAULT 5.0"),
-            ("max_consecutive_losses", "INTEGER NOT NULL DEFAULT 3"),
-            ("account_drawdown_limit_percent", "REAL NOT NULL DEFAULT 10.0"),
-            ("trading_halted", "INTEGER NOT NULL DEFAULT 0"),
-            ("halt_reason", "TEXT"),
-            ("halted_at", "TEXT"),
-        ] {
-            let sql = format!(
-                "ALTER TABLE risk_parameters ADD COLUMN {} {}",
-                col, col_type
-            );
-            // Ignore "duplicate column" errors — column already exists
-            let _ = sqlx::query(&sql).execute(&self.pool).await;
-        }
-
+        // Tables and columns are now created by sqlx migrations.
         Ok(())
     }
 
@@ -448,27 +442,18 @@ impl RiskManager {
         })
     }
 
-    /// Count recent consecutive losing trades
+    /// Count recent consecutive losing trades from trade_outcomes table
     pub async fn get_consecutive_losses(&self) -> Result<i32> {
-        // Look at recent trades in reverse chronological order, count consecutive losses
-        let rows: Vec<(f64,)> = sqlx::query_as(
-            r#"
-            SELECT COALESCE(
-                (shares * (
-                    CASE WHEN action = 'sell' THEN price ELSE -price END
-                )), 0.0) as pnl
-            FROM trades
-            ORDER BY id DESC
-            LIMIT 20
-            "#
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT outcome FROM trade_outcomes ORDER BY id DESC LIMIT 20"
         )
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();
 
         let mut consecutive = 0i32;
-        for (pnl,) in rows {
-            if pnl < 0.0 {
+        for (outcome,) in rows {
+            if outcome == "loss" {
                 consecutive += 1;
             } else {
                 break;
@@ -476,6 +461,37 @@ impl RiskManager {
         }
 
         Ok(consecutive)
+    }
+
+    /// Record the outcome of a completed trade for circuit breaker tracking
+    pub async fn record_trade_outcome(
+        &self,
+        symbol: &str,
+        order_id: Option<&str>,
+        action: &str,
+        pnl: f64,
+    ) -> Result<()> {
+        let outcome = if pnl > 0.01 {
+            "win"
+        } else if pnl < -0.01 {
+            "loss"
+        } else {
+            "breakeven"
+        };
+
+        sqlx::query(
+            "INSERT INTO trade_outcomes (symbol, order_id, action, outcome, pnl)
+             VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(symbol)
+        .bind(order_id)
+        .bind(action)
+        .bind(outcome)
+        .bind(pnl)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
     /// Check drawdown from portfolio peak, updating peak if new high

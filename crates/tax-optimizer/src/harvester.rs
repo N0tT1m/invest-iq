@@ -3,7 +3,7 @@
 //! Finds opportunities to realize losses for tax purposes.
 
 use crate::substitutes::SubstituteSecurity;
-use crate::tax_calculator::{GainType, TaxCalculator, TaxLot, TaxRules};
+use crate::tax_calculator::{GainType, TaxCalculator, TaxLot};
 use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 

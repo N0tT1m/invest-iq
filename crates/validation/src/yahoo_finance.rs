@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 const BASE_URL: &str = "https://query2.finance.yahoo.com/v8/finance";
 const CHART_URL: &str = "https://query2.finance.yahoo.com/v8/finance/chart";

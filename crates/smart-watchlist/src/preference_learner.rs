@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, Row, SqlitePool};
+use sqlx::{FromRow, SqlitePool};
 use std::collections::HashMap;
 
 use crate::models::{InteractionType, SymbolInteraction, UserPreference};
@@ -45,20 +45,21 @@ impl PreferenceLearner {
     pub async fn record_interaction(&self, interaction: &SymbolInteraction) -> Result<i64> {
         let action_str = interaction.action.as_str();
 
-        let result = sqlx::query(
+        let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO symbol_interactions (user_id, symbol, action, created_at)
             VALUES (?, ?, ?, ?)
+            RETURNING id
             "#,
         )
         .bind(&interaction.user_id)
         .bind(&interaction.symbol)
         .bind(action_str)
         .bind(interaction.created_at)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Get user preferences

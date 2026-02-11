@@ -1,0 +1,48 @@
+groups:
+  - name: investiq
+    rules:
+      - alert: HighErrorRate
+        expr: rate(investiq_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }} errors/sec over the last 5 minutes."
+
+      - alert: HighLatency
+        expr: |
+          (investiq_request_duration_milliseconds_bucket{le="1000"} / investiq_request_duration_milliseconds_count) < 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency (p95 > 1s)"
+          description: "More than 5% of requests taking over 1 second."
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: CircuitBreakerTripped
+        expr: investiq_trading_halted > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Trading circuit breaker tripped"
+          description: "Trading has been halted by circuit breaker."
+
+      - alert: MLServiceDown
+        expr: up{job="signal-models"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ML Signal Models service is down"
+          description: "Signal models service unreachable for 5+ minutes. Predictions will use fallback."

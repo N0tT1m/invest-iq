@@ -1,6 +1,8 @@
 use crate::models::*;
 use crate::db::PortfolioDb;
 use anyhow::Result;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::*;
 
 pub struct TradeLogger {
     db: PortfolioDb,
@@ -13,23 +15,24 @@ impl TradeLogger {
 
     /// Log a new trade
     pub async fn log_trade(&self, trade: TradeInput) -> Result<i64> {
-        let result = sqlx::query(
+        let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO trades (symbol, action, shares, price, trade_date, commission, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             "#
         )
         .bind(&trade.symbol)
         .bind(&trade.action)
-        .bind(trade.shares)
-        .bind(trade.price)
+        .bind(trade.shares.to_f64().unwrap_or(0.0))
+        .bind(trade.price.to_f64().unwrap_or(0.0))
         .bind(&trade.trade_date)
-        .bind(trade.commission.unwrap_or(0.0))
+        .bind(trade.commission.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0))
         .bind(&trade.notes)
-        .execute(self.db.pool())
+        .fetch_one(self.db.pool())
         .await?;
 
-        Ok(result.last_insert_rowid())
+        Ok(id)
     }
 
     /// Get all trades for a symbol
@@ -87,10 +90,10 @@ impl TradeLogger {
         )
         .bind(&trade.symbol)
         .bind(&trade.action)
-        .bind(trade.shares)
-        .bind(trade.price)
+        .bind(trade.shares.to_f64().unwrap_or(0.0))
+        .bind(trade.price.to_f64().unwrap_or(0.0))
         .bind(&trade.trade_date)
-        .bind(trade.commission.unwrap_or(0.0))
+        .bind(trade.commission.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0))
         .bind(&trade.notes)
         .bind(id)
         .execute(self.db.pool())
@@ -123,8 +126,8 @@ impl TradeLogger {
         };
 
         // Calculate P&L for each trade by matching buys with sells
-        let mut trade_pnl: Vec<(Trade, f64)> = Vec::new();
-        let mut position_map: std::collections::HashMap<String, Vec<(f64, f64)>> = std::collections::HashMap::new();
+        let mut trade_pnl: Vec<(Trade, Decimal)> = Vec::new();
+        let mut position_map: std::collections::HashMap<String, Vec<(Decimal, Decimal)>> = std::collections::HashMap::new();
 
         for trade in trades.iter() {
             let entry = position_map.entry(trade.symbol.clone()).or_insert_with(Vec::new);
@@ -132,20 +135,20 @@ impl TradeLogger {
             if trade.action == "buy" {
                 // Add to position
                 entry.push((trade.shares, trade.price));
-                trade_pnl.push((trade.clone(), 0.0));
+                trade_pnl.push((trade.clone(), Decimal::ZERO));
             } else if trade.action == "sell" {
                 // Calculate P&L using FIFO
                 let mut remaining_shares = trade.shares;
-                let mut total_cost = 0.0;
+                let mut total_cost = Decimal::ZERO;
 
-                while remaining_shares > 0.0001 && !entry.is_empty() {
+                while remaining_shares > Decimal::from_f64(0.0001).unwrap_or_default() && !entry.is_empty() {
                     let (buy_shares, buy_price) = entry[0];
                     let shares_to_sell = remaining_shares.min(buy_shares);
 
                     total_cost += shares_to_sell * buy_price;
                     remaining_shares -= shares_to_sell;
 
-                    if shares_to_sell >= buy_shares - 0.0001 {
+                    if shares_to_sell >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default() {
                         entry.remove(0);
                     } else {
                         entry[0].0 -= shares_to_sell;
@@ -160,40 +163,40 @@ impl TradeLogger {
 
         // Calculate metrics
         let total_trades = trade_pnl.len();
-        let winning_trades = trade_pnl.iter().filter(|(_, pnl)| *pnl > 0.0).count();
-        let losing_trades = trade_pnl.iter().filter(|(_, pnl)| *pnl < 0.0).count();
+        let winning_trades = trade_pnl.iter().filter(|(_, pnl)| *pnl > Decimal::ZERO).count();
+        let losing_trades = trade_pnl.iter().filter(|(_, pnl)| *pnl < Decimal::ZERO).count();
         let win_rate = if total_trades > 0 {
             (winning_trades as f64 / total_trades as f64) * 100.0
         } else {
             0.0
         };
 
-        let total_realized_pnl: f64 = trade_pnl.iter().map(|(_, pnl)| pnl).sum();
+        let total_realized_pnl: Decimal = trade_pnl.iter().map(|(_, pnl)| pnl).sum();
 
-        let wins: Vec<f64> = trade_pnl.iter()
-            .filter(|(_, pnl)| *pnl > 0.0)
+        let wins: Vec<Decimal> = trade_pnl.iter()
+            .filter(|(_, pnl)| *pnl > Decimal::ZERO)
             .map(|(_, pnl)| *pnl)
             .collect();
 
-        let losses: Vec<f64> = trade_pnl.iter()
-            .filter(|(_, pnl)| *pnl < 0.0)
+        let losses: Vec<Decimal> = trade_pnl.iter()
+            .filter(|(_, pnl)| *pnl < Decimal::ZERO)
             .map(|(_, pnl)| *pnl)
             .collect();
 
         let average_win = if !wins.is_empty() {
-            wins.iter().sum::<f64>() / wins.len() as f64
+            wins.iter().sum::<Decimal>() / Decimal::from(wins.len())
         } else {
-            0.0
+            Decimal::ZERO
         };
 
         let average_loss = if !losses.is_empty() {
-            losses.iter().sum::<f64>() / losses.len() as f64
+            losses.iter().sum::<Decimal>() / Decimal::from(losses.len())
         } else {
-            0.0
+            Decimal::ZERO
         };
 
-        let largest_win = wins.iter().cloned().fold(0.0, f64::max);
-        let largest_loss = losses.iter().cloned().fold(0.0, f64::min);
+        let largest_win = wins.iter().cloned().fold(Decimal::ZERO, Decimal::max);
+        let largest_loss = losses.iter().cloned().fold(Decimal::ZERO, Decimal::min);
 
         let recent_trades = self.get_all_trades(Some(20)).await?;
 
@@ -228,10 +231,10 @@ mod tests {
         let trade = TradeInput {
             symbol: "AAPL".to_string(),
             action: "buy".to_string(),
-            shares: 10.0,
-            price: 150.0,
+            shares: Decimal::from(10),
+            price: Decimal::from(150),
             trade_date: "2025-01-01".to_string(),
-            commission: Some(1.0),
+            commission: Some(Decimal::from(1)),
             notes: Some("Test trade".to_string()),
         };
 
@@ -252,10 +255,10 @@ mod tests {
         logger.log_trade(TradeInput {
             symbol: "AAPL".to_string(),
             action: "buy".to_string(),
-            shares: 10.0,
-            price: 100.0,
+            shares: Decimal::from(10),
+            price: Decimal::from(100),
             trade_date: "2025-01-01".to_string(),
-            commission: Some(1.0),
+            commission: Some(Decimal::from(1)),
             notes: None,
         }).await.unwrap();
 
@@ -263,15 +266,15 @@ mod tests {
         logger.log_trade(TradeInput {
             symbol: "AAPL".to_string(),
             action: "sell".to_string(),
-            shares: 10.0,
-            price: 120.0,
+            shares: Decimal::from(10),
+            price: Decimal::from(120),
             trade_date: "2025-01-15".to_string(),
-            commission: Some(1.0),
+            commission: Some(Decimal::from(1)),
             notes: None,
         }).await.unwrap();
 
         let metrics = logger.get_performance_metrics(None).await.unwrap();
         assert_eq!(metrics.total_trades, 2);
-        assert!(metrics.total_realized_pnl > 0.0);
+        assert!(metrics.total_realized_pnl > Decimal::ZERO);
     }
 }

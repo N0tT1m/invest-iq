@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc, Duration};
 use polygon_client::PolygonClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use log::{info, debug};
+use log::debug;
 
 /// Supported trading timeframes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

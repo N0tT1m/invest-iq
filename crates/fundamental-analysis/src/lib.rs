@@ -18,6 +18,7 @@ impl FundamentalAnalysisEngine {
         }
     }
 
+    #[allow(dead_code)]
     fn calculate_pb_ratio(&self, price: f64, shares: f64, equity: f64) -> Option<f64> {
         if shares > 0.0 && equity > 0.0 {
             let book_value_per_share = equity / shares;

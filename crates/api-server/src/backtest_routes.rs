@@ -10,6 +10,8 @@ use backtest_engine::{
 };
 use analysis_core::{SignalStrength, Timeframe};
 use chrono::NaiveDate;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -109,10 +111,10 @@ async fn fetch_bars_and_signals(
 
         let hist_bars: Vec<HistoricalBar> = bars.iter().map(|bar| HistoricalBar {
             date: bar.timestamp.format("%Y-%m-%d").to_string(),
-            open: bar.open,
-            high: bar.high,
-            low: bar.low,
-            close: bar.close,
+            open: Decimal::from_f64(bar.open).unwrap_or_default(),
+            high: Decimal::from_f64(bar.high).unwrap_or_default(),
+            low: Decimal::from_f64(bar.low).unwrap_or_default(),
+            close: Decimal::from_f64(bar.close).unwrap_or_default(),
             volume: bar.volume,
         }).collect();
 
@@ -137,7 +139,7 @@ async fn fetch_bars_and_signals(
                     symbol: symbol.clone(),
                     signal_type: signal_to_display(&signal).to_string(),
                     confidence,
-                    price: bar.close,
+                    price: Decimal::from_f64(bar.close).unwrap_or_default(),
                     reason: format!("{:?} signal at {:.0}% confidence (point-in-time)",
                         signal, confidence * 100.0),
                 });
@@ -154,10 +156,10 @@ async fn fetch_bars_and_signals(
 fn etf_bars_to_historical(bars: &[analysis_core::Bar]) -> Vec<HistoricalBar> {
     bars.iter().map(|b| HistoricalBar {
         date: b.timestamp.format("%Y-%m-%d").to_string(),
-        open: b.open,
-        high: b.high,
-        low: b.low,
-        close: b.close,
+        open: Decimal::from_f64(b.open).unwrap_or_default(),
+        high: Decimal::from_f64(b.high).unwrap_or_default(),
+        low: Decimal::from_f64(b.low).unwrap_or_default(),
+        close: Decimal::from_f64(b.close).unwrap_or_default(),
         volume: b.volume,
     }).collect()
 }
@@ -204,7 +206,7 @@ async fn run_backtest(
         symbols: req.symbols.clone(),
         start_date: req.start_date.clone(),
         end_date: req.end_date.clone(),
-        initial_capital: req.initial_capital,
+        initial_capital: Decimal::from_f64(req.initial_capital).unwrap_or(Decimal::new(100000, 0)),
         position_size_percent: req.position_size_percent,
         stop_loss_percent: req.stop_loss_percent,
         take_profit_percent: req.take_profit_percent,
@@ -353,7 +355,7 @@ async fn run_walk_forward(
         symbols: req.symbols.clone(),
         start_date: req.start_date.clone(),
         end_date: req.end_date.clone(),
-        initial_capital: req.initial_capital,
+        initial_capital: Decimal::from_f64(req.initial_capital).unwrap_or(Decimal::new(100000, 0)),
         position_size_percent: req.position_size_percent,
         stop_loss_percent: req.stop_loss_percent,
         take_profit_percent: req.take_profit_percent,

@@ -214,7 +214,7 @@ def load_backtest_trades(db_path: str) -> List[Dict[str, Any]]:
     with get_db_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT symbol, signal_type, confidence, entry_price, exit_price,
+            SELECT symbol, signal, confidence, entry_price, exit_price,
                    profit_loss_percent, entry_date
             FROM backtest_trades
             ORDER BY entry_date ASC
@@ -225,7 +225,7 @@ def load_backtest_trades(db_path: str) -> List[Dict[str, Any]]:
     for row in rows:
         results.append({
             "symbol": row["symbol"],
-            "signal_type": row["signal_type"],
+            "signal_type": row["signal"],
             "confidence": row["confidence"],
             "entry_price": row["entry_price"],
             "exit_price": row["exit_price"],

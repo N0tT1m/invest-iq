@@ -7,6 +7,7 @@ use market_regime_detector::{MarketRegimeDetector, MarketRegime};
 use news_trading::NewsScanner;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MarketOpportunity {
     pub symbol: String,
     pub current_price: f64,
@@ -55,10 +56,9 @@ impl MarketScanner {
     pub async fn scan(&self) -> Result<Vec<MarketOpportunity>> {
         tracing::debug!("Scanning market for opportunities...");
 
-        // Check if we should scan based on market hours
-        if !self.should_scan_now() {
-            tracing::info!("Outside trading hours. Skipping scan.");
-            return Ok(Vec::new());
+        // Log market status but always scan (trade execution will be gated separately)
+        if !self.is_market_open() {
+            tracing::info!("Market closed — scanning for analysis only (no trades will execute)");
         }
 
         let mut opportunities = Vec::new();
@@ -144,14 +144,76 @@ impl MarketScanner {
     }
 
     async fn scan_top_movers(&self) -> Result<Vec<MarketOpportunity>> {
-        // Scan for stocks with high volume and price movement
-        // This would query Polygon's gainers/losers API
-        // For now, returning empty
-        Ok(Vec::new())
+        // Universe of liquid large-cap stocks for scanning
+        const TOP_MOVER_UNIVERSE: &[&str] = &[
+            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "BRK.B",
+            "JPM", "V", "JNJ", "WMT", "PG", "MA", "HD", "DIS", "BAC", "NFLX",
+            "CRM", "ORCL"
+        ];
+
+        let mut opportunities = Vec::new();
+
+        // Fetch snapshots for all symbols (rate limiter handles throttling)
+        for symbol in TOP_MOVER_UNIVERSE {
+            match self.polygon_client.get_snapshot(symbol).await {
+                Ok(snapshot) => {
+                    // Extract current price
+                    let current_price = snapshot.last_trade
+                        .as_ref()
+                        .and_then(|t| t.p)
+                        .or_else(|| snapshot.day.as_ref().and_then(|d| d.c))
+                        .unwrap_or(0.0);
+
+                    // Extract volume
+                    let volume = snapshot.day
+                        .as_ref()
+                        .and_then(|d| d.v)
+                        .unwrap_or(0.0) as i64;
+
+                    // Get price change percentage
+                    let price_change_percent = snapshot.todays_change_perc.unwrap_or(0.0);
+
+                    // Calculate simple volatility as (high - low) / close
+                    let volatility = if let Some(day) = &snapshot.day {
+                        let high = day.h.unwrap_or(0.0);
+                        let low = day.l.unwrap_or(0.0);
+                        let close = day.c.unwrap_or(1.0);
+                        if close > 0.0 {
+                            (high - low) / close
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    };
+
+                    // Filter for significant movers: >2% change OR >0.5% volatility
+                    if price_change_percent.abs() > 2.0 || volatility > 0.005 {
+                        opportunities.push(MarketOpportunity {
+                            symbol: symbol.to_string(),
+                            current_price,
+                            volume,
+                            price_change_percent,
+                            volatility,
+                            regime: MarketRegime::Ranging, // Default for quick scan
+                            primary_timeframe: Timeframe::Daily, // Default for movers
+                            news_sentiment_score: 0.0, // No sentiment in quick scan
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch snapshot for {}: {}", symbol, e);
+                }
+            }
+        }
+
+        tracing::info!("Top movers scan: found {} opportunities", opportunities.len());
+
+        Ok(opportunities)
     }
 
-    /// Check if we should scan based on market hours
-    fn should_scan_now(&self) -> bool {
+    /// Check if the market is currently open for trading (regular or extended hours)
+    pub fn is_market_open(&self) -> bool {
         let now = Utc::now().with_timezone(&chrono_tz::US::Eastern);
 
         // Skip weekends
