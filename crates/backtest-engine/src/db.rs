@@ -1,0 +1,434 @@
+use sqlx::SqlitePool;
+
+use crate::models::{BacktestResult, BacktestTrade, BenchmarkComparison, EquityPoint, SymbolResult};
+
+/// Persists backtest results and trades to SQLite.
+pub struct BacktestDb {
+    pool: SqlitePool,
+}
+
+impl BacktestDb {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// Initialize backtest tables if they don't exist.
+    pub async fn init_tables(&self) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS backtests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_name TEXT NOT NULL,
+                symbols TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                initial_capital REAL NOT NULL,
+                final_capital REAL NOT NULL,
+                total_return REAL NOT NULL DEFAULT 0,
+                total_return_percent REAL NOT NULL,
+                total_trades INTEGER NOT NULL,
+                winning_trades INTEGER NOT NULL,
+                losing_trades INTEGER NOT NULL,
+                win_rate REAL NOT NULL,
+                profit_factor REAL,
+                sharpe_ratio REAL,
+                sortino_ratio REAL,
+                max_drawdown REAL,
+                calmar_ratio REAL,
+                max_consecutive_wins INTEGER NOT NULL DEFAULT 0,
+                max_consecutive_losses INTEGER NOT NULL DEFAULT 0,
+                avg_holding_period_days REAL,
+                exposure_time_percent REAL,
+                recovery_factor REAL,
+                average_win REAL,
+                average_loss REAL,
+                largest_win REAL,
+                largest_loss REAL,
+                avg_trade_return_percent REAL,
+                total_commission_paid REAL NOT NULL DEFAULT 0,
+                total_slippage_cost REAL NOT NULL DEFAULT 0,
+                equity_curve_json TEXT,
+                benchmark_json TEXT,
+                per_symbol_results_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS backtest_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                backtest_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                signal TEXT NOT NULL DEFAULT '',
+                entry_date TEXT NOT NULL,
+                exit_date TEXT NOT NULL DEFAULT '',
+                entry_price REAL NOT NULL,
+                exit_price REAL NOT NULL DEFAULT 0,
+                shares REAL NOT NULL,
+                profit_loss REAL NOT NULL DEFAULT 0,
+                profit_loss_percent REAL NOT NULL DEFAULT 0,
+                holding_period_days INTEGER NOT NULL DEFAULT 0,
+                commission_cost REAL NOT NULL DEFAULT 0,
+                slippage_cost REAL NOT NULL DEFAULT 0,
+                exit_reason TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (backtest_id) REFERENCES backtests(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Migrate existing tables — add any columns that may be missing
+        for col in [
+            "total_return REAL NOT NULL DEFAULT 0",
+            "sortino_ratio REAL",
+            "calmar_ratio REAL",
+            "max_consecutive_wins INTEGER NOT NULL DEFAULT 0",
+            "max_consecutive_losses INTEGER NOT NULL DEFAULT 0",
+            "avg_holding_period_days REAL",
+            "exposure_time_percent REAL",
+            "recovery_factor REAL",
+            "average_win REAL",
+            "average_loss REAL",
+            "largest_win REAL",
+            "largest_loss REAL",
+            "total_commission_paid REAL NOT NULL DEFAULT 0",
+            "total_slippage_cost REAL NOT NULL DEFAULT 0",
+            "equity_curve_json TEXT",
+            "benchmark_json TEXT",
+            "per_symbol_results_json TEXT",
+        ] {
+            let sql = format!("ALTER TABLE backtests ADD COLUMN {}", col);
+            let _ = sqlx::query(&sql).execute(&self.pool).await;
+        }
+
+        Ok(())
+    }
+
+    /// Save a backtest result and its trades. Returns the backtest ID.
+    pub async fn save_backtest(&self, result: &BacktestResult) -> Result<i64, anyhow::Error> {
+        self.init_tables().await?;
+
+        let symbols_json = serde_json::to_string(&result.symbols)?;
+        let equity_json = serde_json::to_string(&result.equity_curve)?;
+        let benchmark_json = result.benchmark.as_ref()
+            .map(|b| serde_json::to_string(b))
+            .transpose()?;
+        let per_symbol_json = result.per_symbol_results.as_ref()
+            .map(|r| serde_json::to_string(r))
+            .transpose()?;
+
+        let row = sqlx::query(
+            "INSERT INTO backtests (
+                strategy_name, symbols, start_date, end_date,
+                initial_capital, final_capital, total_return, total_return_percent,
+                total_trades, winning_trades, losing_trades, win_rate,
+                profit_factor, sharpe_ratio, sortino_ratio, max_drawdown,
+                calmar_ratio, max_consecutive_wins, max_consecutive_losses,
+                avg_holding_period_days, exposure_time_percent, recovery_factor,
+                average_win, average_loss, largest_win, largest_loss,
+                avg_trade_return_percent, total_commission_paid, total_slippage_cost,
+                equity_curve_json, benchmark_json, per_symbol_results_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&result.strategy_name)
+        .bind(&symbols_json)
+        .bind(&result.start_date)
+        .bind(&result.end_date)
+        .bind(result.initial_capital)
+        .bind(result.final_capital)
+        .bind(result.total_return)
+        .bind(result.total_return_percent)
+        .bind(result.total_trades)
+        .bind(result.winning_trades)
+        .bind(result.losing_trades)
+        .bind(result.win_rate)
+        .bind(result.profit_factor)
+        .bind(result.sharpe_ratio)
+        .bind(result.sortino_ratio)
+        .bind(result.max_drawdown)
+        .bind(result.calmar_ratio)
+        .bind(result.max_consecutive_wins)
+        .bind(result.max_consecutive_losses)
+        .bind(result.avg_holding_period_days)
+        .bind(result.exposure_time_percent)
+        .bind(result.recovery_factor)
+        .bind(result.average_win)
+        .bind(result.average_loss)
+        .bind(result.largest_win)
+        .bind(result.largest_loss)
+        .bind(result.avg_trade_return_percent)
+        .bind(result.total_commission_paid)
+        .bind(result.total_slippage_cost)
+        .bind(&equity_json)
+        .bind(&benchmark_json)
+        .bind(&per_symbol_json)
+        .execute(&self.pool)
+        .await?;
+
+        let backtest_id = row.last_insert_rowid();
+
+        // Save trades
+        for trade in &result.trades {
+            sqlx::query(
+                "INSERT INTO backtest_trades (
+                    backtest_id, symbol, signal, entry_date, exit_date,
+                    entry_price, exit_price, shares,
+                    profit_loss, profit_loss_percent, holding_period_days,
+                    commission_cost, slippage_cost, exit_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(backtest_id)
+            .bind(&trade.symbol)
+            .bind(&trade.signal)
+            .bind(&trade.entry_date)
+            .bind(&trade.exit_date)
+            .bind(trade.entry_price)
+            .bind(trade.exit_price)
+            .bind(trade.shares)
+            .bind(trade.profit_loss)
+            .bind(trade.profit_loss_percent)
+            .bind(trade.holding_period_days)
+            .bind(trade.commission_cost)
+            .bind(trade.slippage_cost)
+            .bind(&trade.exit_reason)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(backtest_id)
+    }
+
+    /// Get all backtest results (without trades or equity curves for performance).
+    pub async fn get_all_backtests(&self) -> Result<Vec<BacktestResult>, anyhow::Error> {
+        self.init_tables().await?;
+
+        let rows = sqlx::query_as::<_, BacktestRow>(
+            "SELECT id, strategy_name, symbols, start_date, end_date,
+                    initial_capital, final_capital, total_return, total_return_percent,
+                    total_trades, winning_trades, losing_trades, win_rate,
+                    profit_factor, sharpe_ratio, sortino_ratio, max_drawdown,
+                    calmar_ratio, max_consecutive_wins, max_consecutive_losses,
+                    avg_holding_period_days, exposure_time_percent, recovery_factor,
+                    average_win, average_loss, largest_win, largest_loss,
+                    avg_trade_return_percent, total_commission_paid, total_slippage_cost,
+                    equity_curve_json, benchmark_json, per_symbol_results_json, created_at
+             FROM backtests ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| r.into_result()).collect())
+    }
+
+    /// Get a single backtest by ID (includes equity curve).
+    pub async fn get_backtest(&self, id: i64) -> Result<Option<BacktestResult>, anyhow::Error> {
+        self.init_tables().await?;
+
+        let row = sqlx::query_as::<_, BacktestRow>(
+            "SELECT id, strategy_name, symbols, start_date, end_date,
+                    initial_capital, final_capital, total_return, total_return_percent,
+                    total_trades, winning_trades, losing_trades, win_rate,
+                    profit_factor, sharpe_ratio, sortino_ratio, max_drawdown,
+                    calmar_ratio, max_consecutive_wins, max_consecutive_losses,
+                    avg_holding_period_days, exposure_time_percent, recovery_factor,
+                    average_win, average_loss, largest_win, largest_loss,
+                    avg_trade_return_percent, total_commission_paid, total_slippage_cost,
+                    equity_curve_json, benchmark_json, per_symbol_results_json, created_at
+             FROM backtests WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| r.into_result()))
+    }
+
+    /// Delete a backtest and its trades.
+    pub async fn delete_backtest(&self, id: i64) -> Result<(), anyhow::Error> {
+        sqlx::query("DELETE FROM backtest_trades WHERE backtest_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM backtests WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Get trades for a specific backtest.
+    pub async fn get_backtest_trades(
+        &self,
+        backtest_id: i64,
+    ) -> Result<Vec<BacktestTrade>, anyhow::Error> {
+        let rows = sqlx::query_as::<_, TradeRow>(
+            "SELECT id, backtest_id, symbol, signal, entry_date, exit_date,
+                    entry_price, exit_price, shares,
+                    profit_loss, profit_loss_percent, holding_period_days,
+                    commission_cost, slippage_cost, exit_reason
+             FROM backtest_trades WHERE backtest_id = ? ORDER BY entry_date",
+        )
+        .bind(backtest_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| BacktestTrade {
+                id: Some(r.id),
+                backtest_id: Some(r.backtest_id),
+                symbol: r.symbol,
+                signal: r.signal,
+                entry_date: r.entry_date,
+                exit_date: r.exit_date,
+                entry_price: r.entry_price,
+                exit_price: r.exit_price,
+                shares: r.shares,
+                profit_loss: r.profit_loss,
+                profit_loss_percent: r.profit_loss_percent,
+                holding_period_days: r.holding_period_days,
+                commission_cost: r.commission_cost,
+                slippage_cost: r.slippage_cost,
+                exit_reason: r.exit_reason,
+            })
+            .collect())
+    }
+
+    /// Get backtests by strategy name.
+    pub async fn get_backtests_by_strategy(
+        &self,
+        strategy_name: &str,
+    ) -> Result<Vec<BacktestResult>, anyhow::Error> {
+        self.init_tables().await?;
+
+        let rows = sqlx::query_as::<_, BacktestRow>(
+            "SELECT id, strategy_name, symbols, start_date, end_date,
+                    initial_capital, final_capital, total_return, total_return_percent,
+                    total_trades, winning_trades, losing_trades, win_rate,
+                    profit_factor, sharpe_ratio, sortino_ratio, max_drawdown,
+                    calmar_ratio, max_consecutive_wins, max_consecutive_losses,
+                    avg_holding_period_days, exposure_time_percent, recovery_factor,
+                    average_win, average_loss, largest_win, largest_loss,
+                    avg_trade_return_percent, total_commission_paid, total_slippage_cost,
+                    equity_curve_json, benchmark_json, per_symbol_results_json, created_at
+             FROM backtests WHERE strategy_name = ? ORDER BY created_at DESC",
+        )
+        .bind(strategy_name)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| r.into_result()).collect())
+    }
+}
+
+/// Internal row type for sqlx deserialization.
+#[derive(sqlx::FromRow)]
+struct BacktestRow {
+    id: i64,
+    strategy_name: String,
+    symbols: String,
+    start_date: String,
+    end_date: String,
+    initial_capital: f64,
+    final_capital: f64,
+    total_return: f64,
+    total_return_percent: f64,
+    total_trades: i32,
+    winning_trades: i32,
+    losing_trades: i32,
+    win_rate: f64,
+    profit_factor: Option<f64>,
+    sharpe_ratio: Option<f64>,
+    sortino_ratio: Option<f64>,
+    max_drawdown: Option<f64>,
+    calmar_ratio: Option<f64>,
+    max_consecutive_wins: i32,
+    max_consecutive_losses: i32,
+    avg_holding_period_days: Option<f64>,
+    exposure_time_percent: Option<f64>,
+    recovery_factor: Option<f64>,
+    average_win: Option<f64>,
+    average_loss: Option<f64>,
+    largest_win: Option<f64>,
+    largest_loss: Option<f64>,
+    avg_trade_return_percent: Option<f64>,
+    total_commission_paid: f64,
+    total_slippage_cost: f64,
+    equity_curve_json: Option<String>,
+    benchmark_json: Option<String>,
+    per_symbol_results_json: Option<String>,
+    created_at: Option<String>,
+}
+
+impl BacktestRow {
+    fn into_result(self) -> BacktestResult {
+        let symbols: Vec<String> = serde_json::from_str(&self.symbols).unwrap_or_default();
+        let equity_curve: Vec<EquityPoint> = self
+            .equity_curve_json
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
+            .unwrap_or_default();
+
+        BacktestResult {
+            id: Some(self.id),
+            strategy_name: self.strategy_name,
+            symbols,
+            start_date: self.start_date,
+            end_date: self.end_date,
+            initial_capital: self.initial_capital,
+            final_capital: self.final_capital,
+            total_return: self.total_return,
+            total_return_percent: self.total_return_percent,
+            total_trades: self.total_trades,
+            winning_trades: self.winning_trades,
+            losing_trades: self.losing_trades,
+            win_rate: self.win_rate,
+            profit_factor: self.profit_factor,
+            sharpe_ratio: self.sharpe_ratio,
+            sortino_ratio: self.sortino_ratio,
+            max_drawdown: self.max_drawdown,
+            calmar_ratio: self.calmar_ratio,
+            max_consecutive_wins: self.max_consecutive_wins,
+            max_consecutive_losses: self.max_consecutive_losses,
+            avg_holding_period_days: self.avg_holding_period_days,
+            exposure_time_percent: self.exposure_time_percent,
+            recovery_factor: self.recovery_factor,
+            average_win: self.average_win,
+            average_loss: self.average_loss,
+            largest_win: self.largest_win,
+            largest_loss: self.largest_loss,
+            avg_trade_return_percent: self.avg_trade_return_percent,
+            total_commission_paid: self.total_commission_paid,
+            total_slippage_cost: self.total_slippage_cost,
+            equity_curve,
+            trades: Vec::new(),
+            created_at: self.created_at,
+            benchmark: self.benchmark_json
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<BenchmarkComparison>(j).ok()),
+            per_symbol_results: self.per_symbol_results_json
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<Vec<SymbolResult>>(j).ok()),
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct TradeRow {
+    id: i64,
+    backtest_id: i64,
+    symbol: String,
+    signal: String,
+    entry_date: String,
+    exit_date: String,
+    entry_price: f64,
+    exit_price: f64,
+    shares: f64,
+    profit_loss: f64,
+    profit_loss_percent: f64,
+    holding_period_days: i64,
+    commission_cost: f64,
+    slippage_cost: f64,
+    exit_reason: String,
+}

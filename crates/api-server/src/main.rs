@@ -25,7 +25,7 @@ mod python_manager;
 use analysis_core::{Bar, Timeframe, UnifiedAnalysis};
 use analysis_orchestrator::{AnalysisOrchestrator, StockScreener, StockUniverse, ScreenerFilters, ScreenerResult};
 use alpaca_broker::AlpacaClient;
-use backtest_engine::BacktestDb;
+use backtest_engine::{BacktestConfig, BacktestDb, BacktestEngine as BtEngine, BacktestResult as BtResult, HistoricalBar, Signal as BtSignal};
 use risk_manager::RiskManager;
 use analytics::{PerformanceTracker, SignalAnalyzer};
 use axum::{
@@ -52,7 +52,7 @@ use tower_governor::{
     GovernorLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use validation::{BacktestEngine, ComparisonEngine, BacktestResult, ComparisonResult, TradeSignal};
+use validation::{ComparisonEngine, ComparisonResult};
 
 /// Simple in-process metrics counters.
 pub(crate) struct Metrics {
@@ -106,7 +106,6 @@ struct AppState {
     cache: CacheBackend,
     etf_bar_cache: Arc<DashMap<String, (DateTime<Utc>, Vec<Bar>)>>,
     comparison_engine: Option<Arc<ComparisonEngine>>,
-    backtest_engine: Arc<BacktestEngine>,
     portfolio_manager: Option<Arc<PortfolioManager>>,
     trade_logger: Option<Arc<TradeLogger>>,
     alert_manager: Option<Arc<AlertManager>>,
@@ -415,22 +414,6 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("ℹ️  ALPHA_VANTAGE_API_KEY not set. Validation features disabled.");
     }
 
-    // Create backtest engine with realistic parameters:
-    // - $10k initial capital
-    // - 95% position size (5% cash reserve)
-    // - 0.1% commission (typical for most brokers)
-    // - 0.05% slippage
-    // - 5% stop loss
-    // - 15% take profit
-    let backtest_engine = Arc::new(BacktestEngine::with_params(
-        10000.0,  // initial_capital
-        0.95,     // position_size
-        0.001,    // commission_rate (0.1%)
-        0.0005,   // slippage_rate (0.05%)
-        Some(0.05), // stop_loss_pct (5%)
-        Some(0.15), // take_profit_pct (15%)
-    ));
-
     // Initialize portfolio database
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite:portfolio.db".to_string());
@@ -503,7 +486,6 @@ async fn main() -> anyhow::Result<()> {
         cache,
         etf_bar_cache: Arc::new(DashMap::new()),
         comparison_engine,
-        backtest_engine,
         portfolio_manager,
         trade_logger,
         alert_manager,
@@ -514,6 +496,23 @@ async fn main() -> anyhow::Result<()> {
         signal_analyzer,
         metrics,
     };
+
+    // --- Startup environment validation ---
+    {
+        let api_keys = auth::get_valid_api_keys();
+        if api_keys.is_empty() {
+            tracing::warn!("API_KEYS is not set. API authentication is DISABLED. Set API_KEYS=<key1>,<key2> for production.");
+        } else {
+            tracing::info!("API authentication enabled ({} key(s) configured)", api_keys.len());
+        }
+
+        if state.portfolio_manager.is_none() {
+            tracing::warn!("Portfolio features disabled (database unavailable)");
+        }
+        if state.alpaca_client.is_none() {
+            tracing::warn!("Trading features disabled (ALPACA_API_KEY/ALPACA_SECRET_KEY not set)");
+        }
+    }
 
     // Get allowed origins from environment (comma-separated)
     let allowed_origins = std::env::var("ALLOWED_ORIGINS")
@@ -1078,15 +1077,41 @@ pub(crate) fn combine_pit_signals(
     (signal, combined_confidence)
 }
 
+/// Convert SignalStrength to a display name for trades.
+fn signal_to_display(signal: &analysis_core::SignalStrength) -> &'static str {
+    match signal {
+        analysis_core::SignalStrength::StrongBuy => "StrongBuy",
+        analysis_core::SignalStrength::Buy => "Buy",
+        analysis_core::SignalStrength::WeakBuy => "WeakBuy",
+        analysis_core::SignalStrength::StrongSell => "StrongSell",
+        analysis_core::SignalStrength::Sell => "Sell",
+        analysis_core::SignalStrength::WeakSell => "WeakSell",
+        analysis_core::SignalStrength::Neutral => "Neutral",
+    }
+}
+
+/// Convert SignalStrength to buy/sell/hold action.
+fn signal_to_action(signal: &analysis_core::SignalStrength) -> &'static str {
+    match signal {
+        analysis_core::SignalStrength::StrongBuy
+        | analysis_core::SignalStrength::Buy
+        | analysis_core::SignalStrength::WeakBuy => "buy",
+        analysis_core::SignalStrength::StrongSell
+        | analysis_core::SignalStrength::Sell
+        | analysis_core::SignalStrength::WeakSell => "sell",
+        analysis_core::SignalStrength::Neutral => "hold",
+    }
+}
+
 async fn backtest_symbol(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
     Query(query): Query<BacktestQuery>,
-) -> Result<Json<ApiResponse<BacktestResult>>, AppError> {
+) -> Result<Json<ApiResponse<BtResult>>, AppError> {
     let symbol = symbol.to_uppercase();
     let days = query.days.unwrap_or(365);
 
-    tracing::info!("📊 Running point-in-time backtest for {} ({} days)", symbol, days);
+    tracing::info!("Running point-in-time backtest for {} ({} days)", symbol, days);
 
     // Get historical bars
     let bars = state.orchestrator.get_bars(&symbol, Timeframe::Day1, days).await?;
@@ -1098,9 +1123,21 @@ async fn backtest_symbol(
     // Fetch SPY bars for benchmark (quant engine needs them)
     let spy_bars = get_cached_etf_bars(&state, "SPY", 365, 15).await;
 
-    // Point-in-time signal generation: for each sampled bar at index i,
-    // run engines on bars[..i] only (no future data).
-    let mut signals = Vec::new();
+    // Convert bars to HistoricalBar format for the engine
+    let hist_bars: Vec<HistoricalBar> = bars.iter().map(|bar| HistoricalBar {
+        date: bar.timestamp.format("%Y-%m-%d").to_string(),
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume,
+    }).collect();
+
+    let first_date = hist_bars.first().map(|b| b.date.clone()).unwrap_or_default();
+    let last_date = hist_bars.last().map(|b| b.date.clone()).unwrap_or_default();
+
+    // Point-in-time signal generation
+    let mut signals: Vec<BtSignal> = Vec::new();
     let sample_interval: usize = if days > 180 { 5 } else { 1 };
     let tech_engine = state.orchestrator.technical_engine();
     let quant_engine = state.orchestrator.quant_engine();
@@ -1117,37 +1154,87 @@ async fn backtest_symbol(
             None,
         ).ok();
 
-        let (signal, confidence) = combine_pit_signals(&tech_result, &quant_result);
+        let (signal_strength, confidence) = combine_pit_signals(&tech_result, &quant_result);
+        let action = signal_to_action(&signal_strength);
 
-        signals.push(TradeSignal {
-            timestamp: bar.timestamp,
-            signal,
-            confidence,
-            price: bar.close,
-        });
+        if action != "hold" {
+            signals.push(BtSignal {
+                date: bar.timestamp.format("%Y-%m-%d").to_string(),
+                symbol: symbol.clone(),
+                signal_type: signal_to_display(&signal_strength).to_string(),
+                confidence,
+                price: bar.close,
+                reason: format!("{:?} signal at {:.0}% confidence (point-in-time)",
+                    signal_strength, confidence * 100.0),
+            });
+        }
     }
 
     if signals.is_empty() {
         return Err(anyhow::anyhow!("No signals generated during backtest period").into());
     }
 
-    // Run backtest
-    let result = state.backtest_engine.backtest(&symbol, signals, &bars)?;
+    // Convert SPY bars for benchmark comparison
+    let benchmark_bars = if spy_bars.len() >= 30 {
+        Some(spy_bars.iter().map(|b| HistoricalBar {
+            date: b.timestamp.format("%Y-%m-%d").to_string(),
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+            volume: b.volume,
+        }).collect())
+    } else {
+        None
+    };
+
+    // Build config and run the unified backtest engine
+    let config = BacktestConfig {
+        strategy_name: format!("Backtest-{}", symbol),
+        symbols: vec![symbol.clone()],
+        start_date: first_date,
+        end_date: last_date,
+        initial_capital: 10000.0,
+        position_size_percent: 95.0,
+        stop_loss_percent: Some(0.05),
+        take_profit_percent: Some(0.15),
+        confidence_threshold: 0.5,
+        commission_rate: Some(0.001),
+        slippage_rate: Some(0.0005),
+        benchmark_bars,
+        allocation_strategy: None,
+        symbol_weights: None,
+        rebalance_interval_days: None,
+    };
+
+    let mut historical_data = std::collections::HashMap::new();
+    historical_data.insert(symbol.clone(), hist_bars);
+
+    let mut engine = BtEngine::new(config);
+    let result = engine.run(historical_data, signals)
+        .map_err(|e| anyhow::anyhow!("Backtest engine error: {}", e))?;
+
+    // Save to database if available
+    if let Some(backtest_db) = state.backtest_db.as_ref() {
+        match backtest_db.save_backtest(&result).await {
+            Ok(id) => tracing::info!("Backtest saved to DB (id: {})", id),
+            Err(e) => tracing::warn!("Failed to save backtest: {}", e),
+        }
+    }
 
     // Auto-record strategy snapshot for alpha decay monitoring
     if let Some(pm) = state.portfolio_manager.as_ref() {
         let monitor = alpha_decay::AlphaDecayMonitor::new(pm.db().pool().clone());
-        let strategy_name = format!("Backtest-{}", symbol);
         let snapshot = alpha_decay::PerformanceSnapshot {
             id: None,
-            strategy_name,
+            strategy_name: result.strategy_name.clone(),
             snapshot_date: chrono::Utc::now().date_naive(),
-            rolling_sharpe: result.sharpe_ratio,
+            rolling_sharpe: result.sharpe_ratio.unwrap_or(0.0),
             win_rate: result.win_rate,
-            profit_factor: result.profit_factor,
-            trades_count: result.total_trades as i32,
+            profit_factor: result.profit_factor.unwrap_or(0.0),
+            trades_count: result.total_trades,
             cumulative_return: result.total_return_percent,
-            max_drawdown: result.max_drawdown,
+            max_drawdown: result.max_drawdown.unwrap_or(0.0),
             created_at: None,
         };
         if let Err(e) = monitor.record_snapshot(&snapshot).await {
@@ -1198,10 +1285,6 @@ mod tests {
 
         let orchestrator = Arc::new(AnalysisOrchestrator::new("dummy-polygon-key".to_string()));
         let screener = Arc::new(StockScreener::new(Arc::clone(&orchestrator)));
-
-        let backtest_engine = Arc::new(BacktestEngine::with_params(
-            10000.0, 0.95, 0.001, 0.0005, Some(0.05), Some(0.15),
-        ));
 
         // In-memory SQLite
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -1278,7 +1361,6 @@ mod tests {
             cache: CacheBackend::Memory(Arc::new(DashMap::new())),
             etf_bar_cache: Arc::new(DashMap::new()),
             comparison_engine: None,
-            backtest_engine,
             portfolio_manager: None,
             trade_logger: None,
             alert_manager: None,

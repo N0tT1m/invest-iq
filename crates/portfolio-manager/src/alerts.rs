@@ -81,23 +81,21 @@ impl AlertManager {
 
     /// Update alert status
     pub async fn update_alert_status(&self, id: i64, status: &str) -> Result<()> {
-        let completed_at = if status == "completed" {
-            Some("datetime('now')")
-        } else {
-            None
-        };
-
-        let query = if let Some(ca) = completed_at {
-            format!("UPDATE alerts SET status = ?, completed_at = {} WHERE id = ?", ca)
-        } else {
-            "UPDATE alerts SET status = ? WHERE id = ?".to_string()
-        };
-
-        sqlx::query(&query)
+        if status == "completed" {
+            sqlx::query(
+                "UPDATE alerts SET status = ?, completed_at = datetime('now') WHERE id = ?"
+            )
             .bind(status)
             .bind(id)
             .execute(self.db.pool())
             .await?;
+        } else {
+            sqlx::query("UPDATE alerts SET status = ? WHERE id = ?")
+                .bind(status)
+                .bind(id)
+                .execute(self.db.pool())
+                .await?;
+        }
 
         Ok(())
     }
@@ -142,15 +140,20 @@ impl AlertManager {
 
     /// Get all alerts (including inactive)
     pub async fn get_all_alerts(&self, limit: Option<i64>) -> Result<Vec<Alert>> {
-        let query = if let Some(lim) = limit {
-            format!("SELECT * FROM alerts ORDER BY created_at DESC LIMIT {}", lim)
-        } else {
-            "SELECT * FROM alerts ORDER BY created_at DESC".to_string()
-        };
-
-        let alerts = sqlx::query_as::<_, Alert>(&query)
+        let alerts = if let Some(lim) = limit {
+            sqlx::query_as::<_, Alert>(
+                "SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?"
+            )
+            .bind(lim)
             .fetch_all(self.db.pool())
-            .await?;
+            .await?
+        } else {
+            sqlx::query_as::<_, Alert>(
+                "SELECT * FROM alerts ORDER BY created_at DESC"
+            )
+            .fetch_all(self.db.pool())
+            .await?
+        };
 
         Ok(alerts)
     }

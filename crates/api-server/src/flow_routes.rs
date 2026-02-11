@@ -62,7 +62,10 @@ fn calc_return(bars: &[analysis_core::Bar], lookback_days: usize) -> f64 {
     if bars.len() < 2 {
         return 0.0;
     }
-    let end_price = bars.last().unwrap().close;
+    let end_price = match bars.last() {
+        Some(b) => b.close,
+        None => return 0.0,
+    };
     let start_idx = if bars.len() > lookback_days { bars.len() - lookback_days - 1 } else { 0 };
     let start_price = bars[start_idx].close;
     if start_price > 0.0 {
@@ -143,14 +146,14 @@ async fn get_sector_flows(
     let strongest = flow_map
         .sectors
         .iter()
-        .max_by(|a, b| a.performance_1w.partial_cmp(&b.performance_1w).unwrap())
+        .max_by(|a, b| a.performance_1w.partial_cmp(&b.performance_1w).unwrap_or(std::cmp::Ordering::Equal))
         .map(|s| s.name.clone())
         .unwrap_or_default();
 
     let weakest = flow_map
         .sectors
         .iter()
-        .min_by(|a, b| a.performance_1w.partial_cmp(&b.performance_1w).unwrap())
+        .min_by(|a, b| a.performance_1w.partial_cmp(&b.performance_1w).unwrap_or(std::cmp::Ordering::Equal))
         .map(|s| s.name.clone())
         .unwrap_or_default();
 

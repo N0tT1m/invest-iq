@@ -356,6 +356,32 @@ app.layout = dbc.Container([
                     ], md=7),
                 ], className="mb-3"),
                 dcc.Loading(html.Div(id='backtest-results-section'), type="circle"),
+                html.Hr(className="my-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Button(
+                            "Run Monte Carlo (1000 sims)",
+                            id="monte-carlo-btn",
+                            color="info",
+                            size="sm",
+                            outline=True,
+                            className="w-100",
+                        ),
+                    ], md=3),
+                    dbc.Col([
+                        dbc.Button(
+                            "Run Walk-Forward Validation",
+                            id="walk-forward-btn",
+                            color="warning",
+                            size="sm",
+                            outline=True,
+                            className="w-100",
+                        ),
+                    ], md=3),
+                ], className="mb-3"),
+                dcc.Loading(html.Div(id='monte-carlo-section'), type="circle"),
+                dcc.Loading(html.Div(id='walk-forward-section'), type="circle"),
+                dcc.Store(id='last-backtest-id', data=None),
             ], id='tab-backtest-content', style={'display': 'none'}),
             html.Div([
                 dcc.Loading(html.Div(id='live-trading-section'), type="circle"),
@@ -2598,7 +2624,10 @@ def update_portfolio_dashboard(analyze_clicks, refresh_clicks, notification_data
 # ============================================================================
 
 @app.callback(
-    Output('backtest-results-section', 'children'),
+    [Output('backtest-results-section', 'children'),
+     Output('last-backtest-id', 'data'),
+     Output('monte-carlo-section', 'children'),
+     Output('walk-forward-section', 'children')],
     Input('backtest-run-btn', 'n_clicks'),
     [State('symbol-input', 'value'),
      State('backtest-days-input', 'value')],
@@ -2606,16 +2635,74 @@ def update_portfolio_dashboard(analyze_clicks, refresh_clicks, notification_data
 )
 def run_backtest(n_clicks, symbol, days):
     if not symbol:
-        return ""
+        return "", None, "", ""
 
     symbol = symbol.upper()
     days = days or 365
 
     try:
         data = BacktestPanelComponent.fetch_backtest(symbol, days)
-        return BacktestPanelComponent.create_panel(data, symbol)
+        panel = BacktestPanelComponent.create_panel(data, symbol)
+        backtest_id = data.get("id") if data else None
+        return panel, backtest_id, "", ""
     except Exception as e:
-        return dbc.Alert(f"Backtest error: {e}", color="danger")
+        return dbc.Alert(f"Backtest error: {e}", color="danger"), None, "", ""
+
+
+@app.callback(
+    Output('monte-carlo-section', 'children', allow_duplicate=True),
+    Input('monte-carlo-btn', 'n_clicks'),
+    State('last-backtest-id', 'data'),
+    prevent_initial_call=True,
+)
+def run_monte_carlo_cb(n_clicks, backtest_id):
+    if not backtest_id:
+        return dbc.Alert("Run a backtest first, then run Monte Carlo.", color="info")
+
+    try:
+        mc_data = BacktestPanelComponent.fetch_monte_carlo(backtest_id)
+        return BacktestPanelComponent.create_monte_carlo_panel(mc_data)
+    except Exception as e:
+        return dbc.Alert(f"Monte Carlo error: {e}", color="danger")
+
+
+@app.callback(
+    Output('walk-forward-section', 'children', allow_duplicate=True),
+    Input('walk-forward-btn', 'n_clicks'),
+    [State('symbol-input', 'value'),
+     State('backtest-days-input', 'value')],
+    prevent_initial_call=True,
+)
+def run_walk_forward_cb(n_clicks, symbol, days):
+    if not symbol:
+        return ""
+
+    symbol = symbol.upper()
+    days = days or 365
+
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/api/backtest/walk-forward",
+            json={
+                "strategy_name": f"WalkForward-{symbol}",
+                "symbols": [symbol],
+                "start_date": (
+                    __import__("datetime").datetime.now()
+                    - __import__("datetime").timedelta(days=days)
+                ).strftime("%Y-%m-%d"),
+                "end_date": __import__("datetime").datetime.now().strftime("%Y-%m-%d"),
+                "initial_capital": 10000,
+                "position_size_percent": 95,
+                "confidence_threshold": 0.5,
+            },
+            headers=get_headers(),
+            timeout=90,
+        )
+        data = response.json()
+        wf_data = data.get("data") if data.get("success") else None
+        return BacktestPanelComponent.create_walk_forward_panel(wf_data)
+    except Exception as e:
+        return dbc.Alert(f"Walk-forward error: {e}", color="danger")
 
 
 def _kill_port(port):

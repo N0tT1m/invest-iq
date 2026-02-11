@@ -46,15 +46,20 @@ impl TradeLogger {
 
     /// Get all trades
     pub async fn get_all_trades(&self, limit: Option<i64>) -> Result<Vec<Trade>> {
-        let query = if let Some(lim) = limit {
-            format!("SELECT * FROM trades ORDER BY trade_date DESC, created_at DESC LIMIT {}", lim)
-        } else {
-            "SELECT * FROM trades ORDER BY trade_date DESC, created_at DESC".to_string()
-        };
-
-        let trades = sqlx::query_as::<_, Trade>(&query)
+        let trades = if let Some(lim) = limit {
+            sqlx::query_as::<_, Trade>(
+                "SELECT * FROM trades ORDER BY trade_date DESC, created_at DESC LIMIT ?"
+            )
+            .bind(lim)
             .fetch_all(self.db.pool())
-            .await?;
+            .await?
+        } else {
+            sqlx::query_as::<_, Trade>(
+                "SELECT * FROM trades ORDER BY trade_date DESC, created_at DESC"
+            )
+            .fetch_all(self.db.pool())
+            .await?
+        };
 
         Ok(trades)
     }

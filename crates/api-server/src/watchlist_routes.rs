@@ -79,7 +79,10 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> (f64, f64, String) {
         return (0.5, 0.3, "Insufficient data".to_string());
     }
 
-    let current = bars.last().unwrap().close;
+    let current = match bars.last() {
+        Some(b) => b.close,
+        None => return (0.5, 0.3, "No bar data".to_string()),
+    };
     let len = bars.len();
 
     // SMA-20

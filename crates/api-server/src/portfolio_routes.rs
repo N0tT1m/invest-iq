@@ -195,7 +195,9 @@ async fn update_position(
         created_at: existing.created_at,
     };
 
-    portfolio_manager.update_position(existing.id.unwrap(), position).await?;
+    let position_id = existing.id
+        .ok_or_else(|| anyhow::anyhow!("Position has no ID"))?;
+    portfolio_manager.update_position(position_id, position).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Position updated" }))))
 }

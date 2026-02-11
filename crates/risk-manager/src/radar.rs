@@ -71,8 +71,8 @@ impl RiskRadar {
 
         dimensions
             .into_iter()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .unwrap()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(("unknown", 0.0))
     }
 
     /// Get all dimensions as a vector for charting

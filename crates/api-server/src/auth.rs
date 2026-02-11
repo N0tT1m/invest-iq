@@ -17,7 +17,8 @@ mod auth_tests;
 /// Checks for API key in:
 /// 1. X-API-Key header (recommended)
 /// 2. Authorization: Bearer <token> header
-/// 3. api_key query parameter (discouraged, for backward compatibility)
+///
+/// If API_KEYS env var is not set, authentication is skipped (development mode).
 pub async fn auth_middleware(
     headers: HeaderMap,
     mut request: Request,
@@ -31,16 +32,21 @@ pub async fn auth_middleware(
         return Ok(next.run(request).await);
     }
 
+    // If no API keys configured, skip authentication (development mode)
+    if valid_keys.is_empty() {
+        return Ok(next.run(request).await);
+    }
+
     // Try to extract API key from various sources
     let api_key = extract_api_key(&headers, &request)?;
 
     // Validate the API key
     if !valid_keys.contains(api_key.as_str()) {
-        tracing::warn!("❌ Invalid API key attempted: {}", mask_api_key(&api_key));
+        tracing::warn!("Invalid API key attempted: {}", mask_api_key(&api_key));
         return Err(AuthError::InvalidApiKey);
     }
 
-    tracing::debug!("✅ Valid API key: {}", mask_api_key(&api_key));
+    tracing::debug!("Valid API key: {}", mask_api_key(&api_key));
 
     // Add the validated API key to request extensions for potential future use
     request.extensions_mut().insert(ValidatedApiKey(api_key));
@@ -49,7 +55,7 @@ pub async fn auth_middleware(
 }
 
 /// Extract API key from request headers or query parameters
-pub(crate) fn extract_api_key(headers: &HeaderMap, request: &Request) -> Result<String, AuthError> {
+pub(crate) fn extract_api_key(headers: &HeaderMap, _request: &Request) -> Result<String, AuthError> {
     // 1. Try X-API-Key header (recommended approach)
     if let Some(api_key) = headers.get("X-API-Key") {
         if let Ok(key) = api_key.to_str() {
@@ -65,17 +71,6 @@ pub(crate) fn extract_api_key(headers: &HeaderMap, request: &Request) -> Result<
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
                 if !token.is_empty() {
                     return Ok(token.to_string());
-                }
-            }
-        }
-    }
-
-    // 3. Try query parameter (discouraged, but supported for backward compatibility)
-    if let Some(query) = request.uri().query() {
-        for pair in query.split('&') {
-            if let Some((key, value)) = pair.split_once('=') {
-                if key == "api_key" && !value.is_empty() {
-                    return Ok(value.to_string());
                 }
             }
         }
