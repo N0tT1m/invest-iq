@@ -93,16 +93,18 @@ class RiskRadarComponent:
                 risk_scores["market_risk"] = min(100, max(0, beta * 50))
 
             # Volatility risk
-            volatility = metrics.get("volatility", 0.2)
+            # volatility from quant engine is already a percentage (e.g. 25.0 for 25%)
+            volatility = metrics.get("volatility", 20.0)
             if isinstance(volatility, (int, float)):
                 # Annualized vol > 50% is very high risk
-                risk_scores["volatility_risk"] = min(100, max(0, volatility * 200))
+                risk_scores["volatility_risk"] = min(100, max(0, volatility * 2))
 
             # Max drawdown contributes to volatility risk
+            # max_drawdown from quant engine is already a percentage (e.g. 15.0 for 15%)
             max_dd = metrics.get("max_drawdown", 0)
             if isinstance(max_dd, (int, float)):
                 risk_scores["volatility_risk"] = min(100, max(0,
-                    risk_scores["volatility_risk"] * 0.6 + abs(max_dd) * 100 * 0.4
+                    risk_scores["volatility_risk"] * 0.6 + abs(max_dd) * 2 * 0.4
                 ))
 
         # Sentiment risk from sentiment analysis

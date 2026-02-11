@@ -15,13 +15,13 @@ from typing import Dict, List, Tuple, Any
 try:
     from .features import (
         FEATURE_NAMES, NUM_FEATURES, features_to_array, load_analysis_features,
-        load_backtest_trades, get_db_connection,
+        load_backtest_trades, load_training_from_bars, get_db_connection,
     )
     from .model import MetaModel, ConfidenceCalibrator, WeightOptimizer
 except ImportError:
     from features import (
         FEATURE_NAMES, NUM_FEATURES, features_to_array, load_analysis_features,
-        load_backtest_trades, get_db_connection,
+        load_backtest_trades, load_training_from_bars, get_db_connection,
     )
     from model import MetaModel, ConfidenceCalibrator, WeightOptimizer
 
@@ -99,14 +99,39 @@ def prepare_meta_model_data(
         y_cls_list.append(1.0 if pnl > 0 else 0.0)
         y_reg_list.append(pnl)
 
+    # From training_bars (bulk bars from data-loader → derived features)
+    X_bars, y_cls_bars, y_reg_bars = load_training_from_bars(db_path)
+    if len(X_bars) > 0:
+        logger.info("Adding %d samples from training_bars", len(X_bars))
+        X_list.extend(X_bars.tolist())
+        y_cls_list.extend(y_cls_bars.tolist())
+        y_reg_list.extend(y_reg_bars.tolist())
+
     if not X_list:
         return np.empty((0, NUM_FEATURES)), np.empty(0), np.empty(0)
 
-    return (
-        np.array(X_list, dtype=np.float32),
-        np.array(y_cls_list, dtype=np.float32),
-        np.array(y_reg_list, dtype=np.float32),
-    )
+    X = np.array(X_list, dtype=np.float32)
+    y_cls = np.array(y_cls_list, dtype=np.float32)
+    y_reg = np.array(y_reg_list, dtype=np.float32)
+
+    # --- Data filtering ---
+    initial_len = len(X)
+
+    # Remove rows with NaN/inf in features
+    valid_mask = np.all(np.isfinite(X), axis=1)
+    # Remove extreme return outliers (>50% move — likely data errors)
+    valid_mask &= (y_reg > -50) & (y_reg < 50)
+    # Remove rows where all features are zero (empty/failed analysis)
+    valid_mask &= np.any(X != 0, axis=1)
+
+    X, y_cls, y_reg = X[valid_mask], y_cls[valid_mask], y_reg[valid_mask]
+
+    removed = initial_len - len(X)
+    if removed > 0:
+        logger.info("Meta-model data filtering: %d → %d samples (%d removed)",
+                     initial_len, len(X), removed)
+
+    return X, y_cls, y_reg
 
 
 def train_meta_model(
@@ -131,6 +156,13 @@ def train_meta_model(
     dtrain_cls = xgb.DMatrix(X_train, label=y_cls_train, feature_names=FEATURE_NAMES)
     dval_cls = xgb.DMatrix(X_val, label=y_cls_val, feature_names=FEATURE_NAMES)
 
+    # Use GPU if available (XGBoost supports cuda, not MPS)
+    try:
+        import torch
+        xgb_device = "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        xgb_device = "cpu"
+
     clf_params = {
         "objective": "binary:logistic",
         "eval_metric": "auc",
@@ -139,6 +171,8 @@ def train_meta_model(
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "min_child_weight": 5,
+        "device": xgb_device,
+        "tree_method": "gpu_hist" if xgb_device == "cuda" else "hist",
         "seed": 42,
     }
     clf_model = xgb.train(
@@ -161,6 +195,8 @@ def train_meta_model(
         "subsample": 0.8,
         "colsample_bytree": 0.8,
         "min_child_weight": 5,
+        "device": xgb_device,
+        "tree_method": "gpu_hist" if xgb_device == "cuda" else "hist",
         "seed": 42,
     }
     reg_model = xgb.train(
@@ -336,7 +372,55 @@ def prepare_weight_data(
         X_list.append(arr)
         y_list.append(weights)
 
-    return np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.float32)
+    # Also generate weight targets from training_bars if analysis data is sparse
+    X_bars, y_cls_bars, y_reg_bars = load_training_from_bars(db_path)
+    if len(X_bars) > 0:
+        logger.info("Adding %d weight samples from training_bars", len(X_bars))
+        for i in range(len(X_bars)):
+            actual_direction = 1.0 if y_reg_bars[i] > 0 else (-1.0 if y_reg_bars[i] < 0 else 0.0)
+            features = X_bars[i]
+            # Only technical and quant scores are populated from bars
+            engine_scores = [
+                features[0] / 100.0,  # technical_score
+                features[1] / 100.0,  # fundamental_score (0)
+                features[2] / 100.0,  # quant_score
+                features[3] / 100.0,  # sentiment_score (0)
+            ]
+            engine_accuracy = []
+            for score in engine_scores:
+                if actual_direction != 0.0:
+                    alignment = score * actual_direction
+                    engine_accuracy.append(max(0.0, alignment))
+                else:
+                    engine_accuracy.append(max(0.0, 1.0 - abs(score)))
+            acc_arr = np.array(engine_accuracy)
+            if acc_arr.sum() > 0:
+                exp_vals = np.exp(acc_arr * 3.0)
+                weights = exp_vals / exp_vals.sum()
+            else:
+                weights = np.array([0.25, 0.25, 0.25, 0.25])
+            X_list.append(features)
+            y_list.append(weights)
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+
+    # --- Data filtering ---
+    initial_len = len(X)
+
+    # Remove rows with NaN/inf
+    valid_mask = np.all(np.isfinite(X), axis=1) & np.all(np.isfinite(y), axis=1)
+    # Remove rows where all features are zero
+    valid_mask &= np.any(X != 0, axis=1)
+
+    X, y = X[valid_mask], y[valid_mask]
+
+    removed = initial_len - len(X)
+    if removed > 0:
+        logger.info("Weight optimizer data filtering: %d → %d samples (%d removed)",
+                     initial_len, len(X), removed)
+
+    return X, y
 
 
 def train_weight_optimizer(
@@ -355,6 +439,13 @@ def train_weight_optimizer(
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y[:split], y[split:]
 
+    # Use GPU if available
+    try:
+        import torch
+        xgb_device = "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        xgb_device = "cpu"
+
     # XGBoost multi-output: train 4 separate models (one per weight)
     # and combine predictions, then softmax-normalize
     models = []
@@ -369,6 +460,8 @@ def train_weight_optimizer(
             "learning_rate": 0.05,
             "subsample": 0.8,
             "colsample_bytree": 0.8,
+            "device": xgb_device,
+            "tree_method": "gpu_hist" if xgb_device == "cuda" else "hist",
             "seed": 42,
         }
         model = xgb.train(

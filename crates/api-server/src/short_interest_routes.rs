@@ -85,11 +85,11 @@ async fn get_short_interest(
     let rsi = tech_metrics.get("rsi").and_then(|v| v.as_f64());
     let bb_width = tech_metrics.get("bb_width").and_then(|v| v.as_f64());
 
-    // Get 90 days of volume data
+    // Get 252 days for proper 1-year volatility percentile
     let bars = state.orchestrator.get_bars(
         &symbol,
         analysis_core::Timeframe::Day1,
-        90,
+        252,
     ).await.ok();
 
     // Volume spike: latest volume / 20d average
@@ -108,9 +108,9 @@ async fn get_short_interest(
         if avg_20d > 0.0 { Some(avg_5d / avg_20d) } else { None }
     });
 
-    // Volatility percentile: current 20d vol vs 90d range
+    // Volatility percentile: current 20d vol vs 1-year range
     let volatility_percentile = bars.as_ref().and_then(|b| {
-        if b.len() < 30 { return None; }
+        if b.len() < 60 { return None; }
         // Calculate rolling 20d volatility at several points
         let mut vols = Vec::new();
         for i in 20..b.len() {
@@ -122,10 +122,10 @@ async fn get_short_interest(
             let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
             vols.push(var.sqrt() * (252.0_f64).sqrt() * 100.0);
         }
-        if vols.is_empty() { return None; }
+        if vols.len() < 2 { return None; }
         let current = vols.last()?;
-        let below = vols.iter().filter(|v| *v <= current).count();
-        Some((below as f64 / vols.len() as f64) * 100.0)
+        let below = vols.iter().filter(|v| *v < current).count();
+        Some((below as f64 / (vols.len() - 1).max(1) as f64) * 100.0)
     });
 
     // BB squeeze: bb_width < 0.04 is considered a squeeze
@@ -161,15 +161,21 @@ async fn get_short_interest(
         description: format!("Recent return: {:+.1}%", recent_return.unwrap_or(0.0)),
     });
 
-    // 4. Volatility (15%)
-    let vol_comp_score = volatility_percentile.map(|p| (p / 100.0 * 15.0).clamp(0.0, 15.0)).unwrap_or(
-        volatility.map(|v| ((v - 20.0) / 60.0 * 15.0).clamp(0.0, 15.0)).unwrap_or(0.0)
+    // 4. Volatility Compression (15%) — LOW vol percentile = squeeze setup = high score
+    let vol_comp_score = volatility_percentile.map(|p| ((100.0 - p) / 100.0 * 15.0).clamp(0.0, 15.0)).unwrap_or(
+        volatility.map(|v| ((40.0 - v.max(0.0)) / 40.0 * 15.0).clamp(0.0, 15.0)).unwrap_or(0.0)
     );
     components.push(SqueezeComponent {
-        name: "Volatility".to_string(),
+        name: "Vol Compression".to_string(),
         score: (vol_comp_score * 10.0).round() / 10.0,
         max_score: 15.0,
-        description: format!("Vol percentile: {:.0}%", volatility_percentile.unwrap_or(0.0)),
+        description: format!(
+            "Vol percentile: {:.0}% — {}",
+            volatility_percentile.unwrap_or(0.0),
+            if volatility_percentile.unwrap_or(50.0) < 25.0 { "Compressed" }
+            else if volatility_percentile.unwrap_or(50.0) < 50.0 { "Below avg" }
+            else { "Normal/Elevated" }
+        ),
     });
 
     // 5. BB Squeeze (20%)

@@ -136,33 +136,40 @@ impl MultiTimeframeAnalyzer {
         }
     }
 
-    /// Fetch data for all timeframes
+    /// Fetch data for all timeframes concurrently using join_all
     pub async fn fetch_all_timeframes(
         &self,
         symbol: &str,
     ) -> Result<MultiTimeframeData> {
-        let mut data = HashMap::new();
         let to = Utc::now();
+        let from = to - Duration::days(self.lookback_days);
 
-        for timeframe in Timeframe::all() {
-            let (multiplier, timespan) = timeframe.to_polygon_params();
-            let from = to - Duration::days(self.lookback_days);
-
-            debug!("Fetching {} data for {}", timeframe.name(), symbol);
-
-            match self.client.get_aggregates(symbol, multiplier, timespan, from, to).await {
-                Ok(bars) => {
-                    if !bars.is_empty() {
-                        data.insert(timeframe, bars);
-                    } else {
-                        debug!("No data for {} on {}", symbol, timeframe.name());
+        // Fetch all 5 timeframes concurrently
+        let futures: Vec<_> = Timeframe::all()
+            .into_iter()
+            .map(|timeframe| {
+                let client = &self.client;
+                let symbol = symbol.to_string();
+                let (multiplier, timespan) = timeframe.to_polygon_params();
+                async move {
+                    debug!("Fetching {} data for {}", timeframe.name(), symbol);
+                    match client.get_aggregates(&symbol, multiplier, timespan, from, to).await {
+                        Ok(bars) if !bars.is_empty() => Some((timeframe, bars)),
+                        Ok(_) => {
+                            debug!("No data for {} on {}", symbol, timeframe.name());
+                            None
+                        }
+                        Err(e) => {
+                            debug!("Failed to fetch {} data: {}", timeframe.name(), e);
+                            None
+                        }
                     }
                 }
-                Err(e) => {
-                    debug!("Failed to fetch {} data: {}", timeframe.name(), e);
-                }
-            }
-        }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+        let data: HashMap<Timeframe, Vec<Bar>> = results.into_iter().flatten().collect();
 
         Ok(MultiTimeframeData {
             symbol: symbol.to_string(),
@@ -171,30 +178,36 @@ impl MultiTimeframeAnalyzer {
         })
     }
 
-    /// Fetch data for specific timeframes
+    /// Fetch data for specific timeframes concurrently
     pub async fn fetch_timeframes(
         &self,
         symbol: &str,
         timeframes: &[Timeframe],
     ) -> Result<MultiTimeframeData> {
-        let mut data = HashMap::new();
         let to = Utc::now();
+        let from = to - Duration::days(self.lookback_days);
 
-        for &timeframe in timeframes {
-            let (multiplier, timespan) = timeframe.to_polygon_params();
-            let from = to - Duration::days(self.lookback_days);
-
-            match self.client.get_aggregates(symbol, multiplier, timespan, from, to).await {
-                Ok(bars) => {
-                    if !bars.is_empty() {
-                        data.insert(timeframe, bars);
+        let futures: Vec<_> = timeframes
+            .iter()
+            .map(|&timeframe| {
+                let client = &self.client;
+                let symbol = symbol.to_string();
+                let (multiplier, timespan) = timeframe.to_polygon_params();
+                async move {
+                    match client.get_aggregates(&symbol, multiplier, timespan, from, to).await {
+                        Ok(bars) if !bars.is_empty() => Some((timeframe, bars)),
+                        Ok(_) => None,
+                        Err(e) => {
+                            debug!("Failed to fetch {} data: {}", timeframe.name(), e);
+                            None
+                        }
                     }
                 }
-                Err(e) => {
-                    debug!("Failed to fetch {} data: {}", timeframe.name(), e);
-                }
-            }
-        }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+        let data: HashMap<Timeframe, Vec<Bar>> = results.into_iter().flatten().collect();
 
         Ok(MultiTimeframeData {
             symbol: symbol.to_string(),
@@ -397,6 +410,7 @@ mod tests {
                 low: 99.0 + i as f64,
                 close: 100.0 + i as f64,
                 volume: 1000.0,
+                vwap: None,
             })
             .collect();
 
@@ -411,6 +425,7 @@ mod tests {
                 low: 129.0 - i as f64,
                 close: 130.0 - i as f64,
                 volume: 1000.0,
+                vwap: None,
             })
             .collect();
 

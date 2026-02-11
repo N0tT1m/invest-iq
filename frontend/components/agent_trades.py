@@ -1,4 +1,5 @@
 """Agent Trade Approval Panel — review and approve/reject trades proposed by the trading agent."""
+import os
 import requests
 import dash_bootstrap_components as dbc
 from dash import html
@@ -30,6 +31,40 @@ class AgentTradesComponent:
                 f"{API_BASE}/api/agent/trades/{trade_id}/review",
                 json={"action": action},
                 headers=get_headers(),
+                timeout=API_TIMEOUT,
+            )
+            return response.json()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def cancel_order(order_id):
+        """Cancel an open order via broker API."""
+        try:
+            headers = get_headers()
+            live_key = os.environ.get("LIVE_TRADING_KEY", "")
+            if live_key:
+                headers["X-Live-Trading-Key"] = live_key
+            response = requests.post(
+                f"{API_BASE}/api/broker/orders/{order_id}/cancel",
+                headers=headers,
+                timeout=API_TIMEOUT,
+            )
+            return response.json()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def close_position(symbol):
+        """Close an open position via broker API."""
+        try:
+            headers = get_headers()
+            live_key = os.environ.get("LIVE_TRADING_KEY", "")
+            if live_key:
+                headers["X-Live-Trading-Key"] = live_key
+            response = requests.delete(
+                f"{API_BASE}/api/broker/positions/{symbol}",
+                headers=headers,
                 timeout=API_TIMEOUT,
             )
             return response.json()
@@ -90,12 +125,16 @@ def _trade_card(trade, show_actions=False):
         "expired": "dark",
     }.get(status, "info")
 
+    price = trade.get("price")
+    price_str = f" @ ${float(price):,.2f}" if price else ""
+
     body_children = [
         dbc.Row([
             dbc.Col([
                 html.Span(f"{action.upper()} ", className=f"text-{action_color} fw-bold"),
                 html.Span(f"{shares:g} shares of "),
                 html.Span(symbol, className="fw-bold"),
+                html.Span(price_str, className="text-muted"),
             ], md=5),
             dbc.Col([
                 html.Small(f"Signal: {signal_type}", className="text-muted d-block"),
@@ -136,6 +175,34 @@ def _trade_card(trade, show_actions=False):
                 ], md=6),
             ], className="mt-2")
         )
+
+    # Executed trades get Cancel Order / Close Position buttons
+    order_id = trade.get("order_id", "")
+    if status == "executed" and order_id:
+        buttons = []
+        buttons.append(
+            dbc.Col([
+                dbc.Button(
+                    "Cancel Order",
+                    id={"type": "agent-cancel-btn", "index": order_id},
+                    color="outline-warning",
+                    size="sm",
+                    className="w-100",
+                ),
+            ], md=6),
+        )
+        buttons.append(
+            dbc.Col([
+                dbc.Button(
+                    "Close Position",
+                    id={"type": "agent-close-btn", "index": symbol},
+                    color="outline-danger",
+                    size="sm",
+                    className="w-100",
+                ),
+            ], md=6),
+        )
+        body_children.append(dbc.Row(buttons, className="mt-2"))
 
     return dbc.Card(
         dbc.CardBody(body_children, className="py-2 px-3"),

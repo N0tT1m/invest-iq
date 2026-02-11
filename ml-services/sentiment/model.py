@@ -19,7 +19,13 @@ class FinBERTSentiment:
         compile: bool = True,
         cache_dir: str = "./models/sentiment"
     ):
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            resolved_device = "cuda"
+        elif torch.backends.mps.is_available():
+            resolved_device = "mps"
+        else:
+            resolved_device = "cpu"
+        self.device = torch.device(resolved_device)
         self.model_name = model_name
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -58,9 +64,9 @@ class FinBERTSentiment:
 
         self.model.eval()
 
-        # Compile model for faster inference (PyTorch 2.0+)
-        if compile and hasattr(torch, 'compile'):
-            logger.info("Compiling model with torch.compile")
+        # Compile model for faster inference (PyTorch 2.0+, CUDA and MPS supported)
+        if compile and hasattr(torch, 'compile') and resolved_device in ("cuda", "mps"):
+            logger.info(f"Compiling model with torch.compile (device={resolved_device})")
             try:
                 self.model = torch.compile(self.model)
             except Exception as e:

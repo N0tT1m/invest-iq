@@ -36,7 +36,6 @@ impl DiscordNotifier {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn send_daily_report(&self, report: &DailyReport) -> Result<()> {
         let message = format!(
             r#"**Daily Trading Report**
@@ -48,6 +47,10 @@ impl DiscordNotifier {
 **Worst Trade**: {} (${:.2})
 
 **Account Balance**: ${:.2}
+**Positions Held**: {}
+**Largest Position**: {}
+**Exposure**: {:.1}%
+**Market Regime**: {}
 "#,
             report.pnl,
             report.pnl_percent,
@@ -57,7 +60,11 @@ impl DiscordNotifier {
             report.best_trade_pnl,
             report.worst_trade_symbol,
             report.worst_trade_pnl,
-            report.account_balance
+            report.account_balance,
+            report.positions_held,
+            report.largest_position,
+            report.exposure_percent,
+            report.regime,
         );
 
         self.send_message(&message).await
@@ -65,7 +72,6 @@ impl DiscordNotifier {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct DailyReport {
     pub pnl: f64,
     pub pnl_percent: f64,
@@ -76,4 +82,8 @@ pub struct DailyReport {
     pub worst_trade_symbol: String,
     pub worst_trade_pnl: f64,
     pub account_balance: f64,
+    pub positions_held: usize,
+    pub largest_position: String,
+    pub exposure_percent: f64,
+    pub regime: String,
 }

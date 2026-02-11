@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 analysis-core = { path = "../analysis-core" }
 analysis-orchestrator = { path = "../analysis-orchestrator" }
+polygon-client = { path = "../polygon-client" }
 
 tokio = { workspace = true }
 serenity = { workspace = true }
@@ -21,6 +22,8 @@ tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
+
+futures = "0.3"
 
 # Chart generation
 plotters = "0.3"

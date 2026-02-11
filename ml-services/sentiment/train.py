@@ -32,18 +32,24 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 sys.path.append(str(Path(__file__).parent.parent))
 from shared.config import config
 from shared.database import MLDatabase
+from shared.polygon import fetch_active_tickers
+
+try:
+    import invest_iq_data
+    _USE_RUST_FETCHER = True
+except ImportError:
+    _USE_RUST_FETCHER = False
+
+try:
+    import sqlite3
+    _HAS_SQLITE = True
+except ImportError:
+    _HAS_SQLITE = False
 
 
 # ---- Polygon News + Price Data ----
 
 POLYGON_BASE = "https://api.polygon.io"
-
-DEFAULT_SYMBOLS = [
-    "AAPL", "MSFT", "GOOGL", "NVDA", "META", "AMZN", "TSLA",
-    "JPM", "BAC", "GS", "JNJ", "UNH", "PFE", "XOM", "CVX",
-    "HD", "NKE", "KO", "PG", "DIS", "NFLX", "V", "MA",
-    "CAT", "BA", "NEE", "SPG", "LIN",
-]
 
 
 def _polygon_get(path: str, params: dict, api_key: str) -> dict:
@@ -56,11 +62,38 @@ def _polygon_get(path: str, params: dict, api_key: str) -> dict:
 
 def fetch_polygon_news(
     symbols: list[str],
-    days_back: int = 90,
+    days_back: int = 365,
     api_key: str = "",
-    delay: float = 0.25,
+    delay: float = 0.01,
 ) -> list[dict]:
-    """Fetch news articles from Polygon for multiple symbols (with pagination)."""
+    """Fetch news articles from Polygon for multiple symbols.
+
+    Uses Rust concurrent fetcher if available (~20-50x faster).
+    Falls back to sequential Python requests.
+    """
+    if _USE_RUST_FETCHER:
+        logger.info(f"Using Rust fetcher for news ({len(symbols)} symbols)")
+        raw = invest_iq_data.fetch_news_multi(api_key, symbols, 1000)
+        all_articles = []
+        seen_ids = set()
+        for symbol, articles in raw.items():
+            for article in articles:
+                title = article.get("title", "") or ""
+                aid = title
+                if aid in seen_ids:
+                    continue
+                seen_ids.add(aid)
+                all_articles.append({
+                    "id": aid,
+                    "title": title,
+                    "description": article.get("description", "") or "",
+                    "published_utc": article.get("published_utc", "") or "",
+                    "tickers": article.get("tickers") or [],
+                    "primary_symbol": symbol,
+                })
+        logger.info(f"Total unique articles: {len(all_articles)}")
+        return all_articles
+
     end = datetime.now()
     start = end - timedelta(days=days_back)
 
@@ -145,10 +178,10 @@ def fetch_price_change(symbol: str, date_str: str, days_forward: int, api_key: s
 
 def build_polygon_dataset(
     symbols: list[str],
-    days_back: int = 90,
+    days_back: int = 365,
     return_horizon: int = 5,
     api_key: str = "",
-    delay: float = 0.25,
+    delay: float = 0.01,
 ) -> pd.DataFrame:
     """Build labeled sentiment dataset from Polygon news + actual price returns.
 
@@ -194,8 +227,96 @@ def build_polygon_dataset(
         raise ValueError("No labeled samples generated. Check Polygon API key and data availability.")
 
     df = pd.DataFrame(rows)
+    df = filter_sentiment_data(df)
 
     # Log label distribution
+    for label, name in [(0, "positive"), (1, "negative"), (2, "neutral")]:
+        count = len(df[df["label"] == label])
+        logger.info(f"  {name}: {count} ({count/len(df)*100:.1f}%)")
+
+    return df
+
+
+def filter_sentiment_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter and clean sentiment training data.
+
+    Removes:
+      - Empty or very short text (<10 chars)
+      - Duplicate texts (keep first)
+      - Extreme return outliers (>50% move in 5 days — likely data errors)
+      - Rows with missing labels
+    """
+    initial_len = len(df)
+
+    # Drop empty/short text
+    df = df[df["text"].str.len() >= 10]
+
+    # Drop duplicates by text
+    df = df.drop_duplicates(subset=["text"], keep="first")
+
+    # Remove extreme return outliers (likely stock splits, data errors)
+    if "return_pct" in df.columns:
+        df = df[(df["return_pct"] > -50) & (df["return_pct"] < 50)]
+
+    # Drop rows with missing labels
+    df = df.dropna(subset=["label"])
+    df["label"] = df["label"].astype(int)
+
+    removed = initial_len - len(df)
+    logger.info(f"Sentiment filtering: {initial_len} → {len(df)} samples ({removed} removed)")
+
+    return df.reset_index(drop=True)
+
+
+# ---- DB-based dataset ----
+
+def build_dataset_from_db(
+    db_path: str,
+    return_threshold: float = 0.5,
+) -> pd.DataFrame:
+    """Build labeled sentiment dataset from the training_news table.
+
+    Reads pre-fetched news with price labels from data-loader --news.
+
+    Label mapping (FinBERT format):
+      0 = positive (price went up > threshold%)
+      1 = negative (price went down < -threshold%)
+      2 = neutral  (price stayed within +/-threshold%)
+    """
+    if not _HAS_SQLITE:
+        raise ImportError("sqlite3 module not available")
+
+    conn = sqlite3.connect(db_path)
+    df = pd.read_sql_query(
+        "SELECT symbol, title, description, price_change_5d FROM training_news WHERE price_change_5d IS NOT NULL",
+        conn,
+    )
+    conn.close()
+
+    if df.empty:
+        raise ValueError("No labeled news found in training_news table")
+
+    # Build text column: title + truncated description
+    df["text"] = df.apply(
+        lambda r: f"{r['title']}. {r['description'][:200]}" if r["description"] else r["title"],
+        axis=1,
+    )
+
+    # Label based on actual price movement
+    def label_row(pct):
+        if pct > return_threshold:
+            return 0  # positive
+        elif pct < -return_threshold:
+            return 1  # negative
+        else:
+            return 2  # neutral
+
+    df["label"] = df["price_change_5d"].apply(label_row)
+    df["return_pct"] = df["price_change_5d"]
+
+    df = filter_sentiment_data(df)
+
+    logger.info(f"Built dataset from DB: {len(df)} labeled samples")
     for label, name in [(0, "positive"), (1, "negative"), (2, "neutral")]:
         count = len(df[df["label"] == label])
         logger.info(f"  {name}: {count} ({count/len(df)*100:.1f}%)")
@@ -293,6 +414,11 @@ class FinBERTTrainer:
 
         data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
+        use_cuda = torch.cuda.is_available()
+        use_mps = torch.backends.mps.is_available()
+        # num_workers>0 crashes on macOS (ObjC fork safety)
+        num_workers = 4 if use_cuda else 0
+
         training_args = TrainingArguments(
             output_dir=str(self.output_dir),
             learning_rate=self.learning_rate,
@@ -308,8 +434,10 @@ class FinBERTTrainer:
             push_to_hub=False,
             logging_dir=str(self.output_dir / "logs"),
             logging_steps=100,
-            fp16=torch.cuda.is_available(),
-            dataloader_num_workers=4,
+            fp16=use_cuda,
+            use_mps_device=use_mps,
+            dataloader_num_workers=num_workers,
+            dataloader_pin_memory=use_cuda,
             remove_unused_columns=True,
         )
 
@@ -361,9 +489,11 @@ def main():
     parser.add_argument("--use-polygon", action="store_true",
                        help="Fetch news from Polygon, label with actual price returns (recommended)")
     parser.add_argument("--symbols", nargs="+", default=None,
-                       help="Symbols to fetch news for (default: 28 diversified stocks)")
-    parser.add_argument("--days-back", type=int, default=90, help="Days of news history to fetch")
+                       help="Symbols to fetch news for (default: all active tickers from Polygon)")
+    parser.add_argument("--days-back", type=int, default=365, help="Days of news history to fetch")
     parser.add_argument("--return-horizon", type=int, default=5, help="Days forward to measure price return")
+    parser.add_argument("--from-db", action="store_true",
+                       help="Load news from training_news table (populated by data-loader --news)")
     parser.add_argument("--output-dir", type=str, default="./models/sentiment/fine-tuned")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -381,13 +511,24 @@ def main():
 
     polygon_df = None
 
-    if args.use_polygon:
+    if args.from_db:
+        logger.info(f"Loading labeled news from DB: {args.db_path}")
+        try:
+            polygon_df = build_dataset_from_db(args.db_path)
+        except Exception as e:
+            logger.error(f"--from-db failed: {e}")
+            sys.exit(1)
+    elif args.use_polygon:
         api_key = os.environ.get("POLYGON_API_KEY", "")
         if not api_key:
             logger.error("POLYGON_API_KEY env var not set. Use --use-public as fallback.")
             sys.exit(1)
 
-        symbols = args.symbols or DEFAULT_SYMBOLS
+        if args.symbols:
+            symbols = args.symbols
+        else:
+            logger.info("Fetching all active tickers from Polygon...")
+            symbols = fetch_active_tickers(api_key=api_key)
         logger.info(f"Building dataset from Polygon news ({len(symbols)} symbols, {args.days_back}d lookback)")
         polygon_df = build_polygon_dataset(
             symbols=symbols,
@@ -406,7 +547,10 @@ def main():
         api_key = os.environ.get("POLYGON_API_KEY", "")
         if api_key:
             logger.info("POLYGON_API_KEY found, defaulting to --use-polygon")
-            symbols = args.symbols or DEFAULT_SYMBOLS
+            if args.symbols:
+                symbols = args.symbols
+            else:
+                symbols = fetch_active_tickers(api_key=api_key, max_tickers=args.max_tickers)
             polygon_df = build_polygon_dataset(
                 symbols=symbols,
                 days_back=args.days_back,

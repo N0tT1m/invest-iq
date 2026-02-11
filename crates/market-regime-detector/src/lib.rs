@@ -424,6 +424,7 @@ mod tests {
                     low: base_price - 1.0,
                     close: base_price,
                     volume: 1000.0,
+                    vwap: None,
                 }
             })
             .collect()

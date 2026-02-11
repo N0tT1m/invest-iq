@@ -25,6 +25,8 @@ pub struct PendingTrade {
     pub proposed_at: String,
     pub status: String, // "pending", "approved", "rejected", "executed", "expired"
     pub reviewed_at: Option<String>,
+    pub price: Option<f64>,
+    pub order_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -66,7 +68,7 @@ async fn list_pending_trades(
 
     let trades: Vec<PendingTrade> = sqlx::query_as(
         "SELECT id, symbol, action, shares, confidence, reason, signal_type,
-                proposed_at, status, reviewed_at
+                proposed_at, status, reviewed_at, price, order_id
          FROM pending_trades
          ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, proposed_at DESC
          LIMIT 100"
@@ -88,7 +90,7 @@ async fn get_pending_trade(
 
     let trade: PendingTrade = sqlx::query_as(
         "SELECT id, symbol, action, shares, confidence, reason, signal_type,
-                proposed_at, status, reviewed_at
+                proposed_at, status, reviewed_at, price, order_id
          FROM pending_trades WHERE id = ?"
     )
     .bind(id)
@@ -128,7 +130,7 @@ async fn propose_trade(
 
     let trade: PendingTrade = sqlx::query_as(
         "SELECT id, symbol, action, shares, confidence, reason, signal_type,
-                proposed_at, status, reviewed_at
+                proposed_at, status, reviewed_at, price, order_id
          FROM pending_trades WHERE id = ?"
     )
     .bind(id)
@@ -160,7 +162,7 @@ async fn review_trade(
     // Verify trade is still pending
     let trade: PendingTrade = sqlx::query_as(
         "SELECT id, symbol, action, shares, confidence, reason, signal_type,
-                proposed_at, status, reviewed_at
+                proposed_at, status, reviewed_at, price, order_id
          FROM pending_trades WHERE id = ?"
     )
     .bind(id)
@@ -189,8 +191,9 @@ async fn review_trade(
             let order = alpaca_client.submit_market_order(market_order).await?;
 
             sqlx::query(
-                "UPDATE pending_trades SET status = 'executed', reviewed_at = datetime('now') WHERE id = ?"
+                "UPDATE pending_trades SET status = 'executed', reviewed_at = datetime('now'), order_id = ? WHERE id = ?"
             )
+            .bind(&order.id)
             .bind(id)
             .execute(pool)
             .await?;

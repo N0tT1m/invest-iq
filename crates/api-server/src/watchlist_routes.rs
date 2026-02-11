@@ -63,26 +63,64 @@ pub fn watchlist_routes() -> Router<AppState> {
         .route("/api/watchlist/scan", get(scan_opportunities))
 }
 
-/// Lightweight stock universe for fast scanning (covers major sectors)
+/// Broader stock universe for scanning (covers major sectors + mid-caps)
 const QUICK_UNIVERSE: &[(&str, &str)] = &[
+    // Technology
     ("AAPL", "Technology"), ("MSFT", "Technology"), ("NVDA", "Technology"),
-    ("GOOGL", "Communication Services"), ("AMZN", "Consumer Discretionary"),
-    ("META", "Communication Services"), ("TSLA", "Consumer Discretionary"),
-    ("JPM", "Financials"), ("V", "Financials"),
-    ("UNH", "Healthcare"), ("JNJ", "Healthcare"),
-    ("XOM", "Energy"), ("PG", "Consumer Staples"),
-    ("HD", "Industrials"), ("LLY", "Healthcare"),
+    ("AVGO", "Technology"), ("AMD", "Technology"), ("CRM", "Technology"),
+    ("ORCL", "Technology"), ("ADBE", "Technology"),
+    // Communication Services
+    ("GOOGL", "Communication Services"), ("META", "Communication Services"),
+    ("NFLX", "Communication Services"), ("DIS", "Communication Services"),
+    // Consumer Discretionary
+    ("AMZN", "Consumer Discretionary"), ("TSLA", "Consumer Discretionary"),
+    ("NKE", "Consumer Discretionary"), ("SBUX", "Consumer Discretionary"),
+    // Financials
+    ("JPM", "Financials"), ("V", "Financials"), ("GS", "Financials"),
+    ("BAC", "Financials"), ("MA", "Financials"),
+    // Healthcare
+    ("UNH", "Healthcare"), ("JNJ", "Healthcare"), ("LLY", "Healthcare"),
+    ("PFE", "Healthcare"), ("ABBV", "Healthcare"), ("MRK", "Healthcare"),
+    // Energy
+    ("XOM", "Energy"), ("CVX", "Energy"), ("COP", "Energy"),
+    // Consumer Staples
+    ("PG", "Consumer Staples"), ("KO", "Consumer Staples"), ("COST", "Consumer Staples"),
+    // Industrials
+    ("HD", "Industrials"), ("CAT", "Industrials"), ("BA", "Industrials"),
+    ("UPS", "Industrials"), ("GE", "Industrials"),
+    // Materials & Utilities
+    ("LIN", "Materials"), ("NEE", "Utilities"), ("SO", "Utilities"),
 ];
 
-/// Compute a quick technical signal from bars (SMA cross + momentum)
-fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> (f64, f64, String) {
+/// Result of quick technical scan with rich context
+struct QuickSignalResult {
+    signal_score: f64,
+    confidence: f64,
+    summary: String,
+    reason: String,
+    potential_return: Option<f64>,
+    tags: Vec<String>,
+}
+
+/// Compute a quick technical signal from bars with rich context
+fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> QuickSignalResult {
     if bars.len() < 21 {
-        return (0.5, 0.3, "Insufficient data".to_string());
+        return QuickSignalResult {
+            signal_score: 0.5, confidence: 0.3,
+            summary: "Insufficient data".to_string(),
+            reason: "Not enough price history".to_string(),
+            potential_return: None, tags: vec![],
+        };
     }
 
     let current = match bars.last() {
         Some(b) => b.close,
-        None => return (0.5, 0.3, "No bar data".to_string()),
+        None => return QuickSignalResult {
+            signal_score: 0.5, confidence: 0.3,
+            summary: "No data".to_string(),
+            reason: "No bar data".to_string(),
+            potential_return: None, tags: vec![],
+        },
     };
     let len = bars.len();
 
@@ -113,6 +151,37 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> (f64, f64, String) {
         100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
     };
 
+    // 5-day return for momentum
+    let ret_5d = if len >= 6 {
+        (current - bars[len - 6].close) / bars[len - 6].close * 100.0
+    } else {
+        0.0
+    };
+
+    // Volume trend (5d avg vs 20d avg)
+    let vol_surge = if len >= 20 {
+        let avg_5d: f64 = bars[len-5..].iter().map(|b| b.volume).sum::<f64>() / 5.0;
+        let avg_20d: f64 = bars[len-20..].iter().map(|b| b.volume).sum::<f64>() / 20.0;
+        if avg_20d > 0.0 { Some(avg_5d / avg_20d) } else { None }
+    } else {
+        None
+    };
+
+    // Golden/death cross detection
+    let sma_cross = if len >= 50 && sma_20 != sma_50 {
+        let prev_sma_20: f64 = bars[len-21..len-1].iter().map(|b| b.close).sum::<f64>() / 20.0;
+        let prev_sma_50: f64 = bars[len-51..len-1].iter().map(|b| b.close).sum::<f64>() / 50.0;
+        if sma_20 > sma_50 && prev_sma_20 <= prev_sma_50 {
+            Some("golden_cross")
+        } else if sma_20 < sma_50 && prev_sma_20 >= prev_sma_50 {
+            Some("death_cross")
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Composite signal score (0.0=StrongSell, 1.0=StrongBuy)
     let trend_score = ((trend_20 + trend_50) / 2.0 / 10.0 + 0.5).clamp(0.0, 1.0);
     let rsi_score = if rsi > 70.0 { 0.3 } else if rsi > 50.0 { 0.7 } else if rsi > 30.0 { 0.4 } else { 0.2 };
@@ -120,12 +189,101 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> (f64, f64, String) {
 
     let confidence = (trend_20.abs() / 8.0).clamp(0.3, 0.85);
 
+    // Build rich summary (short, data-driven)
     let summary = format!(
-        "Price {:.1}% vs SMA20, RSI {:.0}",
-        trend_20, rsi
+        "${:.2} | {}{:.1}% 5d | RSI {:.0}{}",
+        current,
+        if ret_5d >= 0.0 { "+" } else { "" },
+        ret_5d,
+        rsi,
+        if let Some(vs) = vol_surge {
+            if vs > 1.5 { format!(" | Vol {:.1}x", vs) } else { String::new() }
+        } else { String::new() }
     );
 
-    (signal_score, confidence, summary)
+    // Build contextual reason (explains *why* the signal)
+    let mut reasons = Vec::new();
+    let mut tags = Vec::new();
+
+    // Trend context
+    if trend_20 > 3.0 && trend_50 > 3.0 {
+        reasons.push("Strong uptrend above both moving averages".to_string());
+        tags.push("Uptrend".to_string());
+    } else if trend_20 > 0.0 && trend_50 < 0.0 {
+        reasons.push("Short-term bounce but still below 50-day avg".to_string());
+        tags.push("Recovery".to_string());
+    } else if trend_20 < -3.0 && trend_50 < -3.0 {
+        reasons.push("Downtrend below both moving averages".to_string());
+        tags.push("Downtrend".to_string());
+    } else if trend_20 < 0.0 && trend_50 > 0.0 {
+        reasons.push("Short-term weakness in longer-term uptrend".to_string());
+        tags.push("Pullback".to_string());
+    }
+
+    // RSI context
+    if rsi > 70.0 {
+        reasons.push(format!("RSI overbought at {:.0} — potential reversal", rsi));
+        tags.push("Overbought".to_string());
+    } else if rsi < 30.0 {
+        reasons.push(format!("RSI oversold at {:.0} — potential bounce", rsi));
+        tags.push("Oversold".to_string());
+    }
+
+    // Cross events
+    if let Some(cross) = sma_cross {
+        if cross == "golden_cross" {
+            reasons.push("Golden cross: SMA-20 crossed above SMA-50".to_string());
+            tags.push("Golden Cross".to_string());
+        } else {
+            reasons.push("Death cross: SMA-20 crossed below SMA-50".to_string());
+            tags.push("Death Cross".to_string());
+        }
+    }
+
+    // Volume context
+    if let Some(vs) = vol_surge {
+        if vs > 2.0 {
+            reasons.push(format!("Volume surge {:.1}x above average — institutional interest", vs));
+            tags.push("High Volume".to_string());
+        } else if vs > 1.5 {
+            reasons.push(format!("Elevated volume {:.1}x — increased attention", vs));
+        }
+    }
+
+    // Momentum context
+    if ret_5d.abs() > 5.0 {
+        if ret_5d > 0.0 {
+            reasons.push(format!("Strong 5-day rally of +{:.1}%", ret_5d));
+            tags.push("Momentum".to_string());
+        } else {
+            reasons.push(format!("Sharp 5-day decline of {:.1}%", ret_5d));
+            tags.push("Sell-off".to_string());
+        }
+    }
+
+    let reason = if reasons.is_empty() {
+        format!("Trading near SMA-20 with neutral RSI at {:.0}", rsi)
+    } else {
+        reasons.join(". ")
+    };
+
+    // Estimate potential return (mean-reversion target toward SMA-50)
+    let potential_return = if signal_score > 0.6 {
+        Some(((sma_50 * 1.02 - current) / current * 100.0).clamp(0.5, 15.0))
+    } else if signal_score < 0.4 {
+        Some(((current - sma_50 * 0.98) / current * 100.0).clamp(0.5, 15.0))
+    } else {
+        None
+    };
+
+    QuickSignalResult {
+        signal_score,
+        confidence,
+        summary,
+        reason,
+        potential_return,
+        tags,
+    }
 }
 
 /// Get personalized opportunity feed
@@ -154,13 +312,13 @@ async fn get_personalized_feed(
             continue;
         }
 
-        let (signal_score, confidence, summary) = quick_signal_from_bars(&bars);
+        let result = quick_signal_from_bars(&bars);
 
-        if confidence < min_confidence {
+        if result.confidence < min_confidence {
             continue;
         }
 
-        let signal = OpportunitySignal::from_score(signal_score);
+        let signal = OpportunitySignal::from_score(result.signal_score);
 
         // Skip neutral signals for the feed
         if signal == OpportunitySignal::Neutral {
@@ -173,17 +331,17 @@ async fn get_personalized_feed(
             symbol: symbol.to_string(),
             name: None,
             signal,
-            confidence,
-            reason: summary.clone(),
-            summary,
+            confidence: result.confidence,
+            reason: result.reason,
+            summary: result.summary,
             event_type: None,
             event_date: None,
             relevance_score: 50.0, // Will be personalized by ranker
             current_price,
             price_target: None,
-            potential_return: None,
+            potential_return: result.potential_return,
             sector: Some(sector.to_string()),
-            tags: vec![],
+            tags: result.tags,
             detected_at: Utc::now(),
             expires_at: None,
         });
@@ -418,13 +576,13 @@ async fn scan_opportunities(
             continue;
         }
 
-        let (signal_score, confidence, summary) = quick_signal_from_bars(&bars);
+        let result = quick_signal_from_bars(&bars);
 
-        if confidence < min_confidence {
+        if result.confidence < min_confidence {
             continue;
         }
 
-        let signal = OpportunitySignal::from_score(signal_score);
+        let signal = OpportunitySignal::from_score(result.signal_score);
 
         let current_price = bars.last().map(|b| b.close);
 
@@ -432,17 +590,17 @@ async fn scan_opportunities(
             symbol: symbol.to_string(),
             name: None,
             signal,
-            confidence,
-            reason: summary.clone(),
-            summary,
+            confidence: result.confidence,
+            reason: result.reason,
+            summary: result.summary,
             event_type: None,
             event_date: None,
             relevance_score: 50.0,
             current_price,
             price_target: None,
-            potential_return: None,
+            potential_return: result.potential_return,
             sector: Some(sector.to_string()),
-            tags: vec![],
+            tags: result.tags,
             detected_at: Utc::now(),
             expires_at: None,
         });

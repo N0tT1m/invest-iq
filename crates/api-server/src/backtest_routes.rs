@@ -30,6 +30,9 @@ pub struct RunBacktestRequest {
     pub stop_loss_percent: Option<f64>,
     pub take_profit_percent: Option<f64>,
     pub confidence_threshold: f64,
+    pub commission_rate: Option<f64>,
+    pub slippage_rate: Option<f64>,
+    pub max_volume_participation: Option<f64>,
     pub allocation_strategy: Option<String>,
     pub symbol_weights: Option<HashMap<String, f64>>,
     pub rebalance_interval_days: Option<i32>,
@@ -122,7 +125,7 @@ async fn fetch_bars_and_signals(
             let bar_slice = &bars[..i];
             let bar = &bars[i];
 
-            let tech_result = tech_engine.analyze_enhanced(&symbol, bar_slice).ok();
+            let tech_result = tech_engine.analyze_enhanced(&symbol, bar_slice, None).ok();
             let quant_result = quant_engine.analyze_with_benchmark_and_rate(
                 &symbol,
                 bar_slice,
@@ -142,6 +145,9 @@ async fn fetch_bars_and_signals(
                     price: Decimal::from_f64(bar.close).unwrap_or_default(),
                     reason: format!("{:?} signal at {:.0}% confidence (point-in-time)",
                         signal, confidence * 100.0),
+                    order_type: None,
+                    limit_price: None,
+                    limit_expiry_bars: None,
                 });
             }
         }
@@ -211,12 +217,25 @@ async fn run_backtest(
         stop_loss_percent: req.stop_loss_percent,
         take_profit_percent: req.take_profit_percent,
         confidence_threshold: req.confidence_threshold,
-        commission_rate: None,
-        slippage_rate: None,
+        commission_rate: req.commission_rate,
+        slippage_rate: req.slippage_rate,
+        max_volume_participation: req.max_volume_participation,
         benchmark_bars,
         allocation_strategy: req.allocation_strategy,
         symbol_weights: req.symbol_weights,
         rebalance_interval_days: req.rebalance_interval_days,
+        allow_short_selling: None,
+        margin_multiplier: None,
+        signal_timeframe: None,
+        trailing_stop_percent: None,
+        max_drawdown_halt_percent: None,
+        regime_config: None,
+        commission_model: None,
+        allow_fractional_shares: None,
+        cash_sweep_rate: None,
+        incremental_rebalance: None,
+        param_search_space: None,
+        market_impact: None,
     };
 
     let mut engine = BacktestEngine::new(config);
@@ -360,12 +379,25 @@ async fn run_walk_forward(
         stop_loss_percent: req.stop_loss_percent,
         take_profit_percent: req.take_profit_percent,
         confidence_threshold: req.confidence_threshold,
-        commission_rate: None,
-        slippage_rate: None,
+        commission_rate: req.commission_rate,
+        slippage_rate: req.slippage_rate,
+        max_volume_participation: req.max_volume_participation,
         benchmark_bars: None,
         allocation_strategy: req.allocation_strategy,
         symbol_weights: req.symbol_weights,
         rebalance_interval_days: req.rebalance_interval_days,
+        allow_short_selling: None,
+        margin_multiplier: None,
+        signal_timeframe: None,
+        trailing_stop_percent: None,
+        max_drawdown_halt_percent: None,
+        regime_config: None,
+        commission_model: None,
+        allow_fractional_shares: None,
+        cash_sweep_rate: None,
+        incremental_rebalance: None,
+        param_search_space: None,
+        market_impact: None,
     };
 
     let result = WalkForwardRunner::run(&config, folds)
@@ -397,9 +429,19 @@ async fn get_monte_carlo(
 
     let simulations = query.simulations.min(10000).max(100);
 
-    tracing::info!("Running Monte Carlo ({} simulations) on backtest {}", simulations, id);
+    tracing::info!(
+        "Running Monte Carlo ({} sims) on backtest {} with {} trades. Trade P&L%: {:?}",
+        simulations, id, trades.len(),
+        trades.iter().map(|t| t.profit_loss_percent).collect::<Vec<_>>()
+    );
 
     let mc_result = run_monte_carlo(&trades, result.initial_capital, simulations);
+
+    tracing::info!(
+        "Monte Carlo result: P(profit)={:.1}%, P(ruin)={:.1}%, median_return={:.2}%, median_sharpe={:.3}",
+        mc_result.probability_of_profit, mc_result.probability_of_ruin,
+        mc_result.median_return, mc_result.median_sharpe
+    );
 
     Ok(Json(ApiResponse::success(mc_result)))
 }

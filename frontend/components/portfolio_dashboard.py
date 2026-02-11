@@ -183,6 +183,29 @@ class PortfolioDashboardComponent:
                 }
                 badge_color = status_colors.get(status, "secondary")
 
+                order_id = order.get("id", "")
+                cancelable = status in ("new", "accepted", "pending_new", "partially_filled")
+
+                action_cell = html.Td("")
+                if cancelable and order_id:
+                    action_cell = html.Td(
+                        dbc.Button(
+                            "Cancel",
+                            id={"type": "order-cancel-btn", "index": order_id},
+                            color="warning",
+                            size="sm",
+                        )
+                    )
+                elif status == "filled" and order_id:
+                    action_cell = html.Td(
+                        dbc.Button(
+                            "Close",
+                            id={"type": "position-close-btn", "index": sym},
+                            color="outline-danger",
+                            size="sm",
+                        )
+                    )
+
                 order_rows.append(html.Tr([
                     html.Td(submitted_at, className="small"),
                     html.Td(sym),
@@ -190,12 +213,14 @@ class PortfolioDashboardComponent:
                     html.Td(str(qty)),
                     html.Td(price_display),
                     html.Td(dbc.Badge(status, color=badge_color)),
+                    action_cell,
                 ]))
 
             orders_table = dbc.Table(
                 [html.Thead(html.Tr([
                     html.Th("Time"), html.Th("Symbol"), html.Th("Side"),
                     html.Th("Qty"), html.Th("Fill Price"), html.Th("Status"),
+                    html.Th(""),
                 ]))] + [html.Tbody(order_rows)],
                 bordered=True, hover=True, responsive=True,
                 className="table-dark table-sm",

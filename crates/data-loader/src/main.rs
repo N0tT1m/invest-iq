@@ -8,9 +8,11 @@
 //!   cargo run -p data-loader -- --all          # all 150 default symbols
 //!   cargo run -p data-loader -- --all --dry-run
 //!   cargo run -p data-loader -- --fetch-tickers --limit 3000
+//!   cargo run -p data-loader -- --all --all-data   # bars + news + features
+//!   cargo run -p data-loader -- --all --bars --news # bars + news only
 
 use analysis_core::{
-    AnalysisResult, AnalystConsensusData, Bar,
+    AnalysisResult, AnalystConsensusData, Bar, NewsArticle,
     SignalStrength,
 };
 use chrono::{Duration, Utc};
@@ -64,6 +66,14 @@ const FORWARD_20D: usize = 20;
 /// Max concurrent symbol processing tasks
 const DEFAULT_CONCURRENCY: usize = 20;
 
+/// What data to store for each symbol
+#[derive(Clone, Copy)]
+struct StoreFlags {
+    bars: bool,
+    news: bool,
+    features: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -79,12 +89,40 @@ async fn main() -> anyhow::Result<()> {
     let use_all = args.iter().any(|a| a == "--all");
     let fetch_tickers = args.iter().any(|a| a == "--fetch-tickers");
 
+    // New data storage flags
+    let flag_bars = args.iter().any(|a| a == "--bars");
+    let flag_news = args.iter().any(|a| a == "--news");
+    let flag_all_data = args.iter().any(|a| a == "--all-data");
+
+    // If no new flags are set, default to features-only (backward compatible)
+    let store_flags = if flag_all_data {
+        StoreFlags { bars: true, news: true, features: true }
+    } else if flag_bars || flag_news {
+        StoreFlags { bars: flag_bars, news: flag_news, features: false }
+    } else {
+        StoreFlags { bars: false, news: false, features: true }
+    };
+
+    let timespan: String = args
+        .iter()
+        .position(|a| a == "--timespan")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(|| "day".to_string());
+
+    let news_limit: u32 = args
+        .iter()
+        .position(|a| a == "--news-limit")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+
     let limit: usize = args
         .iter()
         .position(|a| a == "--limit")
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok())
-        .unwrap_or(5000);
+        .unwrap_or(usize::MAX);
 
     let concurrency: usize = args
         .iter()
@@ -103,10 +141,10 @@ async fn main() -> anyhow::Result<()> {
     let api_key = std::env::var("POLYGON_API_KEY")
         .expect("POLYGON_API_KEY must be set");
 
-    // Default to 5000 req/min for bulk loading (Polygon recommends <6000/min on paid plans).
+    // Default to 5500 req/min for bulk loading (Polygon Starter allows ~6000/min).
     // Free tier users should set POLYGON_RATE_LIMIT=5.
     if std::env::var("POLYGON_RATE_LIMIT").is_err() {
-        std::env::set_var("POLYGON_RATE_LIMIT", "5000");
+        std::env::set_var("POLYGON_RATE_LIMIT", "5500");
     }
     let polygon = Arc::new(PolygonClient::new(api_key));
 
@@ -130,17 +168,25 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("  data-loader --all                      Use built-in 150 symbols");
         eprintln!("  data-loader --symbols AAPL MSFT ...    Specific symbols");
         eprintln!("");
+        eprintln!("Data flags (default: features only):");
+        eprintln!("  --bars             Store OHLCV bars into training_bars");
+        eprintln!("  --news             Fetch news + compute price labels into training_news");
+        eprintln!("  --all-data         Everything: bars + news + analysis features");
+        eprintln!("");
         eprintln!("Options:");
         eprintln!("  --dry-run          Print stats without writing to DB");
         eprintln!("  --db PATH          SQLite DB path (default: portfolio.db)");
         eprintln!("  --concurrency N    Max parallel symbols (default: {})", DEFAULT_CONCURRENCY);
+        eprintln!("  --timespan SPAN    Bar timespan (default: day)");
+        eprintln!("  --news-limit N     Max articles per symbol (default: 100)");
         std::process::exit(1);
     };
 
     let total_symbols = symbols.len();
     tracing::info!(
-        "data-loader: {} symbols, db={}, dry_run={}, concurrency={}",
-        total_symbols, db_path, dry_run, concurrency
+        "data-loader: {} symbols, db={}, dry_run={}, concurrency={}, bars={}, news={}, features={}",
+        total_symbols, db_path, dry_run, concurrency,
+        store_flags.bars, store_flags.news, store_flags.features
     );
 
     // Open DB (migrations handle table schema via sqlx::migrate!())
@@ -149,23 +195,32 @@ async fn main() -> anyhow::Result<()> {
     // Enable WAL mode for concurrent writes from parallel tasks
     sqlx::query("PRAGMA journal_mode=WAL").execute(pool.as_ref()).await?;
 
+    // Run migrations to ensure training tables exist
+    sqlx::migrate!("../../migrations").run(pool.as_ref()).await?;
+
     let tech_engine = Arc::new(TechnicalAnalysisEngine::new());
     let fund_engine = Arc::new(FundamentalAnalysisEngine::new());
     let quant_engine = Arc::new(QuantAnalysisEngine::new());
 
-    // Fetch SPY bars once for benchmark
-    tracing::info!("Fetching SPY bars for benchmark...");
-    let now = Utc::now();
-    let spy_bars = Arc::new(polygon
-        .get_aggregates("SPY", 1, "day", now - Duration::days(400), now)
-        .await
-        .unwrap_or_default());
-    tracing::info!("SPY: {} bars", spy_bars.len());
+    // Fetch SPY bars once for benchmark (only needed for features)
+    let spy_bars = if store_flags.features {
+        tracing::info!("Fetching SPY bars for benchmark...");
+        let now = Utc::now();
+        let bars = polygon
+            .get_aggregates("SPY", 1, "day", now - Duration::days(400), now)
+            .await
+            .unwrap_or_default();
+        tracing::info!("SPY: {} bars", bars.len());
+        Arc::new(bars)
+    } else {
+        Arc::new(Vec::new())
+    };
 
     let total_rows = Arc::new(AtomicU64::new(0));
     let completed = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicU64::new(0));
     let semaphore = Arc::new(Semaphore::new(concurrency));
+    let timespan = Arc::new(timespan);
 
     let mut handles = Vec::with_capacity(total_symbols);
 
@@ -180,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
         let completed = Arc::clone(&completed);
         let failed = Arc::clone(&failed);
         let semaphore = Arc::clone(&semaphore);
+        let timespan = Arc::clone(&timespan);
 
         let handle = tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
@@ -187,6 +243,7 @@ async fn main() -> anyhow::Result<()> {
             let rows = process_symbol(
                 &polygon, &tech_engine, &fund_engine, &quant_engine,
                 &symbol, &spy_bars, pool.as_ref(), dry_run,
+                store_flags, &timespan, news_limit,
             ).await;
 
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -229,90 +286,218 @@ async fn process_symbol(
     spy_bars: &[Bar],
     pool: &SqlitePool,
     dry_run: bool,
+    store_flags: StoreFlags,
+    timespan: &str,
+    news_limit: u32,
 ) -> anyhow::Result<u64> {
     let now = Utc::now();
     let start = now - Duration::days(400);
 
-    // Fetch bars + financials concurrently
-    let (bars_result, fin_result) = tokio::join!(
-        polygon.get_aggregates(symbol, 1, "day", start, now),
-        polygon.get_financials(symbol),
-    );
+    // Fetch bars + financials + news concurrently
+    let need_financials = store_flags.features;
+    let need_news = store_flags.news;
+
+    let bars_fut = polygon.get_aggregates(symbol, 1, timespan, start, now);
+    let fin_fut = async {
+        if need_financials {
+            polygon.get_financials(symbol).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
+    let news_fut = async {
+        if need_news {
+            polygon.get_news(Some(symbol), news_limit).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
+
+    let (bars_result, financials, news) = tokio::join!(bars_fut, fin_fut, news_fut);
 
     let bars = bars_result?;
-    let financials = fin_result.unwrap_or_default();
 
-    if bars.len() < MIN_WINDOW + FORWARD_20D {
-        tracing::warn!("  {} only has {} bars, need {}", symbol, bars.len(), MIN_WINDOW + FORWARD_20D);
-        return Ok(0);
-    }
-
-    // Slide a window: for each position t (from MIN_WINDOW to len - FORWARD_20D),
-    // run engines on bars[..t], compute forward returns from bars[t+5] and bars[t+20]
-    let max_t = bars.len() - FORWARD_20D;
     let mut count = 0u64;
 
-    // Step by 5 days to avoid excessive overlap while still getting good coverage
-    let step = 5;
-    let mut t = MIN_WINDOW;
+    // Store training bars
+    if store_flags.bars && !dry_run && !bars.is_empty() {
+        let stored = store_training_bars(pool, symbol, &bars, timespan).await?;
+        count += stored;
+        tracing::debug!("  {} bars stored for {}", stored, symbol);
+    }
 
-    while t < max_t {
-        let window = &bars[..t];
-        let current_price = bars[t - 1].close;
-        let date = bars[t - 1].timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
+    // Store training news with price labels
+    if store_flags.news && !dry_run && !news.is_empty() {
+        let stored = store_training_news(pool, symbol, &bars, &news).await?;
+        count += stored;
+        tracing::debug!("  {} news articles stored for {}", stored, symbol);
+    }
 
-        // Forward returns
-        let fwd_5d_idx = (t + FORWARD_5D - 1).min(bars.len() - 1);
-        let fwd_20d_idx = (t + FORWARD_20D - 1).min(bars.len() - 1);
-        let return_5d = (bars[fwd_5d_idx].close - current_price) / current_price * 100.0;
-        let return_20d = (bars[fwd_20d_idx].close - current_price) / current_price * 100.0;
-
-        // Run analysis engines
-        let tech = tech_engine.analyze_enhanced(symbol, window).ok();
-        let quant = quant_engine
-            .analyze_with_benchmark_and_rate(symbol, window, Some(spy_bars), None)
-            .ok();
-
-        // Fundamental: uses financials + current price (same for whole period)
-        let empty_consensus = AnalystConsensusData {
-            consensus: None,
-            recent_ratings: Vec::new(),
-        };
-        let fund = if !financials.is_empty() {
-            fund_engine
-                .analyze_with_consensus(symbol, &financials, Some(current_price), None, &empty_consensus, None)
-                .ok()
-        } else {
-            None
-        };
-
-        // Build feature vector
-        let features = build_features(&tech, &fund, &quant);
-        let features_json = serde_json::to_string(&features)?;
-
-        // Combine for overall signal (simplified weighted average)
-        let (overall_signal, overall_confidence) = combine_simple(&tech, &fund, &quant);
-
-        if !dry_run {
-            sqlx::query(
-                "INSERT INTO analysis_features (symbol, analysis_date, features_json, overall_signal, overall_confidence, actual_return_5d, actual_return_20d, evaluated) VALUES (?, ?, ?, ?, ?, ?, ?, 1)"
-            )
-            .bind(symbol)
-            .bind(&date)
-            .bind(&features_json)
-            .bind(format!("{:?}", overall_signal))
-            .bind(overall_confidence)
-            .bind(return_5d)
-            .bind(return_20d)
-            .execute(pool)
-            .await?;
+    // Generate analysis features (existing behavior)
+    if store_flags.features {
+        if bars.len() < MIN_WINDOW + FORWARD_20D {
+            tracing::warn!("  {} only has {} bars, need {}", symbol, bars.len(), MIN_WINDOW + FORWARD_20D);
+            return Ok(count);
         }
 
-        count += 1;
-        t += step;
+        let max_t = bars.len() - FORWARD_20D;
+        let step = 5;
+        let mut t = MIN_WINDOW;
+
+        while t < max_t {
+            let window = &bars[..t];
+            let current_price = bars[t - 1].close;
+            let date = bars[t - 1].timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
+
+            let fwd_5d_idx = (t + FORWARD_5D - 1).min(bars.len() - 1);
+            let fwd_20d_idx = (t + FORWARD_20D - 1).min(bars.len() - 1);
+            let return_5d = (bars[fwd_5d_idx].close - current_price) / current_price * 100.0;
+            let return_20d = (bars[fwd_20d_idx].close - current_price) / current_price * 100.0;
+
+            let tech = tech_engine.analyze_enhanced(symbol, window, None).ok();
+            let quant = quant_engine
+                .analyze_with_benchmark_and_rate(symbol, window, Some(spy_bars), None)
+                .ok();
+
+            let empty_consensus = AnalystConsensusData {
+                consensus: None,
+                recent_ratings: Vec::new(),
+            };
+            let fund = if !financials.is_empty() {
+                fund_engine
+                    .analyze_with_consensus(symbol, &financials, Some(current_price), None, &empty_consensus, None, None)
+                    .ok()
+            } else {
+                None
+            };
+
+            let features = build_features(&tech, &fund, &quant);
+            let features_json = serde_json::to_string(&features)?;
+            let (overall_signal, overall_confidence) = combine_simple(&tech, &fund, &quant);
+
+            if !dry_run {
+                sqlx::query(
+                    "INSERT INTO analysis_features (symbol, analysis_date, features_json, overall_signal, overall_confidence, actual_return_5d, actual_return_20d, evaluated) VALUES (?, ?, ?, ?, ?, ?, ?, 1)"
+                )
+                .bind(symbol)
+                .bind(&date)
+                .bind(&features_json)
+                .bind(format!("{:?}", overall_signal))
+                .bind(overall_confidence)
+                .bind(return_5d)
+                .bind(return_20d)
+                .execute(pool)
+                .await?;
+            }
+
+            count += 1;
+            t += step;
+        }
     }
 
     Ok(count)
+}
+
+/// Store OHLCV bars into `training_bars` table using a transaction for efficiency.
+async fn store_training_bars(
+    pool: &SqlitePool,
+    symbol: &str,
+    bars: &[Bar],
+    timespan: &str,
+) -> anyhow::Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut inserted = 0u64;
+
+    for bar in bars {
+        let timestamp_ms = bar.timestamp.timestamp_millis();
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO training_bars (symbol, timestamp_ms, timespan, open, high, low, close, volume, vwap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(symbol)
+        .bind(timestamp_ms)
+        .bind(timespan)
+        .bind(bar.open)
+        .bind(bar.high)
+        .bind(bar.low)
+        .bind(bar.close)
+        .bind(bar.volume)
+        .bind(bar.vwap)
+        .execute(&mut *tx)
+        .await?;
+
+        inserted += result.rows_affected();
+    }
+
+    tx.commit().await?;
+    Ok(inserted)
+}
+
+/// Fetch news and compute 5-day price change labels, then store into `training_news`.
+/// Uses the already-fetched bars array to compute labels without extra API calls.
+async fn store_training_news(
+    pool: &SqlitePool,
+    symbol: &str,
+    bars: &[Bar],
+    news: &[NewsArticle],
+) -> anyhow::Result<u64> {
+    if bars.is_empty() || news.is_empty() {
+        return Ok(0);
+    }
+
+    // Build a date->index lookup from bars for efficient price label computation
+    let bar_dates: Vec<(i64, usize)> = bars
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.timestamp.timestamp(), i))
+        .collect();
+
+    let mut tx = pool.begin().await?;
+    let mut inserted = 0u64;
+
+    for article in news {
+        let pub_ts = article.published_utc.timestamp();
+
+        // Find the bar on or just after the publish date
+        let base_idx = bar_dates
+            .iter()
+            .find(|(ts, _)| *ts >= pub_ts)
+            .map(|(_, idx)| *idx);
+
+        // Compute 5-day forward price change if we have enough bars
+        let price_change_5d = base_idx.and_then(|idx| {
+            let fwd_idx = idx + 5;
+            if fwd_idx < bars.len() {
+                let base_price = bars[idx].close;
+                let fwd_price = bars[fwd_idx].close;
+                if base_price > 0.0 {
+                    Some((fwd_price - base_price) / base_price * 100.0)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+
+        let tickers_json = serde_json::to_string(&article.tickers).unwrap_or_default();
+
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO training_news (symbol, title, description, published_utc, tickers_json, price_change_5d) VALUES (?, ?, ?, ?, ?, ?)"
+        )
+        .bind(symbol)
+        .bind(&article.title)
+        .bind(&article.description)
+        .bind(article.published_utc.to_rfc3339())
+        .bind(&tickers_json)
+        .bind(price_change_5d)
+        .execute(&mut *tx)
+        .await?;
+
+        inserted += result.rows_affected();
+    }
+
+    tx.commit().await?;
+    Ok(inserted)
 }
 
 fn build_features(

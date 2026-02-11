@@ -279,7 +279,7 @@ def create_sharpe_trend_chart(
 
     dates = [h.get("snapshot_date") for h in history]
     sharpe = [h.get("rolling_sharpe", 0) for h in history]
-    win_rate = [h.get("win_rate", 0) * 100 for h in history]
+    win_rate = [h.get("win_rate", 0) for h in history]
 
     fig = go.Figure()
 

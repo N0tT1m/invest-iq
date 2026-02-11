@@ -66,7 +66,7 @@ class BacktestPanelComponent:
 
         # Row 2: Equity curve (with benchmark lines)
         equity_curve = data.get("equity_curve", [])
-        initial_capital = data.get("initial_capital", 100000)
+        initial_capital = BacktestPanelComponent._safe_float(data.get("initial_capital"), 100000)
         if equity_curve:
             fig = BacktestPanelComponent._create_equity_curve(
                 equity_curve, symbol, initial_capital, benchmark
@@ -88,8 +88,9 @@ class BacktestPanelComponent:
             children.append(BacktestPanelComponent._create_per_symbol_table(per_symbol))
 
         # Row 5: Footnotes
-        total_comm = data.get("total_commission_paid", 0) or 0
-        total_slip = data.get("total_slippage_cost", 0) or 0
+        _f = BacktestPanelComponent._safe_float
+        total_comm = _f(data.get("total_commission_paid"))
+        total_slip = _f(data.get("total_slippage_cost"))
         footnote_parts = []
         if total_comm > 0 or total_slip > 0:
             footnote_parts.append(f"Costs: ${total_comm:,.2f} commission + ${total_slip:,.2f} slippage")
@@ -131,7 +132,7 @@ class BacktestPanelComponent:
                 html.H5(f"{prob_profit:.1f}%", className=f"{profit_color} mb-0"),
             ]), className="text-center"), md=2),
             dbc.Col(dbc.Card(dbc.CardBody([
-                html.Small("P(Ruin >50%)", className="text-muted d-block"),
+                html.Small("P(Ruin >20%)", className="text-muted d-block"),
                 html.H5(f"{prob_ruin:.1f}%", className=f"{ruin_color} mb-0"),
             ]), className="text-center"), md=2),
             dbc.Col(dbc.Card(dbc.CardBody([
@@ -293,15 +294,26 @@ class BacktestPanelComponent:
     # --- Internal Helpers ---
 
     @staticmethod
+    def _safe_float(val, default=0):
+        """Safely convert a value to float (handles str, None, Decimal)."""
+        if val is None:
+            return default
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
     def _create_metrics_row(data):
         """Create metric summary cards (primary + extended)."""
-        total_return = data.get("total_return", 0)
-        total_return_pct = data.get("total_return_percent", 0)
-        win_rate = data.get("win_rate", 0)
-        total_trades = data.get("total_trades", 0)
-        winning_trades = data.get("winning_trades", 0)
-        sharpe = data.get("sharpe_ratio", 0)
-        max_dd = data.get("max_drawdown", 0)
+        _f = BacktestPanelComponent._safe_float
+        total_return = _f(data.get("total_return"))
+        total_return_pct = _f(data.get("total_return_percent"))
+        win_rate = _f(data.get("win_rate"))
+        total_trades = int(_f(data.get("total_trades")))
+        winning_trades = int(_f(data.get("winning_trades")))
+        sharpe = _f(data.get("sharpe_ratio"))
+        max_dd = _f(data.get("max_drawdown"))
 
         ret_color = "text-success" if total_return >= 0 else "text-danger"
         ret_sign = "+" if total_return >= 0 else ""
@@ -347,15 +359,15 @@ class BacktestPanelComponent:
             extended_cards = [
                 dbc.Col(dbc.Card(dbc.CardBody([
                     html.Small("Sortino Ratio", className="text-muted d-block"),
-                    html.H6(f"{sortino:.2f}" if sortino is not None else "N/A", className="mb-0"),
+                    html.H6(f"{_f(sortino):.2f}" if sortino is not None else "N/A", className="mb-0"),
                 ]), className="text-center"), md=2),
                 dbc.Col(dbc.Card(dbc.CardBody([
                     html.Small("Calmar Ratio", className="text-muted d-block"),
-                    html.H6(f"{calmar:.2f}" if calmar is not None else "N/A", className="mb-0"),
+                    html.H6(f"{_f(calmar):.2f}" if calmar is not None else "N/A", className="mb-0"),
                 ]), className="text-center"), md=2),
                 dbc.Col(dbc.Card(dbc.CardBody([
                     html.Small("Recovery Factor", className="text-muted d-block"),
-                    html.H6(f"{recovery:.2f}" if recovery is not None else "N/A", className="mb-0"),
+                    html.H6(f"{_f(recovery):.2f}" if recovery is not None else "N/A", className="mb-0"),
                 ]), className="text-center"), md=2),
                 dbc.Col(dbc.Card(dbc.CardBody([
                     html.Small("Consec. Wins", className="text-muted d-block"),
@@ -367,7 +379,7 @@ class BacktestPanelComponent:
                 ]), className="text-center"), md=2),
                 dbc.Col(dbc.Card(dbc.CardBody([
                     html.Small("Exposure Time", className="text-muted d-block"),
-                    html.H6(f"{exposure:.1f}%" if exposure is not None else "N/A", className="mb-0"),
+                    html.H6(f"{_f(exposure):.1f}%" if exposure is not None else "N/A", className="mb-0"),
                 ]), className="text-center"), md=2),
             ]
             rows.append(dbc.Row(extended_cards, className="mb-3"))
@@ -377,8 +389,9 @@ class BacktestPanelComponent:
     @staticmethod
     def _create_benchmark_row(benchmark):
         """Create benchmark comparison metric row."""
-        bh_return = benchmark.get("buy_hold_return_percent", 0)
-        alpha = benchmark.get("alpha", 0)
+        _f = BacktestPanelComponent._safe_float
+        bh_return = _f(benchmark.get("buy_hold_return_percent"))
+        alpha = _f(benchmark.get("alpha"))
         spy_return = benchmark.get("spy_return_percent")
         spy_alpha = benchmark.get("spy_alpha")
         info_ratio = benchmark.get("information_ratio")
@@ -398,12 +411,14 @@ class BacktestPanelComponent:
         ]
 
         if spy_return is not None:
+            spy_return = _f(spy_return)
             cards.append(dbc.Col(dbc.Card(dbc.CardBody([
                 html.Small("SPY Return", className="text-muted d-block"),
                 html.H6(f"{spy_return:+.1f}%", className="mb-0"),
             ]), className="text-center"), md=3))
 
         if spy_alpha is not None:
+            spy_alpha = _f(spy_alpha)
             spy_alpha_color = "text-success" if spy_alpha >= 0 else "text-danger"
             spy_alpha_sign = "+" if spy_alpha >= 0 else ""
             cards.append(dbc.Col(dbc.Card(dbc.CardBody([
@@ -412,6 +427,7 @@ class BacktestPanelComponent:
             ]), className="text-center"), md=3))
 
         if info_ratio is not None and spy_return is None:
+            info_ratio = _f(info_ratio)
             cards.append(dbc.Col(dbc.Card(dbc.CardBody([
                 html.Small("Information Ratio", className="text-muted d-block"),
                 html.H6(f"{info_ratio:.2f}", className="mb-0"),
@@ -486,16 +502,17 @@ class BacktestPanelComponent:
     @staticmethod
     def _create_trade_table(trades, limit=20):
         """Create trade history table."""
+        _f = BacktestPanelComponent._safe_float
         rows = []
         for trade in trades[:limit]:
             entry_date = trade.get("entry_date", "")[:10]
             exit_date = trade.get("exit_date", "")[:10]
             signal = trade.get("signal", "?")
-            entry_price = trade.get("entry_price", 0)
-            exit_price = trade.get("exit_price", 0)
-            pnl = trade.get("profit_loss", 0)
-            pnl_pct = trade.get("profit_loss_percent", 0)
-            days = trade.get("holding_period_days", 0)
+            entry_price = _f(trade.get("entry_price"))
+            exit_price = _f(trade.get("exit_price"))
+            pnl = _f(trade.get("profit_loss"))
+            pnl_pct = _f(trade.get("profit_loss_percent"))
+            days = int(_f(trade.get("holding_period_days")))
             reason = trade.get("exit_reason", "")
 
             pnl_color = "text-success" if pnl >= 0 else "text-danger"
@@ -527,12 +544,13 @@ class BacktestPanelComponent:
     @staticmethod
     def _create_per_symbol_table(per_symbol):
         """Create per-symbol breakdown table for multi-symbol backtests."""
+        _f = BacktestPanelComponent._safe_float
         rows = []
         for sym in per_symbol:
-            ret = sym.get("total_return", 0)
-            ret_pct = sym.get("total_return_percent", 0)
-            wr = sym.get("win_rate", 0)
-            weight = sym.get("weight", 0) * 100
+            ret = _f(sym.get("total_return"))
+            ret_pct = _f(sym.get("total_return_percent"))
+            wr = _f(sym.get("win_rate"))
+            weight = _f(sym.get("weight")) * 100
             ret_color = "text-success" if ret >= 0 else "text-danger"
             ret_sign = "+" if ret >= 0 else ""
             rows.append(html.Tr([

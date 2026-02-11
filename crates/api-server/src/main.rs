@@ -598,7 +598,7 @@ async fn main() -> anyhow::Result<()> {
     let rate_limit_per_minute = std::env::var("RATE_LIMIT_PER_MINUTE")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(60);
+        .unwrap_or(120);
 
     // period = time between token replenishments; burst_size = max tokens (burst capacity)
     // Burst should be generous — the frontend fires 20+ concurrent requests on analyze
@@ -1336,7 +1336,7 @@ async fn backtest_symbol(
         let bar_slice = &bars[..i];
         let bar = &bars[i];
 
-        let tech_result = tech_engine.analyze_enhanced(&symbol, bar_slice).ok();
+        let tech_result = tech_engine.analyze_enhanced(&symbol, bar_slice, None).ok();
         let quant_result = quant_engine.analyze_with_benchmark_and_rate(
             &symbol,
             bar_slice,
@@ -1356,6 +1356,9 @@ async fn backtest_symbol(
                 price: Decimal::from_f64(bar.close).unwrap_or_default(),
                 reason: format!("{:?} signal at {:.0}% confidence (point-in-time)",
                     signal_strength, confidence * 100.0),
+                order_type: None,
+                limit_price: None,
+                limit_expiry_bars: None,
             });
         }
     }
@@ -1391,26 +1394,45 @@ async fn backtest_symbol(
         confidence_threshold: 0.5,
         commission_rate: Some(0.001),
         slippage_rate: Some(0.0005),
+        max_volume_participation: Some(0.05),
         benchmark_bars,
         allocation_strategy: None,
         symbol_weights: None,
         rebalance_interval_days: None,
+        allow_short_selling: None,
+        margin_multiplier: None,
+        signal_timeframe: None,
+        trailing_stop_percent: None,
+        max_drawdown_halt_percent: None,
+        regime_config: None,
+        commission_model: None,
+        allow_fractional_shares: None,
+        cash_sweep_rate: None,
+        incremental_rebalance: None,
+        param_search_space: None,
+        market_impact: None,
     };
 
     let mut historical_data = std::collections::HashMap::new();
     historical_data.insert(symbol.clone(), hist_bars);
 
     let mut engine = BtEngine::new(config);
-    let result = engine.run(historical_data, signals)
+    let mut result = engine.run(historical_data, signals)
         .map_err(|e| anyhow::anyhow!("Backtest engine error: {}", e))?;
 
     // Save to database if available
     if let Some(backtest_db) = state.backtest_db.as_ref() {
         match backtest_db.save_backtest(&result).await {
-            Ok(id) => tracing::info!("Backtest saved to DB (id: {})", id),
-            Err(e) => tracing::warn!("Failed to save backtest: {}", e),
+            Ok(id) => {
+                tracing::info!("Backtest saved to DB (id: {}). Setting result.id.", id);
+                result.id = Some(id);
+            }
+            Err(e) => tracing::warn!("Failed to save backtest to DB: {}", e),
         }
+    } else {
+        tracing::warn!("No backtest_db available — result.id will be null");
     }
+    tracing::info!("Returning backtest result with id: {:?}", result.id);
 
     // Auto-record strategy snapshot for alpha decay monitoring
     if let Some(pm) = state.portfolio_manager.as_ref() {

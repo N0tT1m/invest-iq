@@ -43,8 +43,18 @@ class SignalModelsConfig(BaseModel):
     retrain_interval_days: int = 7
 
 
+def _detect_device() -> str:
+    """Detect best available device: cuda > mps > cpu."""
+    import torch
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 class GPUConfig(BaseModel):
-    device: str = "cuda"
+    device: str = Field(default_factory=_detect_device)
     mixed_precision: bool = True
     compile: bool = True
 

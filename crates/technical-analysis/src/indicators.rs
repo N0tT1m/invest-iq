@@ -393,3 +393,243 @@ pub fn vwap(bars: &[Bar]) -> Vec<f64> {
 
     vwap_values
 }
+
+/// Ichimoku Cloud components
+pub struct IchimokuResult {
+    pub tenkan_sen: Vec<f64>,   // Conversion Line (9-period)
+    pub kijun_sen: Vec<f64>,    // Base Line (26-period)
+    pub senkou_span_a: Vec<f64>, // Leading Span A
+    pub senkou_span_b: Vec<f64>, // Leading Span B
+    pub chikou_span: Vec<f64>,   // Lagging Span
+}
+
+/// Calculate the high/low midpoint over a period
+fn period_midpoint(bars: &[Bar], end: usize, period: usize) -> f64 {
+    let start = if end >= period { end - period + 1 } else { 0 };
+    let slice = &bars[start..=end];
+    let high = slice.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
+    let low = slice.iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
+    (high + low) / 2.0
+}
+
+/// Ichimoku Cloud — tenkan(9), kijun(26), senkou spans, chikou
+pub fn ichimoku(bars: &[Bar]) -> IchimokuResult {
+    let empty = IchimokuResult {
+        tenkan_sen: vec![], kijun_sen: vec![], senkou_span_a: vec![],
+        senkou_span_b: vec![], chikou_span: vec![],
+    };
+    if bars.len() < 52 { return empty; }
+
+    let n = bars.len();
+    let mut tenkan = Vec::with_capacity(n);
+    let mut kijun = Vec::with_capacity(n);
+    let mut span_a = Vec::with_capacity(n);
+    let mut span_b = Vec::with_capacity(n);
+
+    for i in 0..n {
+        tenkan.push(if i >= 8 { period_midpoint(bars, i, 9) } else { bars[i].close });
+        kijun.push(if i >= 25 { period_midpoint(bars, i, 26) } else { bars[i].close });
+    }
+
+    // Senkou Span A = midpoint of tenkan & kijun (plotted 26 periods ahead)
+    // Senkou Span B = 52-period midpoint (plotted 26 periods ahead)
+    // We store them aligned to the current bar (i.e., the value that WAS plotted 26 bars ago)
+    for i in 25..n {
+        let src = i - 25; // value from 26 bars ago, shifted forward to current
+        span_a.push((tenkan[src] + kijun[src]) / 2.0);
+        span_b.push(if src >= 51 { period_midpoint(bars, src, 52) } else { bars[src].close });
+    }
+
+    // Chikou span = close shifted 26 periods back (so for display, chikou[i] is close[i+26])
+    let chikou: Vec<f64> = if n > 26 { bars[26..].iter().map(|b| b.close).collect() } else { vec![] };
+
+    IchimokuResult { tenkan_sen: tenkan, kijun_sen: kijun, senkou_span_a: span_a, senkou_span_b: span_b, chikou_span: chikou }
+}
+
+/// Fibonacci retracement levels between a swing low and swing high
+pub struct FibonacciLevels {
+    pub level_236: f64,
+    pub level_382: f64,
+    pub level_500: f64,
+    pub level_618: f64,
+    pub level_786: f64,
+    pub swing_high: f64,
+    pub swing_low: f64,
+}
+
+/// Compute Fibonacci retracement levels from recent bars
+pub fn fibonacci_retracement(bars: &[Bar], lookback: usize) -> Option<FibonacciLevels> {
+    if bars.len() < lookback { return None; }
+    let recent = &bars[bars.len() - lookback..];
+    let swing_high = recent.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
+    let swing_low = recent.iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
+    let diff = swing_high - swing_low;
+    if diff <= 0.0 { return None; }
+
+    Some(FibonacciLevels {
+        level_236: swing_high - diff * 0.236,
+        level_382: swing_high - diff * 0.382,
+        level_500: swing_high - diff * 0.500,
+        level_618: swing_high - diff * 0.618,
+        level_786: swing_high - diff * 0.786,
+        swing_high,
+        swing_low,
+    })
+}
+
+/// Resample daily bars into weekly OHLCV bars
+pub fn resample_to_weekly(bars: &[Bar]) -> Vec<Bar> {
+    use chrono::Datelike;
+    if bars.is_empty() { return vec![]; }
+
+    let mut weekly: Vec<Bar> = Vec::new();
+    let mut week_open = bars[0].open;
+    let mut week_high = bars[0].high;
+    let mut week_low = bars[0].low;
+    let mut week_close = bars[0].close;
+    let mut week_volume = bars[0].volume;
+    let mut week_start = bars[0].timestamp;
+    let mut current_iso = (bars[0].timestamp.iso_week().year(), bars[0].timestamp.iso_week().week());
+
+    for bar in bars.iter().skip(1) {
+        let iso = (bar.timestamp.iso_week().year(), bar.timestamp.iso_week().week());
+        if iso != current_iso {
+            weekly.push(Bar {
+                timestamp: week_start, open: week_open, high: week_high,
+                low: week_low, close: week_close, volume: week_volume, vwap: None,
+            });
+            week_open = bar.open;
+            week_high = bar.high;
+            week_low = bar.low;
+            week_volume = 0.0;
+            week_start = bar.timestamp;
+            current_iso = iso;
+        }
+        week_high = week_high.max(bar.high);
+        week_low = week_low.min(bar.low);
+        week_close = bar.close;
+        week_volume += bar.volume;
+    }
+
+    weekly.push(Bar {
+        timestamp: week_start, open: week_open, high: week_high,
+        low: week_low, close: week_close, volume: week_volume, vwap: None,
+    });
+
+    weekly
+}
+
+/// Relative strength line: stock / benchmark price ratio
+pub fn relative_strength(stock_closes: &[f64], benchmark_closes: &[f64]) -> Vec<f64> {
+    let n = stock_closes.len().min(benchmark_closes.len());
+    let s_offset = stock_closes.len() - n;
+    let b_offset = benchmark_closes.len() - n;
+    (0..n)
+        .map(|i| {
+            let b = benchmark_closes[b_offset + i];
+            if b > 0.0 { stock_closes[s_offset + i] / b } else { 1.0 }
+        })
+        .collect()
+}
+
+/// Keltner Channels (EMA +/- ATR × multiplier)
+pub struct KeltnerChannels {
+    pub upper: Vec<f64>,
+    pub middle: Vec<f64>,
+    pub lower: Vec<f64>,
+}
+
+pub fn keltner_channels(bars: &[Bar], ema_period: usize, atr_period: usize, multiplier: f64) -> KeltnerChannels {
+    if bars.len() < ema_period.max(atr_period + 1) {
+        return KeltnerChannels { upper: vec![], middle: vec![], lower: vec![] };
+    }
+
+    let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
+    let middle = ema(&closes, ema_period);
+    let atr_values = atr(bars, atr_period);
+
+    // Align: EMA starts at index ema_period-1, ATR starts at index atr_period
+    let offset = if ema_period > atr_period + 1 { 0 } else { atr_period + 1 - ema_period };
+    let mut upper = Vec::new();
+    let mut lower = Vec::new();
+
+    for i in offset..middle.len() {
+        let atr_idx = i - offset;
+        if atr_idx < atr_values.len() {
+            upper.push(middle[i] + multiplier * atr_values[atr_idx]);
+            lower.push(middle[i] - multiplier * atr_values[atr_idx]);
+        }
+    }
+
+    // Trim middle to match
+    let trimmed_middle = middle[offset..offset + upper.len()].to_vec();
+
+    KeltnerChannels { upper, middle: trimmed_middle, lower }
+}
+
+/// Pivot Points (Classic Floor Trader's Pivots)
+pub struct PivotPoints {
+    pub pivot: f64,
+    pub r1: f64,
+    pub r2: f64,
+    pub r3: f64,
+    pub s1: f64,
+    pub s2: f64,
+    pub s3: f64,
+}
+
+pub fn pivot_points(bars: &[Bar]) -> Option<PivotPoints> {
+    let bar = bars.last()?;
+    let pivot = (bar.high + bar.low + bar.close) / 3.0;
+
+    let r1 = 2.0 * pivot - bar.low;
+    let s1 = 2.0 * pivot - bar.high;
+    let r2 = pivot + (bar.high - bar.low);
+    let s2 = pivot - (bar.high - bar.low);
+    let r3 = bar.high + 2.0 * (pivot - bar.low);
+    let s3 = bar.low - 2.0 * (bar.high - pivot);
+
+    Some(PivotPoints { pivot, r1, r2, r3, s1, s2, s3 })
+}
+
+/// Market Structure: detect higher highs/higher lows (uptrend) or lower lows/lower highs (downtrend)
+pub struct MarketStructure {
+    pub higher_highs: usize,
+    pub lower_lows: usize,
+    pub higher_lows: usize,
+    pub lower_highs: usize,
+}
+
+pub fn market_structure(bars: &[Bar], lookback: usize) -> MarketStructure {
+    if bars.len() < lookback + 1 {
+        return MarketStructure { higher_highs: 0, lower_lows: 0, higher_lows: 0, lower_highs: 0 };
+    }
+
+    let recent = &bars[bars.len() - lookback..];
+    let mut highs = Vec::new();
+    let mut lows = Vec::new();
+
+    // Find local swing highs and lows
+    for i in 1..recent.len() - 1 {
+        if recent[i].high > recent[i - 1].high && recent[i].high > recent[i + 1].high {
+            highs.push((i, recent[i].high));
+        }
+        if recent[i].low < recent[i - 1].low && recent[i].low < recent[i + 1].low {
+            lows.push((i, recent[i].low));
+        }
+    }
+
+    let mut hh = 0;
+    let mut lh = 0;
+    for i in 1..highs.len() {
+        if highs[i].1 > highs[i - 1].1 { hh += 1; } else { lh += 1; }
+    }
+
+    let mut hl = 0;
+    let mut ll = 0;
+    for i in 1..lows.len() {
+        if lows[i].1 > lows[i - 1].1 { hl += 1; } else { ll += 1; }
+    }
+
+    MarketStructure { higher_highs: hh, lower_lows: ll, higher_lows: hl, lower_highs: lh }
+}

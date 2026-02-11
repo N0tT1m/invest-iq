@@ -2,9 +2,8 @@ use anyhow::Result;
 use crate::config::AgentConfig;
 use chrono::{Utc, Timelike, Datelike, Weekday};
 use polygon_client::PolygonClient;
-use multi_timeframe::{MultiTimeframeAnalyzer, Timeframe};
-use market_regime_detector::{MarketRegimeDetector, MarketRegime};
-use news_trading::NewsScanner;
+use multi_timeframe::Timeframe;
+use market_regime_detector::MarketRegime;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -17,199 +16,156 @@ pub struct MarketOpportunity {
     pub regime: MarketRegime,
     pub primary_timeframe: Timeframe,
     pub news_sentiment_score: f64,
+    pub source: OpportunitySource,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpportunitySource {
+    Watchlist,
+    MarketMover,
 }
 
 pub struct MarketScanner {
     config: AgentConfig,
     polygon_client: PolygonClient,
-    mtf_analyzer: MultiTimeframeAnalyzer,
-    regime_detector: MarketRegimeDetector,
-    news_scanner: NewsScanner,
 }
 
 impl MarketScanner {
     pub async fn new(config: AgentConfig) -> Result<Self> {
         let polygon_client = PolygonClient::new(config.polygon_api_key.clone());
-        let mtf_analyzer = MultiTimeframeAnalyzer::new(config.polygon_api_key.clone());
-
-        let regime_detector = if let Some(url) = &config.regime_ml_service_url {
-            MarketRegimeDetector::with_ml_service(url.clone())
-        } else {
-            MarketRegimeDetector::new()
-        };
-
-        let news_scanner = if let Some(url) = &config.news_sentiment_service_url {
-            NewsScanner::with_sentiment_service(config.polygon_api_key.clone(), url.clone())
-        } else {
-            NewsScanner::new(config.polygon_api_key.clone())
-        };
 
         Ok(Self {
             config,
             polygon_client,
-            mtf_analyzer,
-            regime_detector,
-            news_scanner,
         })
     }
 
     pub async fn scan(&self) -> Result<Vec<MarketOpportunity>> {
-        tracing::debug!("Scanning market for opportunities...");
-
-        // Log market status but always scan (trade execution will be gated separately)
         if !self.is_market_open() {
             tracing::info!("Market closed — scanning for analysis only (no trades will execute)");
         }
 
-        let mut opportunities = Vec::new();
+        // Single API call: fetch snapshots for the entire US stock market
+        let all_snapshots = self.polygon_client.get_all_snapshots().await?;
+        tracing::info!("Fetched {} ticker snapshots from Polygon", all_snapshots.len());
 
-        // 1. Scan watchlist
-        for symbol in &self.config.watchlist {
-            if let Ok(opp) = self.analyze_symbol(symbol).await {
-                opportunities.push(opp);
-            }
-        }
-
-        // 2. Scan top movers (if enabled)
-        if self.config.scan_top_movers {
-            if let Ok(mut top_movers) = self.scan_top_movers().await {
-                opportunities.append(&mut top_movers);
-            }
-        }
-
-        // 3. Remove duplicates
-        opportunities.dedup_by(|a, b| a.symbol == b.symbol);
-
-        // 4. Filter by volume and volatility
         let min_volume = if self.is_extended_hours() {
             self.config.extended_hours_min_volume
         } else {
             self.config.regular_hours_min_volume
         };
 
-        opportunities.retain(|opp| {
-            opp.volume > min_volume &&
-            opp.volatility > 0.005      // Minimum volatility (0.5%)
-        });
+        let watchlist_set: std::collections::HashSet<&str> =
+            self.config.watchlist.iter().map(|s| s.as_str()).collect();
 
-        tracing::info!("Market scan complete: {} opportunities found", opportunities.len());
+        let min_price_base = 5.0; // Absolute floor (even watchlist)
+        let min_volatility = 0.005; // 0.5% intraday range
 
-        Ok(opportunities)
-    }
+        let mut watchlist_opps = Vec::new();
+        let mut mover_candidates = Vec::new();
 
-    async fn analyze_symbol(&self, symbol: &str) -> Result<MarketOpportunity> {
-        // Fetch multi-timeframe data
-        let mtf_data = self.mtf_analyzer.fetch_all_timeframes(symbol).await?;
+        for snap in &all_snapshots {
+            let symbol = &snap.ticker;
 
-        // Find best timeframe
-        let primary_timeframe = self.mtf_analyzer.find_best_timeframe(&mtf_data)
-            .unwrap_or(Timeframe::Min15);
+            // Skip non-standard tickers (warrants, units, preferred shares)
+            if symbol.contains('.') || symbol.contains('-') || symbol.len() > 5 {
+                continue;
+            }
 
-        // Get bars for regime detection
-        let bars = mtf_data.data.get(&Timeframe::Daily)
-            .or_else(|| mtf_data.data.get(&Timeframe::Hour1))
-            .ok_or_else(|| anyhow::anyhow!("No data available for {}", symbol))?;
+            let current_price = snap.last_trade
+                .as_ref()
+                .and_then(|t| t.p)
+                .or_else(|| snap.day.as_ref().and_then(|d| d.c));
 
-        // Detect market regime
-        let regime_result = self.regime_detector.detect_regime(bars)?;
+            let current_price = match current_price {
+                Some(p) if p >= min_price_base => p,
+                _ => continue,
+            };
 
-        // Analyze news sentiment
-        let news_sentiment = self.news_scanner.analyze_aggregated(symbol, 24).await?;
+            let volume = snap.day.as_ref().and_then(|d| d.v).unwrap_or(0.0) as i64;
+            let price_change_percent = snap.todays_change_perc.unwrap_or(0.0);
 
-        // Get current price and volume from latest bar
-        let latest_bar = bars.last()
-            .ok_or_else(|| anyhow::anyhow!("No bars available"))?;
+            let volatility = if let Some(day) = &snap.day {
+                let high = day.h.unwrap_or(0.0);
+                let low = day.l.unwrap_or(0.0);
+                let close = day.c.unwrap_or(1.0);
+                if close > 0.0 { (high - low) / close } else { 0.0 }
+            } else {
+                0.0
+            };
 
-        let current_price = latest_bar.close;
-        let volume = latest_bar.volume as i64;
+            let is_watchlist = watchlist_set.contains(symbol.as_str());
 
-        // Calculate price change
-        let price_change_percent = if bars.len() > 1 {
-            let prev_close = bars[bars.len() - 2].close;
-            ((current_price - prev_close) / prev_close) * 100.0
-        } else {
-            0.0
-        };
-
-        Ok(MarketOpportunity {
-            symbol: symbol.to_string(),
-            current_price,
-            volume,
-            price_change_percent,
-            volatility: regime_result.metrics.volatility,
-            regime: regime_result.regime,
-            primary_timeframe,
-            news_sentiment_score: news_sentiment.sentiment_score,
-        })
-    }
-
-    async fn scan_top_movers(&self) -> Result<Vec<MarketOpportunity>> {
-        // Universe of liquid large-cap stocks for scanning
-        const TOP_MOVER_UNIVERSE: &[&str] = &[
-            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "BRK.B",
-            "JPM", "V", "JNJ", "WMT", "PG", "MA", "HD", "DIS", "BAC", "NFLX",
-            "CRM", "ORCL"
-        ];
-
-        let mut opportunities = Vec::new();
-
-        // Fetch snapshots for all symbols (rate limiter handles throttling)
-        for symbol in TOP_MOVER_UNIVERSE {
-            match self.polygon_client.get_snapshot(symbol).await {
-                Ok(snapshot) => {
-                    // Extract current price
-                    let current_price = snapshot.last_trade
-                        .as_ref()
-                        .and_then(|t| t.p)
-                        .or_else(|| snapshot.day.as_ref().and_then(|d| d.c))
-                        .unwrap_or(0.0);
-
-                    // Extract volume
-                    let volume = snapshot.day
-                        .as_ref()
-                        .and_then(|d| d.v)
-                        .unwrap_or(0.0) as i64;
-
-                    // Get price change percentage
-                    let price_change_percent = snapshot.todays_change_perc.unwrap_or(0.0);
-
-                    // Calculate simple volatility as (high - low) / close
-                    let volatility = if let Some(day) = &snapshot.day {
-                        let high = day.h.unwrap_or(0.0);
-                        let low = day.l.unwrap_or(0.0);
-                        let close = day.c.unwrap_or(1.0);
-                        if close > 0.0 {
-                            (high - low) / close
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        0.0
-                    };
-
-                    // Filter for significant movers: >2% change OR >0.5% volatility
-                    if price_change_percent.abs() > 2.0 || volatility > 0.005 {
-                        opportunities.push(MarketOpportunity {
-                            symbol: symbol.to_string(),
-                            current_price,
-                            volume,
-                            price_change_percent,
-                            volatility,
-                            regime: MarketRegime::Ranging, // Default for quick scan
-                            primary_timeframe: Timeframe::Daily, // Default for movers
-                            news_sentiment_score: 0.0, // No sentiment in quick scan
-                        });
-                    }
+            if is_watchlist {
+                // Watchlist: minimal filters (just need basic data)
+                if volume > 0 {
+                    watchlist_opps.push(MarketOpportunity {
+                        symbol: symbol.clone(),
+                        current_price,
+                        volume,
+                        price_change_percent,
+                        volatility,
+                        regime: MarketRegime::Ranging,
+                        primary_timeframe: Timeframe::Daily,
+                        news_sentiment_score: 0.0,
+                        source: OpportunitySource::Watchlist,
+                    });
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to fetch snapshot for {}: {}", symbol, e);
+            } else {
+                // Non-watchlist: quality filters
+                if volume <= min_volume {
+                    continue;
                 }
+                if current_price < self.config.scanner_min_price {
+                    continue;
+                }
+                if volatility < min_volatility {
+                    continue;
+                }
+
+                // Dollar volume gate: price * volume must exceed threshold
+                let dollar_volume = current_price * volume as f64;
+                if dollar_volume < self.config.scanner_min_dollar_volume {
+                    continue;
+                }
+
+                mover_candidates.push(MarketOpportunity {
+                    symbol: symbol.clone(),
+                    current_price,
+                    volume,
+                    price_change_percent,
+                    volatility,
+                    regime: MarketRegime::Ranging,
+                    primary_timeframe: Timeframe::Daily,
+                    news_sentiment_score: 0.0,
+                    source: OpportunitySource::MarketMover,
+                });
             }
         }
 
-        tracing::info!("Top movers scan: found {} opportunities", opportunities.len());
+        // Sort movers by absolute price change — biggest movers first
+        mover_candidates.sort_by(|a, b| {
+            b.price_change_percent.abs()
+                .partial_cmp(&a.price_change_percent.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        Ok(opportunities)
+        // Take top N movers
+        mover_candidates.truncate(self.config.scan_top_n_stocks);
+
+        // Combine: watchlist first, then quality-filtered movers
+        let mut final_opps = watchlist_opps;
+        let mover_count = mover_candidates.len();
+        final_opps.extend(mover_candidates);
+
+        tracing::info!(
+            "Market scan: {} opportunities ({} watchlist + {} quality movers)",
+            final_opps.len(),
+            final_opps.len() - mover_count,
+            mover_count,
+        );
+
+        Ok(final_opps)
     }
 
     /// Check if the market is currently open for trading (regular or extended hours)
@@ -225,25 +181,19 @@ impl MarketScanner {
         let minute = now.minute();
         let time_minutes = hour * 60 + minute;
 
-        // Regular market hours: 9:30 AM - 4:00 PM ET
-        let regular_open = 9 * 60 + 30;  // 9:30 AM
-        let regular_close = 16 * 60;     // 4:00 PM
-
-        // Extended hours: 4:00 AM - 9:30 AM, 4:00 PM - 8:00 PM ET
-        let premarket_open = 4 * 60;     // 4:00 AM
-        let afterhours_close = 20 * 60;  // 8:00 PM
+        let regular_open = 9 * 60 + 30;
+        let regular_close = 16 * 60;
+        let premarket_open = 4 * 60;
+        let afterhours_close = 20 * 60;
 
         if time_minutes >= regular_open && time_minutes < regular_close {
-            // Regular market hours
             return true;
         }
 
         if self.config.enable_extended_hours {
-            // Pre-market: 4:00 AM - 9:30 AM
             if time_minutes >= premarket_open && time_minutes < regular_open {
                 return true;
             }
-            // After-hours: 4:00 PM - 8:00 PM
             if time_minutes >= regular_close && time_minutes < afterhours_close {
                 return true;
             }

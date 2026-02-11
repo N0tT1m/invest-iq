@@ -351,6 +351,7 @@ app.layout = dbc.Container([
                 dcc.Loading(html.Div(id='paper-trading-section'), type="circle"),
             ], id='tab-trade-content'),
             html.Div([
+                html.Div(id='portfolio-order-notification-area'),
                 dcc.Loading(html.Div(id='portfolio-dashboard-section'), type="circle"),
             ], id='tab-portfolio-content', style={'display': 'none'}),
             html.Div([
@@ -600,7 +601,12 @@ app.layout = dbc.Container([
     # Smart Watchlist & Tax Dashboard Row
     dbc.Row([
         dbc.Col([
-            dcc.Loading(html.Div(id='watchlist-section'), type="circle")
+            dcc.Loading(html.Div(id='watchlist-section'), type="circle"),
+            # Pagination controls (hidden until data loads)
+            html.Div(id='watchlist-pagination', style={'display': 'none'}),
+            html.Div(id='watchlist-cards'),
+            dcc.Store(id='watchlist-store', data=None),
+            dcc.Store(id='watchlist-page', data=0),
         ], md=6),
         dbc.Col([
             dcc.Loading(html.Div(id='tax-section'), type="circle")
@@ -2272,24 +2278,85 @@ def update_alpha_flow(analyze_clicks, refresh_clicks, symbol):
         f_alpha = executor.submit(AlphaDecayComponent.fetch_all_strategies_health)
         f_flow = executor.submit(FlowMapComponent.fetch_sector_flows)
 
+        # --- Alpha Decay: summary + individual strategy cards ---
         try:
             alpha_data = f_alpha.result()
-            alpha_card = AlphaDecayComponent.create_portfolio_health_card(alpha_data) if alpha_data else dbc.Card([
-                dbc.CardHeader(html.H5("Alpha Decay", className="mb-0")),
-                dbc.CardBody(html.P("No data available", className="text-muted"))
-            ])
+            if alpha_data and alpha_data.get("strategies"):
+                children = [AlphaDecayComponent.create_portfolio_health_card(alpha_data)]
+                # Show individual strategy cards with health details
+                for s in alpha_data.get("strategies", [])[:6]:
+                    children.append(AlphaDecayComponent.create_strategy_card(s))
+                alpha_card = html.Div(children)
+            elif alpha_data:
+                alpha_card = AlphaDecayComponent.create_portfolio_health_card(alpha_data)
+            else:
+                alpha_card = dbc.Card([
+                    dbc.CardHeader(html.H5("Portfolio Strategy Health", className="mb-0")),
+                    dbc.CardBody([
+                        html.P("No strategies tracked yet.", className="text-muted"),
+                        html.Small("Run a backtest to start monitoring strategy health.", className="text-muted fst-italic"),
+                    ])
+                ])
         except Exception as e:
             alpha_card = dbc.Card([
                 dbc.CardHeader(html.H5("Alpha Decay", className="mb-0")),
                 dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
             ])
+
+        # --- Flow Map: summary + sector performance bars + rotation details ---
         try:
             flow_data = f_flow.result()
-            flow_summary = flow_data.get("market_summary") if flow_data else None
-            flow_card = FlowMapComponent.create_market_summary_card(flow_summary) if flow_summary else dbc.Card([
-                dbc.CardHeader(html.H5("Flow Map", className="mb-0")),
-                dbc.CardBody(html.P("No data available", className="text-muted"))
-            ])
+            if flow_data:
+                flow_children = []
+                flow_summary = flow_data.get("market_summary")
+                if flow_summary:
+                    flow_children.append(FlowMapComponent.create_market_summary_card(flow_summary))
+
+                # Sector performance heatmap
+                sectors = flow_data.get("sectors", [])
+                if sectors:
+                    from components.flow_map import create_sector_heatmap
+                    heatmap = create_sector_heatmap(sectors)
+                    flow_children.append(dcc.Graph(figure=heatmap, config={'displayModeBar': False}))
+
+                # Rotation pattern details
+                rotations = flow_data.get("rotations", [])
+                if rotations:
+                    rot_badges = []
+                    for r in rotations:
+                        rtype = r.get("rotation_type", "Unknown")
+                        conf = r.get("confidence", 0)
+                        strength = r.get("strength", 0)
+                        gaining = r.get("gaining_sectors", [])
+                        losing = r.get("losing_sectors", [])
+                        is_bullish = "Growth" in rtype or "Cyclical" in rtype or "Small" in rtype
+                        color = "success" if is_bullish else "danger" if conf > 0.5 else "warning"
+                        rot_badges.append(
+                            dbc.Card(dbc.CardBody([
+                                html.Div([
+                                    dbc.Badge(rtype, color=color, className="me-2 fs-6"),
+                                    html.Small(f"Confidence: {conf*100:.0f}% | Strength: {strength:.0f}", className="text-muted"),
+                                ], className="mb-2"),
+                                html.Div([
+                                    html.Small("Gaining: ", className="text-muted"),
+                                    html.Span(", ".join(gaining[:3]) if gaining else "None", className="text-success"),
+                                    html.Span(" | ", className="text-muted"),
+                                    html.Small("Losing: ", className="text-muted"),
+                                    html.Span(", ".join(losing[:3]) if losing else "None", className="text-danger"),
+                                ], className="small"),
+                            ]), className="mb-2")
+                        )
+                    flow_children.extend(rot_badges)
+
+                flow_card = html.Div(flow_children) if flow_children else dbc.Card([
+                    dbc.CardHeader(html.H5("Flow Map", className="mb-0")),
+                    dbc.CardBody(html.P("No data available", className="text-muted"))
+                ])
+            else:
+                flow_card = dbc.Card([
+                    dbc.CardHeader(html.H5("Flow Map", className="mb-0")),
+                    dbc.CardBody(html.P("No data available", className="text-muted"))
+                ])
         except Exception as e:
             flow_card = dbc.Card([
                 dbc.CardHeader(html.H5("Flow Map", className="mb-0")),
@@ -2302,8 +2369,12 @@ def update_alpha_flow(analyze_clicks, refresh_clicks, symbol):
 # SMART WATCHLIST & TAX DASHBOARD
 # ============================================================================
 
+WATCHLIST_PAGE_SIZE = 4
+
 @app.callback(
     [Output('watchlist-section', 'children'),
+     Output('watchlist-store', 'data'),
+     Output('watchlist-page', 'data', allow_duplicate=True),
      Output('tax-section', 'children')],
     [Input('analyze-button', 'n_clicks'),
      Input('refresh-button', 'n_clicks')],
@@ -2312,20 +2383,20 @@ def update_alpha_flow(analyze_clicks, refresh_clicks, symbol):
 )
 def update_watchlist_tax(analyze_clicks, refresh_clicks, symbol):
     if not symbol:
-        return "", ""
+        return "", None, 0, ""
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         f_watchlist = executor.submit(SmartWatchlistComponent.fetch_personalized_feed)
         f_tax = executor.submit(TaxDashboardComponent.fetch_harvest_opportunities)
 
+        # --- Smart Watchlist: summary header (cards rendered by pagination callback) ---
+        watchlist_raw = None
         try:
             watchlist_data = f_watchlist.result()
             if watchlist_data:
-                # Create summary card and up to 10 opportunity cards
-                cards = [SmartWatchlistComponent.create_feed_summary(watchlist_data)]
-                for opp in watchlist_data.get("opportunities", [])[:10]:
-                    cards.append(SmartWatchlistComponent.create_opportunity_card(opp))
-                watchlist_card = html.Div(cards)
+                watchlist_summary = SmartWatchlistComponent.create_feed_summary(watchlist_data)
+                watchlist_raw = watchlist_data.get("opportunities", [])
+                watchlist_card = watchlist_summary
             else:
                 watchlist_card = dbc.Card([
                     dbc.CardHeader(html.H5("Smart Watchlist", className="mb-0")),
@@ -2336,19 +2407,103 @@ def update_watchlist_tax(analyze_clicks, refresh_clicks, symbol):
                 dbc.CardHeader(html.H5("Smart Watchlist", className="mb-0")),
                 dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
             ])
+
+        # --- Tax Dashboard: summary banner + opportunity cards ---
         try:
             tax_data = f_tax.result()
-            tax_summary = tax_data.get("summary") if tax_data else None
-            tax_card = TaxDashboardComponent.create_summary_banner(tax_summary) if tax_summary else dbc.Card([
-                dbc.CardHeader(html.H5("Tax Dashboard", className="mb-0")),
-                dbc.CardBody(html.P("No data available", className="text-muted"))
-            ])
+            if tax_data:
+                tax_children = []
+                tax_summary = tax_data.get("summary")
+                if tax_summary:
+                    tax_children.append(TaxDashboardComponent.create_summary_banner(tax_summary))
+
+                opportunities = tax_data.get("opportunities", [])
+                if opportunities:
+                    for opp in opportunities[:5]:
+                        tax_children.append(TaxDashboardComponent.create_opportunity_card(opp))
+
+                tax_card = html.Div(tax_children) if tax_children else dbc.Card([
+                    dbc.CardHeader(html.H5("Tax Dashboard", className="mb-0")),
+                    dbc.CardBody(html.P("No tax data available", className="text-muted"))
+                ])
+            else:
+                tax_card = dbc.Card([
+                    dbc.CardHeader(html.H5("Tax Dashboard", className="mb-0")),
+                    dbc.CardBody(html.P("No data available", className="text-muted"))
+                ])
         except Exception as e:
             tax_card = dbc.Card([
                 dbc.CardHeader(html.H5("Tax Dashboard", className="mb-0")),
                 dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
             ])
-    return watchlist_card, tax_card
+    return watchlist_card, watchlist_raw, 0, tax_card
+
+
+@app.callback(
+    Output('watchlist-page', 'data'),
+    [Input('watchlist-prev', 'n_clicks'),
+     Input('watchlist-next', 'n_clicks')],
+    [State('watchlist-page', 'data'),
+     State('watchlist-store', 'data')],
+    prevent_initial_call=True,
+)
+def change_watchlist_page(prev_clicks, next_clicks, current_page, opportunities):
+    if not opportunities:
+        return 0
+    total_pages = max(1, -(-len(opportunities) // WATCHLIST_PAGE_SIZE))  # ceil div
+    triggered = dash.callback_context.triggered[0]['prop_id']
+    if 'next' in triggered:
+        return min(current_page + 1, total_pages - 1)
+    elif 'prev' in triggered:
+        return max(current_page - 1, 0)
+    return current_page
+
+
+@app.callback(
+    [Output('watchlist-cards', 'children'),
+     Output('watchlist-pagination', 'children'),
+     Output('watchlist-pagination', 'style')],
+    [Input('watchlist-store', 'data'),
+     Input('watchlist-page', 'data')],
+    prevent_initial_call=True,
+)
+def render_watchlist_page(opportunities, page):
+    if not opportunities:
+        return "", "", {'display': 'none'}
+
+    total = len(opportunities)
+    total_pages = max(1, -(-total // WATCHLIST_PAGE_SIZE))
+    page = min(page or 0, total_pages - 1)
+
+    start = page * WATCHLIST_PAGE_SIZE
+    end = start + WATCHLIST_PAGE_SIZE
+    page_items = opportunities[start:end]
+
+    cards = []
+    for opp in page_items:
+        cards.append(SmartWatchlistComponent.create_opportunity_card(opp))
+
+    pagination = html.Div([
+        html.Div([
+            dbc.Button(
+                "Prev", id='watchlist-prev', size="sm",
+                color="info", outline=True, className="me-2",
+                disabled=(page == 0),
+            ),
+            html.Span(
+                f"Page {page + 1} of {total_pages}  ({total} opportunities)",
+                className="small align-self-center mx-2",
+                style={"color": "#aaa"},
+            ),
+            dbc.Button(
+                "Next", id='watchlist-next', size="sm",
+                color="info", outline=True, className="ms-2",
+                disabled=(page >= total_pages - 1),
+            ),
+        ], className="d-flex justify-content-center align-items-center my-3"),
+    ])
+
+    return html.Div(cards), pagination, {'display': 'block'}
 
 
 # ============================================================================
@@ -2595,10 +2750,12 @@ def update_agent_trades(active_tab, _notification):
 @app.callback(
     Output('agent-trade-notification-area', 'children'),
     [Input({'type': 'agent-approve-btn', 'index': dash.ALL}, 'n_clicks'),
-     Input({'type': 'agent-reject-btn', 'index': dash.ALL}, 'n_clicks')],
+     Input({'type': 'agent-reject-btn', 'index': dash.ALL}, 'n_clicks'),
+     Input({'type': 'agent-cancel-btn', 'index': dash.ALL}, 'n_clicks'),
+     Input({'type': 'agent-close-btn', 'index': dash.ALL}, 'n_clicks')],
     prevent_initial_call=True,
 )
-def handle_agent_trade_review(approve_clicks, reject_clicks):
+def handle_agent_trade_actions(approve_clicks, reject_clicks, cancel_clicks, close_clicks):
     ctx = dash.callback_context
     if not ctx.triggered:
         raise dash.exceptions.PreventUpdate
@@ -2609,23 +2766,77 @@ def handle_agent_trade_review(approve_clicks, reject_clicks):
 
     import json
     prop_id = json.loads(triggered['prop_id'].rsplit('.', 1)[0])
-    trade_id = prop_id['index']
-    action = 'approve' if prop_id['type'] == 'agent-approve-btn' else 'reject'
+    btn_type = prop_id['type']
+    index = prop_id['index']
 
-    result = AgentTradesComponent.review_trade(trade_id, action)
+    if btn_type in ('agent-approve-btn', 'agent-reject-btn'):
+        action = 'approve' if btn_type == 'agent-approve-btn' else 'reject'
+        result = AgentTradesComponent.review_trade(index, action)
+        if result.get('success'):
+            status = result.get('data', {}).get('status', action + 'd')
+            color = 'success' if action == 'approve' else 'secondary'
+            return dbc.Alert(f"Trade #{index} {status}.", color=color, dismissable=True, duration=4000)
+        else:
+            return dbc.Alert(f"Failed to {action} trade #{index}: {result.get('error', 'Unknown')}", color="danger", dismissable=True, duration=5000)
 
-    if result.get('success'):
-        status = result.get('data', {}).get('status', action + 'd')
-        color = 'success' if action == 'approve' else 'secondary'
-        return dbc.Alert(
-            f"Trade #{trade_id} {status}.",
-            color=color, dismissable=True, duration=4000,
-        )
-    else:
-        return dbc.Alert(
-            f"Failed to {action} trade #{trade_id}: {result.get('error', 'Unknown')}",
-            color="danger", dismissable=True, duration=5000,
-        )
+    elif btn_type == 'agent-cancel-btn':
+        result = AgentTradesComponent.cancel_order(index)
+        if result.get('success'):
+            return dbc.Alert(f"Order {index[:8]}... canceled.", color="warning", dismissable=True, duration=4000)
+        else:
+            return dbc.Alert(f"Cancel failed: {result.get('error', 'Unknown')}", color="danger", dismissable=True, duration=5000)
+
+    elif btn_type == 'agent-close-btn':
+        result = AgentTradesComponent.close_position(index)
+        if result.get('success'):
+            return dbc.Alert(f"Position {index} closed.", color="warning", dismissable=True, duration=4000)
+        else:
+            return dbc.Alert(f"Close failed: {result.get('error', 'Unknown')}", color="danger", dismissable=True, duration=5000)
+
+    raise dash.exceptions.PreventUpdate
+
+
+# ============================================================================
+# PORTFOLIO ORDER CANCEL / CLOSE CALLBACK
+# ============================================================================
+
+@app.callback(
+    Output('portfolio-order-notification-area', 'children'),
+    [Input({'type': 'order-cancel-btn', 'index': dash.ALL}, 'n_clicks'),
+     Input({'type': 'position-close-btn', 'index': dash.ALL}, 'n_clicks')],
+    prevent_initial_call=True,
+)
+def handle_portfolio_order_actions(cancel_clicks, close_clicks):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise dash.exceptions.PreventUpdate
+
+    triggered = ctx.triggered[0]
+    if not triggered['value']:
+        raise dash.exceptions.PreventUpdate
+
+    import json
+    prop_id = json.loads(triggered['prop_id'].rsplit('.', 1)[0])
+    btn_type = prop_id['type']
+    index = prop_id['index']
+
+    from components.agent_trades import AgentTradesComponent
+
+    if btn_type == 'order-cancel-btn':
+        result = AgentTradesComponent.cancel_order(index)
+        if result.get('success'):
+            return dbc.Alert(f"Order canceled.", color="warning", dismissable=True, duration=4000)
+        else:
+            return dbc.Alert(f"Cancel failed: {result.get('error', 'Unknown')}", color="danger", dismissable=True, duration=5000)
+
+    elif btn_type == 'position-close-btn':
+        result = AgentTradesComponent.close_position(index)
+        if result.get('success'):
+            return dbc.Alert(f"Position {index} closed.", color="warning", dismissable=True, duration=4000)
+        else:
+            return dbc.Alert(f"Close failed: {result.get('error', 'Unknown')}", color="danger", dismissable=True, duration=5000)
+
+    raise dash.exceptions.PreventUpdate
 
 
 # ============================================================================
@@ -2686,7 +2897,13 @@ def run_backtest(n_clicks, symbol, days):
     try:
         data = BacktestPanelComponent.fetch_backtest(symbol, days)
         panel = BacktestPanelComponent.create_panel(data, symbol)
-        backtest_id = data.get("id") if data else None
+        # Extract backtest ID — handle both direct result and wrapped {"backtest": ...} formats
+        backtest_id = None
+        if data:
+            if "backtest" in data and isinstance(data["backtest"], dict):
+                backtest_id = data["backtest"].get("id")
+            else:
+                backtest_id = data.get("id")
         return panel, backtest_id, "", ""
     except Exception as e:
         return dbc.Alert(f"Backtest error: {e}", color="danger"), None, "", ""

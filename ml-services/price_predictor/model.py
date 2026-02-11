@@ -158,7 +158,14 @@ class PricePredictorInference:
         device: str = "cuda",
         compile: bool = True
     ):
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            resolved_device = "cuda"
+        elif torch.backends.mps.is_available():
+            resolved_device = "mps"
+        else:
+            resolved_device = "cpu"
+        self._device_type = resolved_device
+        self.device = torch.device(resolved_device)
         self.model_path = Path(model_path)
         self.compile = compile
 
@@ -210,8 +217,8 @@ class PricePredictorInference:
 
         model = model.to(self.device)
 
-        # Compile for faster inference
-        if self.compile and hasattr(torch, 'compile'):
+        # Compile for faster inference (CUDA only — MPS not supported)
+        if self.compile and hasattr(torch, 'compile') and self._device_type == "cuda":
             try:
                 model = torch.compile(model)
                 logger.info("Model compiled with torch.compile")

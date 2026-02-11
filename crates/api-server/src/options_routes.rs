@@ -64,9 +64,9 @@ async fn get_options(
         let beta = quant_metrics.get("beta").and_then(|v| v.as_f64());
 
         // Compute HV rank from bars
-        let bars = state.orchestrator.get_bars(&symbol, analysis_core::Timeframe::Day1, 90).await.ok();
+        let bars = state.orchestrator.get_bars(&symbol, analysis_core::Timeframe::Day1, 252).await.ok();
         let (hv_proxy, hv_rank) = if let Some(bars) = &bars {
-            if bars.len() >= 30 {
+            if bars.len() >= 60 {
                 let mut vols = Vec::new();
                 for i in 20..bars.len() {
                     let slice = &bars[i - 20..i];
@@ -78,8 +78,8 @@ async fn get_options(
                     vols.push(var.sqrt() * (252.0_f64).sqrt() * 100.0);
                 }
                 if let Some(current) = vols.last() {
-                    let below = vols.iter().filter(|v| *v <= current).count();
-                    let rank = (below as f64 / vols.len() as f64) * 100.0;
+                    let below = vols.iter().filter(|v| *v < current).count();
+                    let rank = (below as f64 / (vols.len() - 1).max(1) as f64) * 100.0;
                     (Some(*current), Some(rank))
                 } else {
                     (volatility, None)

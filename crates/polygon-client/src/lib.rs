@@ -89,15 +89,15 @@ struct FinnhubArticle {
 
 impl PolygonClient {
     pub fn new(api_key: String) -> Self {
-        // Default 500 req/min for Starter plan. Polygon recommends <100 req/sec (~6000/min).
+        // Default 3000 req/min for Starter plan ($29). Polygon recommends <100 req/sec (~6000/min).
         // Free tier users should set POLYGON_RATE_LIMIT=5.
         let rate_limit: usize = std::env::var("POLYGON_RATE_LIMIT")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(500);
+            .unwrap_or(3000);
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(90))
+            .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_else(|_| Client::new());
 
@@ -123,7 +123,7 @@ impl PolygonClient {
                 return Ok(response);
             }
 
-            let wait_secs = 15u64;
+            let wait_secs = 2u64;
             tracing::warn!("Polygon 429 rate limited, waiting {}s before retry {}/3", wait_secs, attempt + 1);
             tokio::time::sleep(Duration::from_secs(wait_secs)).await;
         }
@@ -178,6 +178,7 @@ impl PolygonClient {
                 low: r.l,
                 close: r.c,
                 volume: r.v,
+                vwap: r.vw,
             })
             .collect())
     }
@@ -426,6 +427,55 @@ impl PolygonClient {
             .map_err(|e| AnalysisError::ApiError(e.to_string()))?;
 
         Ok(snap_response.ticker)
+    }
+
+    /// Get snapshots for ALL US stock tickers in a single API call.
+    /// Returns price, volume, and change data for the entire market.
+    /// Uses a longer timeout since the response is very large (5,000+ tickers).
+    pub async fn get_all_snapshots(&self) -> Result<Vec<AllSnapshotsTicker>, AnalysisError> {
+        let url = format!(
+            "{}/v2/snapshot/locale/us/markets/stocks/tickers",
+            BASE_URL
+        );
+
+        // Use a dedicated client with a longer timeout for this heavy endpoint
+        let heavy_client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| AnalysisError::ApiError(e.to_string()))?;
+
+        self.rate_limiter.acquire().await;
+        let response = heavy_client
+            .get(&url)
+            .query(&[("apiKey", &self.api_key)])
+            .send()
+            .await
+            .map_err(|e| AnalysisError::ApiError(format!("All snapshots request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(AnalysisError::ApiError(format!(
+                "All snapshots HTTP {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            )));
+        }
+
+        // Read body as text first for better error diagnostics
+        let body = response.text().await.map_err(|e| {
+            AnalysisError::ApiError(format!("All snapshots body read failed: {}", e))
+        })?;
+
+        let snap_response: AllSnapshotsResponse =
+            serde_json::from_str(&body).map_err(|e| {
+                tracing::error!(
+                    "All snapshots JSON parse failed: {}. Body starts with: {}",
+                    e,
+                    &body[..body.len().min(500)]
+                );
+                AnalysisError::ApiError(format!("All snapshots parse error: {}", e))
+            })?;
+
+        Ok(snap_response.tickers.unwrap_or_default())
     }
 
     /// Get SMA (Simple Moving Average) from Polygon technical indicators API
@@ -903,6 +953,8 @@ struct AggregateResult {
     l: f64, // low
     c: f64, // close
     v: f64, // volume
+    #[serde(default)]
+    vw: Option<f64>, // vwap
 }
 
 #[derive(Debug, Deserialize)]
@@ -1055,6 +1107,25 @@ pub struct InsiderTransaction {
 #[derive(Debug, Deserialize)]
 struct SnapshotResponse {
     ticker: SnapshotTicker,
+}
+
+#[derive(Debug, Deserialize)]
+struct AllSnapshotsResponse {
+    tickers: Option<Vec<AllSnapshotsTicker>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllSnapshotsTicker {
+    pub ticker: String,
+    pub day: Option<SnapshotDay>,
+    #[serde(rename = "lastTrade")]
+    pub last_trade: Option<SnapshotLastTrade>,
+    #[serde(rename = "prevDay")]
+    pub prev_day: Option<SnapshotDay>,
+    #[serde(rename = "todaysChange")]
+    pub todays_change: Option<f64>,
+    #[serde(rename = "todaysChangePerc")]
+    pub todays_change_perc: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

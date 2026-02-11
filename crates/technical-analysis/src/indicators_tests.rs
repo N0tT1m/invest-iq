@@ -42,6 +42,7 @@ mod tests {
                 low,
                 close,
                 volume: 1000000.0,
+                vwap: None,
             })
             .collect()
     }

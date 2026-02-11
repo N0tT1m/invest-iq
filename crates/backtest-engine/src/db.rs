@@ -86,15 +86,16 @@ impl BacktestDb {
         for trade in &result.trades {
             sqlx::query(
                 "INSERT INTO backtest_trades (
-                    backtest_id, symbol, signal, entry_date, exit_date,
+                    backtest_id, symbol, signal, confidence, entry_date, exit_date,
                     entry_price, exit_price, shares,
                     profit_loss, profit_loss_percent, holding_period_days,
                     commission_cost, slippage_cost, exit_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(backtest_id)
             .bind(&trade.symbol)
             .bind(&trade.signal)
+            .bind(trade.confidence)
             .bind(&trade.entry_date)
             .bind(&trade.exit_date)
             .bind(trade.entry_price.to_f64().unwrap_or(0.0))
@@ -177,7 +178,8 @@ impl BacktestDb {
         backtest_id: i64,
     ) -> Result<Vec<BacktestTrade>, anyhow::Error> {
         let rows = sqlx::query_as::<_, TradeRow>(
-            "SELECT id, backtest_id, symbol, signal, entry_date, exit_date,
+            "SELECT id, backtest_id, symbol, signal, COALESCE(confidence, 0.0) as confidence,
+                    entry_date, exit_date,
                     entry_price, exit_price, shares,
                     profit_loss, profit_loss_percent, holding_period_days,
                     commission_cost, slippage_cost, exit_reason
@@ -194,6 +196,7 @@ impl BacktestDb {
                 backtest_id: Some(r.backtest_id),
                 symbol: r.symbol,
                 signal: r.signal,
+                confidence: r.confidence,
                 entry_date: r.entry_date,
                 exit_date: r.exit_date,
                 entry_price: Decimal::from_f64(r.entry_price).unwrap_or_default(),
@@ -205,6 +208,7 @@ impl BacktestDb {
                 commission_cost: Decimal::from_f64(r.commission_cost).unwrap_or_default(),
                 slippage_cost: Decimal::from_f64(r.slippage_cost).unwrap_or_default(),
                 exit_reason: r.exit_reason,
+                direction: None,
             })
             .collect())
     }
@@ -294,6 +298,7 @@ impl BacktestRow {
             final_capital: Decimal::from_f64(self.final_capital).unwrap_or_default(),
             total_return: Decimal::from_f64(self.total_return).unwrap_or_default(),
             total_return_percent: self.total_return_percent,
+            annualized_return_percent: None, // Recomputed at runtime, not persisted
             total_trades: self.total_trades,
             winning_trades: self.winning_trades,
             losing_trades: self.losing_trades,
@@ -324,6 +329,14 @@ impl BacktestRow {
             per_symbol_results: self.per_symbol_results_json
                 .as_deref()
                 .and_then(|j| serde_json::from_str::<Vec<SymbolResult>>(j).ok()),
+            short_trades: None,
+            margin_used_peak: None,
+            data_quality_report: None,
+            confidence_intervals: None,
+            extended_metrics: None,
+            factor_attribution: None,
+            tear_sheet: None,
+            advanced_analytics: None, // Not persisted to DB, computed on-the-fly
         }
     }
 }
@@ -334,6 +347,7 @@ struct TradeRow {
     backtest_id: i64,
     symbol: String,
     signal: String,
+    confidence: f64,
     entry_date: String,
     exit_date: String,
     entry_price: f64,

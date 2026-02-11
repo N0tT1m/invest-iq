@@ -10,6 +10,8 @@ pub struct Bar {
     pub low: f64,
     pub close: f64,
     pub volume: f64,
+    #[serde(default)]
+    pub vwap: Option<f64>,
 }
 
 /// Quote data (bid/ask)
@@ -130,6 +132,19 @@ impl SignalStrength {
             _ => SignalStrength::StrongSell,
         }
     }
+
+    /// Human-readable label for the signal
+    pub fn to_label(&self) -> &'static str {
+        match self {
+            SignalStrength::StrongBuy => "Strong Buy",
+            SignalStrength::Buy => "Buy",
+            SignalStrength::WeakBuy => "Weak Buy",
+            SignalStrength::Neutral => "Neutral",
+            SignalStrength::WeakSell => "Weak Sell",
+            SignalStrength::Sell => "Sell",
+            SignalStrength::StrongSell => "Strong Sell",
+        }
+    }
 }
 
 /// Analysis result from any analyzer
@@ -160,6 +175,15 @@ pub struct UnifiedAnalysis {
     pub recommendation: String,
     #[serde(default)]
     pub market_regime: Option<String>,
+    /// Conviction tier: HIGH, MODERATE, LOW based on engine alignment + confidence
+    #[serde(default)]
+    pub conviction_tier: Option<String>,
+    /// Per-engine time horizon tags (short/medium/long-term signals)
+    #[serde(default)]
+    pub time_horizon_signals: Option<serde_json::Value>,
+    /// Supplementary signals from options, insiders, dividends, etc.
+    #[serde(default)]
+    pub supplementary_signals: Option<serde_json::Value>,
 }
 
 /// Timeframe for analysis

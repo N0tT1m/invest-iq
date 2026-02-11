@@ -153,18 +153,16 @@ impl RiskManager {
             });
         }
 
-        // Calculate current portfolio risk
+        // Calculate actual portfolio exposure (positions value as % of total portfolio)
         let total_value = account_balance + current_positions_value;
-        let max_portfolio_risk = total_value * (params.max_portfolio_risk_percent / 100.0);
+        let current_portfolio_risk_percent = if total_value > 0.0 {
+            (current_positions_value / total_value) * 100.0
+        } else {
+            0.0
+        };
 
-        // Estimate current risk (simplified - assumes each position risks 2%)
-        let estimated_current_risk = active_positions_count as f64 *
-            (total_value * (params.max_risk_per_trade_percent / 100.0));
-
-        let current_portfolio_risk_percent = (estimated_current_risk / total_value) * 100.0;
-
-        // Check if adding another position exceeds portfolio risk
-        if estimated_current_risk >= max_portfolio_risk {
+        // Check if current exposure exceeds portfolio risk limit
+        if current_portfolio_risk_percent >= params.max_portfolio_risk_percent {
             return Ok(RiskCheck {
                 can_trade: false,
                 reason: format!(
@@ -178,16 +176,8 @@ impl RiskManager {
             });
         }
 
-        // Check position concentration
-        if active_positions_count >= 10 {
-            return Ok(RiskCheck {
-                can_trade: false,
-                reason: "Too many open positions (max 10)".to_string(),
-                current_portfolio_risk: current_portfolio_risk_percent,
-                position_count: active_positions_count,
-                suggested_action: Some("Reduce position count before adding new trades".to_string()),
-            });
-        }
+        // Position count is enforced by the caller's PortfolioGuard (configurable via MAX_OPEN_POSITIONS).
+        // No hardcoded limit here.
 
         // All checks passed
         Ok(RiskCheck {

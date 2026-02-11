@@ -22,7 +22,20 @@ from typing import Dict, List, Tuple, Optional
 sys.path.append(str(Path(__file__).parent.parent))
 from shared.config import config
 from shared.database import MLDatabase
+from shared.polygon import fetch_active_tickers
 from price_predictor.model import PatchTST, create_model
+
+try:
+    import invest_iq_data
+    _USE_RUST_FETCHER = True
+except ImportError:
+    _USE_RUST_FETCHER = False
+
+try:
+    import sqlite3
+    _HAS_SQLITE = True
+except ImportError:
+    _HAS_SQLITE = False
 
 
 class TimeSeriesDataset(Dataset):
@@ -125,8 +138,12 @@ class PatchTSTTrainer:
 
         self.best_val_loss = float('inf')
 
+        # Mixed precision training for CUDA (GradScaler not supported on MPS/CPU)
+        self.use_amp = device == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda") if self.use_amp else None
+
     def train_epoch(self, train_loader: DataLoader) -> Tuple[float, float, float]:
-        """Train for one epoch."""
+        """Train for one epoch. Uses mixed precision on CUDA for ~2x speedup."""
         self.model.train()
 
         total_loss = 0
@@ -140,24 +157,28 @@ class PatchTSTTrainer:
             y_price = y_price.to(self.device)
             y_direction = y_direction.to(self.device)
 
-            # Forward pass
-            price_pred, direction_logits = self.model(x)
-
-            # Compute losses
-            price_loss = self.price_criterion(price_pred, y_price)
-
-            direction_logits_flat = direction_logits.reshape(-1, 3)
-            y_direction_flat = y_direction.reshape(-1)
-            direction_loss = self.direction_criterion(direction_logits_flat, y_direction_flat)
-
-            # Combined loss (weighted)
-            loss = price_loss + 0.5 * direction_loss
-
-            # Backward pass
             self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.optimizer.step()
+
+            # Forward pass with optional mixed precision (autocast)
+            with torch.amp.autocast("cuda", enabled=self.use_amp):
+                price_pred, direction_logits = self.model(x)
+                price_loss = self.price_criterion(price_pred, y_price)
+                direction_logits_flat = direction_logits.reshape(-1, 3)
+                y_direction_flat = y_direction.reshape(-1)
+                direction_loss = self.direction_criterion(direction_logits_flat, y_direction_flat)
+                loss = price_loss + 0.5 * direction_loss
+
+            # Backward pass with GradScaler for mixed precision
+            if self.scaler is not None:
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.optimizer.step()
 
             # Accumulate losses
             total_loss += loss.item()
@@ -291,6 +312,85 @@ def _fetch_yfinance_bars(
     return df
 
 
+def _fetch_bars_via_rust(
+    symbols: List[str],
+    days: int,
+    interval: str,
+) -> pd.DataFrame:
+    """Fetch bars concurrently using the Rust invest_iq_data module."""
+    polygon_key = os.environ.get("POLYGON_API_KEY", "")
+    # Map interval to Polygon timespan
+    timespan_map = {"1m": "minute", "5m": "minute", "15m": "minute", "1h": "hour", "1d": "day"}
+    timespan = timespan_map.get(interval, "day")
+
+    logger.info(f"Using Rust fetcher for {len(symbols)} symbols ({days}d, {timespan})")
+    raw = invest_iq_data.fetch_bars_multi(polygon_key, symbols, days, timespan)
+
+    all_data = []
+    for symbol, bars in raw.items():
+        if not bars:
+            continue
+        df = pd.DataFrame(bars)
+        df = df.rename(columns={
+            "open": "Open", "high": "High", "low": "Low", "close": "Close",
+            "volume": "Volume",
+        })
+        df.index = pd.to_datetime(df["timestamp"], unit="ms")
+        df["symbol"] = symbol
+        if "vwap" not in df.columns or df["vwap"].isna().all():
+            df["vwap"] = (df["High"] + df["Low"] + df["Close"]) / 3
+        all_data.append(df[["Open", "High", "Low", "Close", "Volume", "vwap", "symbol"]])
+        logger.info(f"  {symbol}: {len(df)} bars")
+
+    if not all_data:
+        raise ValueError("No data fetched for any symbol")
+
+    combined = pd.concat(all_data, axis=0)
+    combined.columns = [c.lower() for c in combined.columns]
+    logger.info(f"Total bars: {len(combined)}")
+    return combined
+
+
+def fetch_bars_from_db(
+    db_path: str,
+    timespan: str = "day",
+    symbols: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Load OHLCV bars from the training_bars table (populated by data-loader --bars).
+
+    Returns a DataFrame with lowercase columns: open, high, low, close, volume, vwap, symbol.
+    """
+    if not _HAS_SQLITE:
+        raise ImportError("sqlite3 module not available")
+
+    conn = sqlite3.connect(db_path)
+
+    if symbols:
+        placeholders = ",".join("?" for _ in symbols)
+        query = f"SELECT symbol, timestamp_ms, open, high, low, close, volume, vwap FROM training_bars WHERE timespan = ? AND symbol IN ({placeholders}) ORDER BY symbol, timestamp_ms"
+        params = [timespan] + symbols
+    else:
+        query = "SELECT symbol, timestamp_ms, open, high, low, close, volume, vwap FROM training_bars WHERE timespan = ? ORDER BY symbol, timestamp_ms"
+        params = [timespan]
+
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+
+    if df.empty:
+        raise ValueError(f"No bars found in training_bars (timespan={timespan})")
+
+    df.index = pd.to_datetime(df["timestamp_ms"], unit="ms")
+    df = df.drop(columns=["timestamp_ms"])
+
+    # Fill missing vwap
+    mask = df["vwap"].isna() | (df["vwap"] <= 0)
+    if mask.any():
+        df.loc[mask, "vwap"] = (df.loc[mask, "high"] + df.loc[mask, "low"] + df.loc[mask, "close"]) / 3
+
+    logger.info(f"Loaded {len(df)} bars from DB ({df['symbol'].nunique()} symbols, timespan={timespan})")
+    return df
+
+
 def fetch_market_data(
     symbols: List[str],
     start_date: str,
@@ -298,11 +398,21 @@ def fetch_market_data(
     interval: str = "15m",
     use_polygon: bool = False,
 ) -> pd.DataFrame:
-    """Fetch market data from Polygon (preferred) or yfinance (fallback)."""
+    """Fetch market data from Polygon (preferred) or yfinance (fallback).
+
+    Uses Rust concurrent fetcher for Polygon when available (~20-50x faster).
+    """
     polygon_key = os.environ.get("POLYGON_API_KEY", "")
     source = "polygon" if (use_polygon and polygon_key) else "yfinance"
     if use_polygon and not polygon_key:
         logger.warning("POLYGON_API_KEY not set, falling back to yfinance")
+
+    # Use Rust fetcher for Polygon if available
+    if source == "polygon" and _USE_RUST_FETCHER:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        days = (end_dt - start_dt).days
+        return _fetch_bars_via_rust(symbols, days, interval)
 
     logger.info(f"Fetching data for {len(symbols)} symbols via {source} "
                 f"({start_date} to {end_date}, interval={interval})")
@@ -334,6 +444,73 @@ def fetch_market_data(
     return combined
 
 
+def filter_market_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter and clean raw market data before training.
+
+    Removes:
+      - Rows with NaN/inf in OHLCV
+      - Zero or negative prices
+      - Zero volume bars (no trading activity)
+      - Extreme outliers (>10 std from rolling mean per symbol)
+      - Duplicate timestamps per symbol
+      - Symbols with too few bars (<100) to be useful
+    """
+    initial_len = len(df)
+
+    # Drop NaN and inf values in core columns
+    core_cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=core_cols)
+
+    # Remove zero/negative prices
+    for col in ["open", "high", "low", "close"]:
+        if col in df.columns:
+            df = df[df[col] > 0]
+
+    # Remove zero volume bars
+    if "volume" in df.columns:
+        df = df[df["volume"] > 0]
+
+    # Remove duplicate timestamps per symbol
+    if "symbol" in df.columns:
+        idx_name = df.index.name or "timestamp"
+        if idx_name in df.columns:
+            df = df[~df.duplicated(subset=["symbol", idx_name], keep="first")]
+        else:
+            # Index is the timestamp — reset, dedup, then restore
+            df = df.reset_index()
+            df = df[~df.duplicated(subset=["symbol", idx_name], keep="first")]
+            df = df.set_index(idx_name)
+
+    # Remove extreme price outliers per symbol (>10 std from 50-bar rolling mean)
+    if "symbol" in df.columns and "close" in df.columns:
+        clean_parts = []
+        for symbol, group in df.groupby("symbol"):
+            if len(group) < 100:
+                logger.debug(f"  Skipping {symbol}: only {len(group)} bars")
+                continue
+            rolling_mean = group["close"].rolling(50, min_periods=10).mean()
+            rolling_std = group["close"].rolling(50, min_periods=10).std()
+            upper = rolling_mean + 10 * rolling_std
+            lower = rolling_mean - 10 * rolling_std
+            mask = (group["close"] <= upper) & (group["close"] >= lower)
+            clean_parts.append(group[mask])
+        if clean_parts:
+            df = pd.concat(clean_parts)
+
+    # Fill any remaining NaN in vwap with (high+low+close)/3
+    if "vwap" in df.columns:
+        mask = df["vwap"].isna() | (df["vwap"] <= 0)
+        df.loc[mask, "vwap"] = (df.loc[mask, "high"] + df.loc[mask, "low"] + df.loc[mask, "close"]) / 3
+
+    removed = initial_len - len(df)
+    symbols_remaining = df["symbol"].nunique() if "symbol" in df.columns else "N/A"
+    logger.info(f"Data filtering: {initial_len} → {len(df)} bars "
+                f"({removed} removed, {symbols_remaining} symbols remaining)")
+
+    return df
+
+
 def prepare_training_data(
     df: pd.DataFrame,
     features: List[str]
@@ -341,6 +518,11 @@ def prepare_training_data(
     """Prepare and normalize training data."""
     # Extract features
     data = df[features].values.copy()
+
+    # Final safety: clip any remaining extreme values
+    for i in range(data.shape[1]):
+        p1, p99 = np.percentile(data[:, i], [1, 99])
+        data[:, i] = np.clip(data[:, i], p1, p99)
 
     # Compute normalization statistics
     norm_stats = {}
@@ -358,47 +540,98 @@ def prepare_training_data(
 
 def main():
     parser = argparse.ArgumentParser(description="Train PatchTST price predictor")
-    parser.add_argument("--symbols", type=str, nargs="+", default=["SPY", "QQQ", "AAPL", "MSFT", "GOOGL"],
-                       help="Stock symbols to train on")
-    parser.add_argument("--days", type=int, default=60, help="Number of days of historical data")
+    parser.add_argument("--symbols", type=str, nargs="+", default=None,
+                       help="Stock symbols to train on (default: all active tickers from Polygon)")
+    parser.add_argument("--days", type=int, default=365, help="Number of days of historical data")
     parser.add_argument("--interval", type=str, default="15m", choices=["1m", "5m", "15m", "1h"],
                        help="Data interval")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--output-dir", type=str, default="./models/price_predictor/trained",
                        help="Output directory")
-    parser.add_argument("--early-stopping", type=int, default=10, help="Early stopping patience")
+    parser.add_argument("--early-stopping", type=int, default=15, help="Early stopping patience")
     parser.add_argument("--use-polygon", action="store_true",
                        help="Use Polygon.io for market data (requires POLYGON_API_KEY env var)")
+    parser.add_argument("--from-db", action="store_true",
+                       help="Load bars from training_bars table (populated by data-loader --bars)")
     parser.add_argument("--db-path", type=str, default="../portfolio.db", help="Path to portfolio.db")
 
     args = parser.parse_args()
 
     # Auto-enable polygon if key is available and not explicitly using yfinance
     use_polygon = args.use_polygon
-    if not use_polygon and os.environ.get("POLYGON_API_KEY"):
+    if not use_polygon and not args.from_db and os.environ.get("POLYGON_API_KEY"):
         logger.info("POLYGON_API_KEY found, auto-enabling Polygon data source")
         use_polygon = True
+
+    # Resolve symbols: explicit list > dynamic fetch from Polygon > not needed for --from-db
+    symbols = None
+    if args.symbols:
+        symbols = args.symbols
+    elif not args.from_db:
+        api_key = os.environ.get("POLYGON_API_KEY", "")
+        if api_key:
+            logger.info("Fetching all active tickers from Polygon...")
+            symbols = fetch_active_tickers(api_key=api_key)
+        else:
+            logger.error("No --symbols provided and no POLYGON_API_KEY for dynamic fetch")
+            sys.exit(1)
+
+    if symbols:
+        logger.info(f"Training on {len(symbols)} symbols, {args.days}d lookback")
 
     # Setup
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     logger.info(f"Using device: {device}")
 
-    # Fetch data
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=args.days)
+    # Fetch data — prefer DB if --from-db or if DB has sufficient data
+    db_path = Path(args.db_path)
+    if args.from_db or (not use_polygon and db_path.exists()):
+        try:
+            df = fetch_bars_from_db(str(db_path), symbols=symbols)
+            if len(df) < 1000 and not args.from_db:
+                logger.info(f"DB has only {len(df)} bars, falling back to Polygon")
+                raise ValueError("insufficient DB data")
+        except Exception as e:
+            if args.from_db:
+                logger.error(f"--from-db specified but DB load failed: {e}")
+                sys.exit(1)
+            logger.info(f"DB load failed ({e}), falling back to Polygon fetch")
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=args.days)
+            df = fetch_market_data(
+                symbols=symbols,
+                start_date=start_date.strftime("%Y-%m-%d"),
+                end_date=end_date.strftime("%Y-%m-%d"),
+                interval=args.interval,
+                use_polygon=use_polygon,
+            )
+    else:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=args.days)
+        df = fetch_market_data(
+            symbols=symbols,
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d"),
+            interval=args.interval,
+            use_polygon=use_polygon,
+        )
 
-    df = fetch_market_data(
-        symbols=args.symbols,
-        start_date=start_date.strftime("%Y-%m-%d"),
-        end_date=end_date.strftime("%Y-%m-%d"),
-        interval=args.interval,
-        use_polygon=use_polygon,
-    )
+    # Filter bad data
+    df = filter_market_data(df)
+
+    if len(df) == 0:
+        logger.error("No data remaining after filtering")
+        sys.exit(1)
 
     # Prepare data
     features = config.price_predictor.features
@@ -430,19 +663,23 @@ def main():
         stride=4
     )
 
+    # pin_memory only benefits CUDA; num_workers>0 can crash on macOS (fork safety)
+    use_cuda = device == "cuda"
+    num_workers = 4 if use_cuda else 0
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=4,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=use_cuda,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=4,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=use_cuda,
     )
 
     logger.info(f"Train batches: {len(train_loader)}")
@@ -468,6 +705,14 @@ def main():
     # Save config
     with open(output_dir / "config.json", "w") as f:
         json.dump(model_config, f, indent=2)
+
+    # Compile model for faster inference (PyTorch 2.0+, CUDA and MPS)
+    if hasattr(torch, 'compile') and device in ("cuda", "mps"):
+        logger.info(f"Compiling model with torch.compile (device={device})")
+        try:
+            model = torch.compile(model)
+        except Exception as e:
+            logger.warning(f"Failed to compile model: {e}")
 
     # Create trainer
     trainer = PatchTSTTrainer(

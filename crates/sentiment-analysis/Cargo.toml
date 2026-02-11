@@ -5,7 +5,9 @@ edition.workspace = true
 
 [dependencies]
 analysis-core = { path = "../analysis-core" }
+ml-client = { path = "../ml-client" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
+tracing = { workspace = true }

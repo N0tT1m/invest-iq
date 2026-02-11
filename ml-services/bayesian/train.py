@@ -51,12 +51,52 @@ def load_real_trades(db_path: str) -> list[dict]:
     return rows
 
 
+def filter_trades(trades: list[dict], source: str = "backtest") -> list[dict]:
+    """Filter out bad trade data before Bayesian updates.
+
+    Removes:
+      - Trades with None/zero entry or exit prices
+      - Extreme outlier P/L (>100% — likely data errors or stock splits)
+      - Duplicate trades (same symbol + date + signal)
+    """
+    initial = len(trades)
+    filtered = []
+    seen = set()
+
+    for t in trades:
+        # Skip missing prices
+        entry = t.get("entry_price") or t.get("trade_date")
+        if entry is None:
+            continue
+
+        # Skip extreme outlier P/L
+        pnl = t.get("profit_loss_percent") or t.get("profit_loss") or 0
+        if abs(pnl) > 100:
+            continue
+
+        # Dedup key
+        symbol = t.get("symbol", "")
+        date = t.get("entry_date") or t.get("trade_date") or ""
+        signal = t.get("signal") or t.get("side") or ""
+        key = f"{symbol}:{date}:{signal}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        filtered.append(t)
+
+    removed = initial - len(filtered)
+    if removed > 0:
+        logger.info(f"  {source} filtering: {initial} → {len(filtered)} trades ({removed} removed)")
+    return filtered
+
+
 def bootstrap(db_path: str):
     """Bootstrap Bayesian weights from historical trades."""
     logger.info(f"Loading trades from {db_path}")
 
-    backtest_trades = load_backtest_trades(db_path)
-    real_trades = load_real_trades(db_path)
+    backtest_trades = filter_trades(load_backtest_trades(db_path), "backtest")
+    real_trades = filter_trades(load_real_trades(db_path), "real")
 
     logger.info(f"Backtest trades: {len(backtest_trades)}")
     logger.info(f"Real trades: {len(real_trades)}")

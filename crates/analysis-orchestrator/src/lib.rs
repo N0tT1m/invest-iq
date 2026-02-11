@@ -1,7 +1,8 @@
 use analysis_core::{
-    AnalysisError, AnalysisResult, AnalystConsensusData, Bar, Financials, NewsArticle,
+    adaptive, AnalysisError, AnalysisResult, AnalystConsensusData, Bar, Financials, NewsArticle,
     SignalStrength, Timeframe, UnifiedAnalysis, SentimentAnalyzer,
 };
+use serde_json::json;
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use polygon_client::{PolygonClient, TickerDetails};
@@ -87,9 +88,10 @@ impl AnalysisOrchestrator {
         &self.quant_analyzer
     }
 
-    /// Detect market regime from SPY bars using recent vs full-period volatility
+    /// Enhanced market regime detection: combines trend direction (bull/bear) with volatility state.
+    /// Returns composite regimes like "high_vol_bear", "low_vol_bull", "normal_bull", etc.
     fn detect_market_regime(&self, spy_bars: &[Bar]) -> String {
-        if spy_bars.len() < 20 {
+        if spy_bars.len() < 50 {
             return "unknown".to_string();
         }
 
@@ -98,7 +100,7 @@ impl AnalysisOrchestrator {
             .map(|w| (w[1].close - w[0].close) / w[0].close)
             .collect();
 
-        if returns.len() < 20 {
+        if returns.len() < 50 {
             return "unknown".to_string();
         }
 
@@ -113,18 +115,172 @@ impl AnalysisOrchestrator {
         let recent_var = recent.iter().map(|r| (r - recent_mean).powi(2)).sum::<f64>() / recent.len() as f64;
         let recent_vol = recent_var.sqrt();
 
-        if full_vol == 0.0 {
-            return "normal".to_string();
+        // Adaptive volatility regime detection using rolling vol ratios
+        let mut vol_ratios: Vec<f64> = Vec::new();
+        for i in 10..returns.len() {
+            let window = &returns[i-10..i];
+            let w_mean = window.iter().sum::<f64>() / 10.0;
+            let w_var = window.iter().map(|r| (r - w_mean).powi(2)).sum::<f64>() / 10.0;
+            let w_vol = w_var.sqrt();
+            if full_vol > 0.0 {
+                vol_ratios.push(w_vol / full_vol);
+            }
+        }
+        let current_ratio = if full_vol > 0.0 { recent_vol / full_vol } else { 1.0 };
+        let vol_pct = adaptive::percentile_rank(current_ratio, &vol_ratios);
+        let vol_regime = if vol_pct > 0.85 {
+            "high_vol"
+        } else if vol_pct < 0.15 {
+            "low_vol"
+        } else {
+            "normal"
+        };
+
+        // Adaptive trend detection using momentum and SMA distance percentiles
+        let closes: Vec<f64> = spy_bars.iter().map(|b| b.close).collect();
+        let sma_50: f64 = closes[closes.len().saturating_sub(50)..].iter().sum::<f64>()
+            / closes.len().min(50) as f64;
+        let current_price = closes.last().copied().unwrap_or(0.0);
+
+        // Rolling 20-day momentum distribution
+        let mut momentums: Vec<f64> = Vec::new();
+        for i in 20..closes.len() {
+            let p0 = closes[i - 20];
+            if p0 > 0.0 {
+                momentums.push((closes[i] - p0) / p0);
+            }
+        }
+        let momentum_20 = if closes.len() >= 20 {
+            let p20 = closes[closes.len() - 20];
+            if p20 > 0.0 { (current_price - p20) / p20 } else { 0.0 }
+        } else {
+            0.0
+        };
+        let momentum_pct = adaptive::percentile_rank(momentum_20, &momentums);
+
+        // Rolling SMA-50 distance distribution
+        let sma_dist = if sma_50 > 0.0 { (current_price - sma_50) / sma_50 } else { 0.0 };
+        let mut sma_dists: Vec<f64> = Vec::new();
+        for i in 50..closes.len() {
+            let sma = closes[i.saturating_sub(50)..i].iter().sum::<f64>() / 50.min(i) as f64;
+            if sma > 0.0 {
+                sma_dists.push((closes[i] - sma) / sma);
+            }
+        }
+        let sma_pct = adaptive::percentile_rank(sma_dist, &sma_dists);
+
+        let trend = if sma_pct > 0.70 && momentum_pct > 0.65 {
+            "bull"
+        } else if sma_pct < 0.30 && momentum_pct < 0.35 {
+            "bear"
+        } else {
+            "sideways"
+        };
+
+        format!("{}_{}", vol_regime, trend)
+    }
+
+    /// Get regime-conditional default engine weights.
+    /// Returns (technical, fundamental, quant, sentiment) as percentages.
+    fn regime_default_weights(&self, regime: &str) -> (i32, i32, i32, i32) {
+        match regime {
+            "high_vol_bear" => (15, 30, 35, 20),   // Lean on risk/quant in volatile downtrends
+            "high_vol_bull" => (25, 25, 30, 20),    // Quant risk still important in volatile uptrends
+            "high_vol_sideways" => (15, 30, 35, 20),
+            "low_vol_bull" => (30, 30, 15, 25),     // Technical momentum + sentiment in calm uptrends
+            "low_vol_bear" => (20, 40, 20, 20),     // Fundamental value focus in slow decline
+            "low_vol_sideways" => (25, 35, 20, 20),
+            "normal_bull" => (25, 35, 15, 25),      // Balanced with slight fundamental tilt
+            "normal_bear" => (20, 35, 25, 20),      // More quant risk-awareness
+            "normal_sideways" => (20, 40, 15, 25),  // Standard balanced
+            _ => (20, 40, 15, 25),                  // Fallback
+        }
+    }
+
+    /// Compute conviction tier based on engine alignment and confidence.
+    fn compute_conviction(
+        &self,
+        technical: &Option<AnalysisResult>,
+        fundamental: &Option<AnalysisResult>,
+        quantitative: &Option<AnalysisResult>,
+        sentiment: &Option<AnalysisResult>,
+    ) -> String {
+        let mut bullish = 0;
+        let mut bearish = 0;
+        let mut total_confidence = 0.0;
+        let mut count = 0;
+
+        for result in [technical, fundamental, quantitative, sentiment] {
+            if let Some(r) = result {
+                let score = r.signal.to_score();
+                if score >= 20 { bullish += 1; }
+                else if score <= -20 { bearish += 1; }
+                total_confidence += r.confidence;
+                count += 1;
+            }
         }
 
-        let ratio = recent_vol / full_vol;
-        if ratio > 1.5 {
-            "high_volatility".to_string()
-        } else if ratio < 0.6 {
-            "low_volatility".to_string()
+        let avg_confidence = if count > 0 { total_confidence / count as f64 } else { 0.0 };
+        let agreement = bullish.max(bearish);
+
+        if agreement >= 3 && avg_confidence > 0.65 {
+            "HIGH".to_string()
+        } else if agreement >= 2 && avg_confidence > 0.5 {
+            "MODERATE".to_string()
         } else {
-            "normal".to_string()
+            "LOW".to_string()
         }
+    }
+
+    /// Build time-horizon signal breakdown.
+    fn build_time_horizon_signals(
+        &self,
+        technical: &Option<AnalysisResult>,
+        fundamental: &Option<AnalysisResult>,
+        quantitative: &Option<AnalysisResult>,
+        sentiment: &Option<AnalysisResult>,
+    ) -> serde_json::Value {
+        let mut horizons = serde_json::Map::new();
+
+        // Short-term: technical + sentiment (days to weeks)
+        let mut short_score = 0i32;
+        let mut short_weight = 0i32;
+        if let Some(tech) = technical {
+            short_score += tech.signal.to_score() * 60;
+            short_weight += 60;
+        }
+        if let Some(sent) = sentiment {
+            short_score += sent.signal.to_score() * 40;
+            short_weight += 40;
+        }
+        if short_weight > 0 {
+            let short_signal = SignalStrength::from_score((short_score as f64 / short_weight as f64) as i32);
+            horizons.insert("short_term".to_string(), json!({
+                "signal": short_signal.to_label(),
+                "horizon": "days to weeks",
+                "drivers": ["technical", "sentiment"],
+            }));
+        }
+
+        // Medium-term: quant (weeks to months)
+        if let Some(quant) = quantitative {
+            horizons.insert("medium_term".to_string(), json!({
+                "signal": quant.signal.to_label(),
+                "horizon": "weeks to months",
+                "drivers": ["quantitative"],
+            }));
+        }
+
+        // Long-term: fundamental (months to quarters)
+        if let Some(fund) = fundamental {
+            horizons.insert("long_term".to_string(), json!({
+                "signal": fund.signal.to_label(),
+                "horizon": "months to quarters",
+                "drivers": ["fundamental"],
+            }));
+        }
+
+        serde_json::Value::Object(horizons)
     }
 
     /// Perform comprehensive analysis on a symbol
@@ -197,7 +353,7 @@ impl AnalysisOrchestrator {
         if let Ok(bars) = &bars_result {
             if bars.len() >= 50 {
                 tracing::info!("Running enhanced technical analysis with {} bars", bars.len());
-                match self.technical_analyzer.analyze_enhanced(symbol, bars) {
+                match self.technical_analyzer.analyze_enhanced(symbol, bars, spy_bars_ok.as_deref()) {
                     Ok(result) => technical_result = Some(result),
                     Err(e) => tracing::warn!("Technical analysis failed: {:?}", e),
                 }
@@ -224,8 +380,9 @@ impl AnalysisOrchestrator {
         if let Ok(financials_vec) = &financials_result {
             if !financials_vec.is_empty() {
                 tracing::info!("Running enhanced fundamental analysis with consensus data");
+                let sic_desc = ticker_details.as_ref().ok().and_then(|d| d.sic_description.as_deref());
                 match self.fundamental_analyzer.analyze_with_consensus(
-                    symbol, financials_vec, current_price, shares_outstanding, &consensus_data, dynamic_risk_free_rate,
+                    symbol, financials_vec, current_price, shares_outstanding, &consensus_data, dynamic_risk_free_rate, sic_desc,
                 ) {
                     Ok(result) => fundamental_result = Some(result),
                     Err(e) => tracing::warn!("Fundamental analysis failed: {:?}", e),
@@ -241,6 +398,10 @@ impl AnalysisOrchestrator {
             }
         }
 
+        // Detect market regime from SPY bars (needed for regime-conditional weights)
+        let market_regime = spy_bars_ok.as_deref()
+            .map(|spy_bars| self.detect_market_regime(spy_bars));
+
         // Combine results (now async — may fetch dynamic weights from ML service)
         let mut overall = self.combine_results(
             symbol,
@@ -248,14 +409,18 @@ impl AnalysisOrchestrator {
             &fundamental_result,
             &quant_result,
             &sentiment_result,
+            market_regime.as_deref(),
         ).await;
         overall.current_price = current_price;
         overall.name = ticker_details.ok().map(|d| d.name);
+        overall.market_regime = market_regime;
 
-        // Detect market regime from SPY bars
-        if let Some(spy_bars) = &spy_bars_ok {
-            overall.market_regime = Some(self.detect_market_regime(spy_bars));
-        }
+        // Compute supplementary signals from options, insiders, dividends, snapshot
+        let (supplementary, confidence_adj) = self.compute_supplementary_signals(
+            symbol, current_price, bars_result.as_ref().ok(),
+        ).await;
+        overall.supplementary_signals = Some(supplementary);
+        overall.overall_confidence = (overall.overall_confidence + confidence_adj).clamp(0.05, 0.98);
 
         // Log analysis features for future model training (fire-and-forget)
         self.log_analysis_features(
@@ -273,7 +438,7 @@ impl AnalysisOrchestrator {
     }
 
     /// Combine individual analysis results into unified analysis.
-    /// Optionally uses ML-predicted dynamic weights if the signal models service is available.
+    /// Uses: ML-predicted weights > regime-conditional weights > hardcoded defaults.
     async fn combine_results(
         &self,
         symbol: &str,
@@ -281,11 +446,12 @@ impl AnalysisOrchestrator {
         fundamental: &Option<AnalysisResult>,
         quantitative: &Option<AnalysisResult>,
         sentiment: &Option<AnalysisResult>,
+        market_regime: Option<&str>,
     ) -> UnifiedAnalysis {
         // Try to get dynamic weights from signal models service
         let dynamic_weights = self.try_get_dynamic_weights(technical, fundamental, quantitative, sentiment).await;
 
-        // Use dynamic weights if available, otherwise fallback to hardcoded
+        // Priority: ML weights > regime-conditional > hardcoded
         let (w_tech, w_fund, w_quant, w_sent) = match &dynamic_weights {
             Some(w) => {
                 let wt = (w.get("technical").copied().unwrap_or(0.20) * 100.0) as i32;
@@ -294,7 +460,7 @@ impl AnalysisOrchestrator {
                 let ws = (w.get("sentiment").copied().unwrap_or(0.25) * 100.0) as i32;
                 (wt, wf, wq, ws)
             }
-            None => (20, 40, 15, 25),
+            None => self.regime_default_weights(market_regime.unwrap_or("unknown")),
         };
 
         let mut total_score = 0;
@@ -364,7 +530,16 @@ impl AnalysisOrchestrator {
             0.0
         };
 
-        let recommendation = self.generate_recommendation(&overall_signal, overall_confidence);
+        // Compute conviction tier and time horizon signals
+        let conviction_tier = self.compute_conviction(technical, fundamental, quantitative, sentiment);
+        let time_horizon_signals = self.build_time_horizon_signals(technical, fundamental, quantitative, sentiment);
+
+        // Enhanced recommendation with conviction
+        let recommendation = format!(
+            "{} [{}]",
+            self.generate_recommendation(&overall_signal, overall_confidence),
+            conviction_tier,
+        );
 
         UnifiedAnalysis {
             symbol: symbol.to_string(),
@@ -378,7 +553,10 @@ impl AnalysisOrchestrator {
             overall_signal,
             overall_confidence,
             recommendation,
-            market_regime: None,
+            market_regime: market_regime.map(|s| s.to_string()),
+            conviction_tier: Some(conviction_tier),
+            time_horizon_signals: Some(time_horizon_signals),
+            supplementary_signals: None, // Set by caller after fetching options/insiders/dividends
         }
     }
 
@@ -525,6 +703,504 @@ impl AnalysisOrchestrator {
                 tracing::debug!("Failed to log analysis features: {}", e);
             }
         });
+    }
+
+    /// Compute supplementary signals from options, insiders, dividends, and snapshot.
+    /// Returns (signals_json, score_adjustment) where score_adjustment modifies overall confidence.
+    async fn compute_supplementary_signals(
+        &self,
+        symbol: &str,
+        current_price: Option<f64>,
+        bars: Option<&Vec<Bar>>,
+    ) -> (serde_json::Value, f64) {
+        let mut signals = serde_json::Map::new();
+        let mut score_adj = 0.0_f64;
+
+        // Fetch supplementary data concurrently (graceful errors)
+        let (options_result, insiders_result, dividends_result) = tokio::join!(
+            self.polygon_client.get_options_snapshot(symbol),
+            self.polygon_client.get_insider_transactions(symbol, 50),
+            self.polygon_client.get_dividends(symbol, 20),
+        );
+
+        // --- Options-Implied Intelligence ---
+        if let Ok(options) = &options_result {
+            if !options.is_empty() {
+                let mut call_oi = 0i64;
+                let mut put_oi = 0i64;
+                let mut call_iv_sum = 0.0_f64;
+                let mut put_iv_sum = 0.0_f64;
+                let mut call_iv_count = 0u32;
+                let mut put_iv_count = 0u32;
+                let mut ivs: Vec<f64> = Vec::new();
+
+                for opt in options {
+                    let contract_type = opt.details.as_ref()
+                        .and_then(|d| d.contract_type.as_deref())
+                        .unwrap_or("");
+                    let oi = opt.open_interest.unwrap_or(0);
+                    let iv = opt.implied_volatility.unwrap_or(0.0);
+
+                    if iv > 0.0 { ivs.push(iv); }
+
+                    if contract_type.eq_ignore_ascii_case("call") {
+                        call_oi += oi;
+                        if iv > 0.0 { call_iv_sum += iv; call_iv_count += 1; }
+                    } else if contract_type.eq_ignore_ascii_case("put") {
+                        put_oi += oi;
+                        if iv > 0.0 { put_iv_sum += iv; put_iv_count += 1; }
+                    }
+                }
+
+                // Adaptive Put/Call ratio thresholds using per-strike distribution
+                let pc_ratio = if call_oi > 0 { put_oi as f64 / call_oi as f64 } else { 1.0 };
+                let mut per_strike_pc_ratios: Vec<f64> = Vec::new();
+                let mut strike_call_oi: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+                let mut strike_put_oi: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+                for opt in options {
+                    if let Some(strike) = opt.details.as_ref().and_then(|d| d.strike_price) {
+                        let key = (strike * 100.0) as i64;
+                        let oi = opt.open_interest.unwrap_or(0);
+                        let contract_type = opt.details.as_ref()
+                            .and_then(|d| d.contract_type.as_deref())
+                            .unwrap_or("");
+                        if contract_type.eq_ignore_ascii_case("call") {
+                            *strike_call_oi.entry(key).or_insert(0) += oi;
+                        } else if contract_type.eq_ignore_ascii_case("put") {
+                            *strike_put_oi.entry(key).or_insert(0) += oi;
+                        }
+                    }
+                }
+                for (strike, p_oi) in &strike_put_oi {
+                    if let Some(&c_oi) = strike_call_oi.get(strike) {
+                        if c_oi > 0 {
+                            per_strike_pc_ratios.push(*p_oi as f64 / c_oi as f64);
+                        }
+                    }
+                }
+
+                let (pc_signal, pc_adj) = if !per_strike_pc_ratios.is_empty() {
+                    let pc_pct = adaptive::percentile_rank(pc_ratio, &per_strike_pc_ratios);
+                    if pc_pct < 0.15 {
+                        ("bullish", 0.03)
+                    } else if pc_pct > 0.85 {
+                        ("bearish", -0.03)
+                    } else {
+                        ("neutral", 0.0)
+                    }
+                } else {
+                    // Fallback to z-score with baseline mean=1.0, std=0.3
+                    let baseline_data = vec![0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3];
+                    let z = adaptive::z_score_of(pc_ratio, &baseline_data);
+                    if z < -1.5 {
+                        ("bullish", 0.03)
+                    } else if z > 1.5 {
+                        ("bearish", -0.03)
+                    } else {
+                        ("neutral", 0.0)
+                    }
+                };
+                score_adj += pc_adj;
+
+                // Adaptive IV Skew using z-score relative to observed IV distribution
+                let avg_call_iv = if call_iv_count > 0 { call_iv_sum / call_iv_count as f64 } else { 0.0 };
+                let avg_put_iv = if put_iv_count > 0 { put_iv_sum / put_iv_count as f64 } else { 0.0 };
+                let iv_skew = if avg_call_iv > 0.0 { avg_put_iv / avg_call_iv } else { 1.0 };
+                let skew_z = adaptive::z_score_of(iv_skew, &ivs);
+                let skew_signal = if skew_z > 1.5 { "heavy_put_demand" }
+                    else if skew_z < -1.5 { "heavy_call_demand" }
+                    else { "balanced" };
+
+                // IV Percentile (where is current median IV vs all observed IVs)
+                let iv_percentile = if !ivs.is_empty() {
+                    ivs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    let median_iv = ivs[ivs.len() / 2];
+                    // Rough percentile using current median
+                    let below = ivs.iter().filter(|&&v| v <= median_iv).count();
+                    (below as f64 / ivs.len() as f64) * 100.0
+                } else { 50.0 };
+
+                if iv_percentile > 80.0 { score_adj -= 0.02; } // High IV = mean-reversion pressure
+                else if iv_percentile < 20.0 { score_adj += 0.02; } // Low IV = expansion likely
+
+                // Max Pain (strike with most total OI)
+                let mut strike_oi: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+                for opt in options {
+                    if let Some(strike) = opt.details.as_ref().and_then(|d| d.strike_price) {
+                        let key = (strike * 100.0) as i64; // penny resolution
+                        *strike_oi.entry(key).or_insert(0) += opt.open_interest.unwrap_or(0);
+                    }
+                }
+                let max_pain = strike_oi.into_iter()
+                    .max_by_key(|(_, oi)| *oi)
+                    .map(|(k, _)| k as f64 / 100.0);
+                let max_pain_convergence = if let (Some(mp), Some(p)) = (max_pain, current_price) {
+                    if p > 0.0 { ((mp - p) / p * 100.0).abs() } else { 100.0 }
+                } else { 100.0 };
+
+                signals.insert("options".to_string(), json!({
+                    "put_call_ratio": pc_ratio,
+                    "put_call_signal": pc_signal,
+                    "iv_skew": iv_skew,
+                    "iv_skew_signal": skew_signal,
+                    "iv_percentile": iv_percentile,
+                    "max_pain": max_pain,
+                    "max_pain_distance_pct": max_pain_convergence,
+                    "call_open_interest": call_oi,
+                    "put_open_interest": put_oi,
+                    "total_contracts": options.len(),
+                }));
+            }
+        }
+
+        // --- Insider Transaction Signals (adaptive thresholds) ---
+        if let Ok(insiders) = &insiders_result {
+            if !insiders.is_empty() {
+                let mut buy_value = 0.0_f64;
+                let mut sell_value = 0.0_f64;
+                let mut buy_count = 0u32;
+                let mut sell_count = 0u32;
+                let mut executive_buys = 0u32;
+
+                for txn in insiders {
+                    let is_buy = txn.transaction_type.as_deref()
+                        .map(|t| {
+                            let tl = t.to_lowercase();
+                            tl.contains("buy") || tl.contains("purchase") || tl.contains("acquisition")
+                        })
+                        .unwrap_or(false);
+                    let is_sell = txn.transaction_type.as_deref()
+                        .map(|t| {
+                            let tl = t.to_lowercase();
+                            tl.contains("sell") || tl.contains("sale") || tl.contains("disposition")
+                        })
+                        .unwrap_or(false);
+
+                    let value = txn.total_value.unwrap_or(0.0).abs();
+                    let is_executive = txn.title.as_deref()
+                        .map(|t| {
+                            let tl = t.to_lowercase();
+                            tl.contains("ceo") || tl.contains("cfo") || tl.contains("coo")
+                                || tl.contains("president") || tl.contains("chief")
+                        })
+                        .unwrap_or(false);
+
+                    if is_buy {
+                        buy_value += value;
+                        buy_count += 1;
+                        if is_executive { executive_buys += 1; }
+                    } else if is_sell {
+                        sell_value += value;
+                        sell_count += 1;
+                    }
+                }
+
+                // Adaptive insider thresholds based on typical daily traded value
+                let typical_daily_value = bars.map(|b| {
+                    let recent = &b[b.len().saturating_sub(20)..];
+                    let avg_vol = recent.iter().map(|bar| bar.volume).sum::<f64>() / recent.len() as f64;
+                    let avg_price = recent.iter().map(|bar| bar.close).sum::<f64>() / recent.len() as f64;
+                    avg_vol * avg_price
+                }).unwrap_or(10_000_000.0);
+
+                let significant_buy_threshold = typical_daily_value * 0.001;  // 0.1% of daily value
+                let significant_sell_threshold = typical_daily_value * 0.005; // 0.5% of daily value
+
+                let net_value = buy_value - sell_value;
+                let insider_signal = if net_value > significant_buy_threshold && buy_count > sell_count {
+                    score_adj += 0.04;
+                    "bullish"
+                } else if net_value < -significant_sell_threshold && sell_count > buy_count * 2 {
+                    score_adj -= 0.03;
+                    "bearish"
+                } else { "neutral" };
+
+                if executive_buys >= 2 {
+                    score_adj += 0.03; // Multiple C-suite buys is very bullish
+                }
+
+                signals.insert("insiders".to_string(), json!({
+                    "buy_count": buy_count,
+                    "sell_count": sell_count,
+                    "buy_value": buy_value,
+                    "sell_value": sell_value,
+                    "net_value": net_value,
+                    "executive_buys": executive_buys,
+                    "signal": insider_signal,
+                }));
+            }
+        }
+
+        // --- Dividend Health Signals (adaptive thresholds) ---
+        if let Ok(dividends) = &dividends_result {
+            if dividends.len() >= 2 {
+                let amounts: Vec<f64> = dividends.iter()
+                    .filter_map(|d| d.cash_amount)
+                    .collect();
+
+                if amounts.len() >= 2 {
+                    let latest = amounts[0];
+                    let prev = amounts[1];
+                    let div_change = if prev > 0.0 { (latest - prev) / prev * 100.0 } else { 0.0 };
+
+                    // Compute all consecutive dividend changes for z-score
+                    let mut div_changes: Vec<f64> = Vec::new();
+                    for i in 1..amounts.len() {
+                        if amounts[i] > 0.0 {
+                            div_changes.push((amounts[i-1] - amounts[i]) / amounts[i] * 100.0);
+                        }
+                    }
+
+                    // Adaptive dividend change detection using z-score
+                    let div_signal = if latest <= 0.0 && prev > 0.0 {
+                        score_adj -= 0.05;
+                        "cut_or_suspended"
+                    } else if !div_changes.is_empty() {
+                        let z = adaptive::z_score_of(div_change, &div_changes);
+                        if z < -1.5 {
+                            score_adj -= 0.03;
+                            "significant_cut"
+                        } else if z > 1.5 {
+                            score_adj += 0.02;
+                            "significant_increase"
+                        } else {
+                            "stable"
+                        }
+                    } else if div_change < -10.0 {
+                        score_adj -= 0.03;
+                        "significant_cut"
+                    } else if div_change > 10.0 {
+                        score_adj += 0.02;
+                        "significant_increase"
+                    } else { "stable" };
+
+                    // Annualized yield (if we have price)
+                    let annual_div = if let Some(freq) = dividends[0].frequency {
+                        latest * freq as f64
+                    } else {
+                        latest * 4.0 // assume quarterly
+                    };
+                    let div_yield = current_price
+                        .filter(|&p| p > 0.0)
+                        .map(|p| annual_div / p * 100.0);
+
+                    // Special dividend detection
+                    let has_special = dividends.iter().any(|d|
+                        d.dividend_type.as_deref()
+                            .map(|t| t.to_lowercase().contains("special"))
+                            .unwrap_or(false)
+                    );
+                    if has_special { score_adj += 0.02; }
+
+                    signals.insert("dividends".to_string(), json!({
+                        "latest_amount": latest,
+                        "change_pct": div_change,
+                        "signal": div_signal,
+                        "annual_yield_pct": div_yield,
+                        "has_special_dividend": has_special,
+                        "payment_count": amounts.len(),
+                    }));
+                }
+            }
+        }
+
+        // --- Snapshot / Intraday Gap Analysis (adaptive thresholds) ---
+        if let Ok(snapshot) = self.polygon_client.get_snapshot(symbol).await {
+            if let (Some(day), Some(prev)) = (&snapshot.day, &snapshot.prev_day) {
+                let today_open = day.o.unwrap_or(0.0);
+                let prev_close = prev.c.unwrap_or(0.0);
+                if prev_close > 0.0 && today_open > 0.0 {
+                    let gap_pct = (today_open - prev_close) / prev_close * 100.0;
+
+                    // Compute historical daily gaps from bars
+                    let mut historical_gaps: Vec<f64> = Vec::new();
+                    if let Some(bars) = bars {
+                        for i in 1..bars.len() {
+                            let prev_bar_close = bars[i-1].close;
+                            let curr_bar_open = bars[i].open;
+                            if prev_bar_close > 0.0 && curr_bar_open > 0.0 {
+                                historical_gaps.push((curr_bar_open - prev_bar_close) / prev_bar_close * 100.0);
+                            }
+                        }
+                    }
+
+                    let gap_signal = if !historical_gaps.is_empty() {
+                        let gap_pct_rank = adaptive::percentile_rank(gap_pct, &historical_gaps);
+                        if gap_pct_rank > 0.90 {
+                            "gap_up"
+                        } else if gap_pct_rank < 0.10 {
+                            "gap_down"
+                        } else {
+                            "flat"
+                        }
+                    } else {
+                        // Fallback to fixed thresholds
+                        if gap_pct > 2.0 { "gap_up" }
+                        else if gap_pct < -2.0 { "gap_down" }
+                        else { "flat" }
+                    };
+
+                    // Large gaps often fill — a gap up with weak follow-through is bearish
+                    if let Some(today_close) = day.c {
+                        if gap_signal == "gap_up" && today_close < today_open {
+                            score_adj -= 0.02; // Gap up fading
+                        } else if gap_signal == "gap_down" && today_close > today_open {
+                            score_adj += 0.02; // Gap down reversing
+                        }
+                    }
+
+                    let change_pct = snapshot.todays_change_perc.unwrap_or(0.0);
+
+                    signals.insert("intraday".to_string(), json!({
+                        "gap_pct": gap_pct,
+                        "gap_signal": gap_signal,
+                        "change_pct": change_pct,
+                        "today_open": today_open,
+                        "prev_close": prev_close,
+                    }));
+                }
+            }
+        }
+
+        // --- Smart Money Composite (adaptive thresholds) ---
+        // Combines insider buys + options positioning + volume accumulation
+        let mut smart_money_score = 0.0_f64;
+        if let Some(insider_sig) = signals.get("insiders") {
+            if insider_sig.get("signal").and_then(|s| s.as_str()) == Some("bullish") {
+                smart_money_score += 1.0;
+            }
+            if insider_sig.get("executive_buys").and_then(|v| v.as_u64()).unwrap_or(0) >= 2 {
+                smart_money_score += 1.0;
+            }
+        }
+        if let Some(opt_sig) = signals.get("options") {
+            if opt_sig.get("put_call_signal").and_then(|s| s.as_str()) == Some("bullish") {
+                smart_money_score += 1.0;
+            }
+        }
+        // Check for quiet accumulation using adaptive volume decline threshold
+        if let Some(bars) = bars {
+            if bars.len() >= 20 {
+                let recent = &bars[bars.len() - 10..];
+                let prior = &bars[bars.len() - 20..bars.len() - 10];
+                let recent_avg_vol: f64 = recent.iter().map(|b| b.volume).sum::<f64>() / 10.0;
+                let prior_avg_vol: f64 = prior.iter().map(|b| b.volume).sum::<f64>() / 10.0;
+
+                // Compute historical volume ratios for adaptive threshold
+                let mut vol_ratios: Vec<f64> = Vec::new();
+                for i in 20..bars.len() {
+                    let recent_window = &bars[i-10..i];
+                    let prior_window = &bars[i-20..i-10];
+                    let recent_vol: f64 = recent_window.iter().map(|b| b.volume).sum::<f64>() / 10.0;
+                    let prior_vol: f64 = prior_window.iter().map(|b| b.volume).sum::<f64>() / 10.0;
+                    if prior_vol > 0.0 {
+                        vol_ratios.push(recent_vol / prior_vol);
+                    }
+                }
+
+                let current_vol_ratio = if prior_avg_vol > 0.0 { recent_avg_vol / prior_avg_vol } else { 1.0 };
+                let vol_ratio_pct = adaptive::percentile_rank(current_vol_ratio, &vol_ratios);
+
+                if vol_ratio_pct < 0.20 {
+                    smart_money_score += 0.5; // Declining volume in bottom 20% = quiet accumulation
+                }
+            }
+        }
+
+        // Use z-score for smart money signal thresholds
+        let smart_money_z = if smart_money_score != 0.0 {
+            // Baseline distribution: typical scores range 0-3
+            let baseline_scores = vec![-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
+            adaptive::z_score_of(smart_money_score, &baseline_scores)
+        } else {
+            0.0
+        };
+
+        let smart_money_signal = if smart_money_z > 2.0 {
+            "strong_accumulation"
+        } else if smart_money_z > 1.0 {
+            "accumulation"
+        } else if smart_money_z < -1.0 {
+            "distribution"
+        } else {
+            "neutral"
+        };
+
+        // Adaptive confidence adjustment based on z-score magnitude
+        let smart_money_adj = 0.02 * smart_money_z.abs().min(3.0) * smart_money_z.signum();
+        score_adj += smart_money_adj;
+
+        signals.insert("smart_money".to_string(), json!({
+            "score": smart_money_score,
+            "signal": smart_money_signal,
+        }));
+
+        // --- Sector Rotation (adaptive thresholds) ---
+        // Compare stock's recent performance vs sector ETF and SPY
+        if let Some(bars) = bars {
+            if bars.len() >= 20 {
+                let stock_return_20d = {
+                    let p0 = bars[bars.len() - 20].close;
+                    let p1 = bars.last().unwrap().close;
+                    if p0 > 0.0 { (p1 - p0) / p0 * 100.0 } else { 0.0 }
+                };
+
+                // Compare vs SPY with adaptive thresholds
+                if let Ok(spy_bars) = self.get_bars("SPY", Timeframe::Day1, 30).await {
+                    if spy_bars.len() >= 20 {
+                        let spy_return_20d = {
+                            let p0 = spy_bars[spy_bars.len() - 20].close;
+                            let p1 = spy_bars.last().unwrap().close;
+                            if p0 > 0.0 { (p1 - p0) / p0 * 100.0 } else { 0.0 }
+                        };
+                        let relative_perf = stock_return_20d - spy_return_20d;
+
+                        // Compute historical relative performance distribution
+                        let mut historical_rel_perf: Vec<f64> = Vec::new();
+                        for i in 20..bars.len() {
+                            let stock_ret = {
+                                let p0 = bars[i - 20].close;
+                                let p1 = bars[i].close;
+                                if p0 > 0.0 { (p1 - p0) / p0 * 100.0 } else { 0.0 }
+                            };
+                            if i < spy_bars.len() {
+                                let spy_ret = {
+                                    let p0 = spy_bars[i - 20].close;
+                                    let p1 = spy_bars[i].close;
+                                    if p0 > 0.0 { (p1 - p0) / p0 * 100.0 } else { 0.0 }
+                                };
+                                historical_rel_perf.push(stock_ret - spy_ret);
+                            }
+                        }
+
+                        let rotation_signal = if !historical_rel_perf.is_empty() {
+                            let rel_perf_pct = adaptive::percentile_rank(relative_perf, &historical_rel_perf);
+                            if rel_perf_pct > 0.80 {
+                                "outperforming"
+                            } else if rel_perf_pct < 0.20 {
+                                "underperforming"
+                            } else {
+                                "inline"
+                            }
+                        } else {
+                            // Fallback to fixed thresholds
+                            if relative_perf > 5.0 { "outperforming" }
+                            else if relative_perf < -5.0 { "underperforming" }
+                            else { "inline" }
+                        };
+
+                        signals.insert("sector_rotation".to_string(), json!({
+                            "stock_return_20d": stock_return_20d,
+                            "spy_return_20d": spy_return_20d,
+                            "relative_performance": relative_perf,
+                            "signal": rotation_signal,
+                        }));
+                    }
+                }
+            }
+        }
+
+        (serde_json::Value::Object(signals), score_adj)
     }
 
     fn generate_recommendation(&self, signal: &SignalStrength, confidence: f64) -> String {
