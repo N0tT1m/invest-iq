@@ -601,8 +601,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(60);
 
     // period = time between token replenishments; burst_size = max tokens (burst capacity)
+    // Burst should be generous — the frontend fires 20+ concurrent requests on analyze
     let replenish_interval_ms = 60_000u64.checked_div(rate_limit_per_minute.max(1)).unwrap_or(1000);
-    let burst = (rate_limit_per_minute / 6).max(5).min(100) as u32;
+    let burst = rate_limit_per_minute.min(200) as u32;
 
     let mut governor_builder = GovernorConfigBuilder::default()
         .key_extractor(SmartIpKeyExtractor);
