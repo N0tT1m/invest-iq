@@ -66,6 +66,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Production hardening middleware
+from shared.middleware import setup_hardening
+setup_hardening(app, "sentiment")
+
 # Global model and cache instances
 model: Optional[FinBERTSentiment] = None
 cache: Optional[SentimentCache] = None

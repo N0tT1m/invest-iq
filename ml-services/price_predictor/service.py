@@ -58,6 +58,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Production hardening middleware
+from shared.middleware import setup_hardening
+setup_hardening(app, "price-predictor")
+
 # Global model instance
 predictor: Optional[PricePredictorInference] = None
 db: Optional[MLDatabase] = None

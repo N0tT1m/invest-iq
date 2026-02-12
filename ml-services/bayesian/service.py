@@ -73,6 +73,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Production hardening middleware
+from shared.middleware import setup_hardening
+setup_hardening(app, "bayesian")
+
 # Global model instance
 bayesian_model: Optional[BayesianStrategyWeights] = None
 db: Optional[MLDatabase] = None

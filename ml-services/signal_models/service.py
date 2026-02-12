@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Signal Models Service", version="1.0.0")
 
+# Production hardening middleware
+from shared.middleware import setup_hardening
+setup_hardening(app, "signal-models")
+
 # Global model instances
 meta_model: Optional[MetaModel] = None
 calibrator: Optional[ConfidenceCalibrator] = None

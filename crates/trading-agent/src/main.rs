@@ -6,6 +6,7 @@ use alpaca_broker::AlpacaClient;
 use anyhow::Result;
 use chrono::Timelike;
 use risk_manager::RiskManager;
+use tokio::signal::unix::SignalKind;
 use tokio::time;
 
 mod config;
@@ -34,12 +35,32 @@ use trade_executor::TradeExecutor;
 async fn main() -> Result<()> {
     // 1. Load .env, init tracing
     dotenvy::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+
+    let json_logging = std::env::var("RUST_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    if json_logging {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+    }
+
+    // Panic hook: log panic info before crashing
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("PANIC: {info}");
+        tracing::error!("PANIC: {info}");
+    }));
 
     tracing::info!("Starting InvestIQ Autonomous Trading Agent");
 
@@ -137,8 +158,44 @@ async fn main() -> Result<()> {
         agent_metrics.restore_from_json(&saved);
     }
 
-    // 9. Log account info
-    let account = alpaca.get_account().await?;
+    // 9. Startup connectivity checks
+    // DB check
+    sqlx::query("SELECT 1")
+        .execute(&db_pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("Database connectivity check failed: {}", e))?;
+    tracing::info!("Startup check: database OK");
+
+    // Alpaca check (also provides account info)
+    let account = alpaca.get_account().await
+        .map_err(|e| anyhow::anyhow!("Alpaca connectivity check failed: {}", e))?;
+    tracing::info!("Startup check: Alpaca OK");
+
+    // ML signal models check (warn-only, not fatal)
+    match reqwest::Client::new()
+        .get(format!("{}/health", config.ml_signal_models_url))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::info!("Startup check: ML signal models OK");
+        }
+        Ok(resp) => {
+            tracing::warn!(
+                "Startup check: ML signal models returned {} — trades will use fallback scoring",
+                resp.status()
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Startup check: ML signal models unreachable ({}) — trades will use fallback scoring",
+                e
+            );
+        }
+    }
+
+    // Log account info
     tracing::info!(
         "Paper account: ${} cash, ${} buying power, ${} portfolio value",
         account.cash,
@@ -178,9 +235,19 @@ async fn main() -> Result<()> {
         .flatten()
         .unwrap_or_default();
 
-    // Main loop with graceful shutdown
+    // Main loop with graceful shutdown (SIGINT + SIGTERM)
     let mut interval = time::interval(Duration::from_secs(config.scan_interval_seconds));
-    let shutdown = tokio::signal::ctrl_c();
+    let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
+    let shutdown = async {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received SIGINT");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM");
+            }
+        }
+    };
     tokio::pin!(shutdown);
 
     // Heartbeat: send a Discord status every N cycles so the user knows the bot is alive
@@ -571,8 +638,9 @@ async fn run_trading_cycle(
         }
     }
 
-    // Collect results
+    // Collect results and batch Discord notifications
     let mut proposed_count = 0usize;
+    let mut notification_lines: Vec<String> = Vec::new();
     for handle in handles {
         if let Ok((success, _symbol, msg)) = handle.await {
             if success {
@@ -582,7 +650,30 @@ async fn run_trading_cycle(
                 metrics.trades_failed += 1;
             }
             if let Some(msg) = msg {
-                notifier.send_message(&msg).await.ok();
+                notification_lines.push(msg);
+            }
+        }
+    }
+
+    // Send a single batched Discord message to avoid rate limiting
+    if !notification_lines.is_empty() {
+        if notification_lines.len() == 1 {
+            notifier.send_message(&notification_lines[0]).await.ok();
+        } else {
+            // Batch into chunks of ~1900 chars (Discord 2000 char limit)
+            let mut batch = String::new();
+            for line in &notification_lines {
+                if !batch.is_empty() && batch.len() + line.len() + 2 > 1900 {
+                    notifier.send_message(&batch).await.ok();
+                    batch.clear();
+                }
+                if !batch.is_empty() {
+                    batch.push_str("\n\n");
+                }
+                batch.push_str(line);
+            }
+            if !batch.is_empty() {
+                notifier.send_message(&batch).await.ok();
             }
         }
     }

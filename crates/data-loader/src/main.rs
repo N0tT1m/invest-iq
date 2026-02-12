@@ -23,7 +23,8 @@ use technical_analysis::TechnicalAnalysisEngine;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use tokio::signal::unix::SignalKind;
 use tokio::sync::Semaphore;
 
 const DEFAULT_SYMBOLS: &[&str] = &[
@@ -199,14 +200,30 @@ async fn main() -> anyhow::Result<()> {
     // Open DB (migrations handle table schema via sqlx::migrate!())
     let pool = Arc::new(SqlitePool::connect(&format!("sqlite:{}?mode=rwc", db_path)).await?);
 
-    // Bulk-load SQLite optimizations
+    // Bulk-load SQLite optimizations — use NORMAL sync to avoid corruption risk
     sqlx::query("PRAGMA journal_mode=WAL").execute(pool.as_ref()).await?;
-    sqlx::query("PRAGMA synchronous=OFF").execute(pool.as_ref()).await?;
+    sqlx::query("PRAGMA synchronous=NORMAL").execute(pool.as_ref()).await?;
     sqlx::query("PRAGMA temp_store=MEMORY").execute(pool.as_ref()).await?;
     sqlx::query("PRAGMA cache_size=-64000").execute(pool.as_ref()).await?; // 64MB cache
 
     // Run migrations to ensure training tables exist
     sqlx::migrate!("../../migrations").run(pool.as_ref()).await?;
+
+    // Graceful shutdown: SIGINT + SIGTERM set a flag so in-flight tasks finish
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    {
+        let flag = Arc::clone(&shutdown_flag);
+        tokio::spawn(async move {
+            let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+            tracing::info!("Shutdown signal received — finishing in-flight tasks...");
+            flag.store(true, Ordering::SeqCst);
+        });
+    }
 
     let tech_engine = Arc::new(TechnicalAnalysisEngine::new());
     let fund_engine = Arc::new(FundamentalAnalysisEngine::new());
@@ -235,6 +252,12 @@ async fn main() -> anyhow::Result<()> {
     let mut handles = Vec::with_capacity(total_symbols);
 
     for symbol in symbols {
+        // Check shutdown before spawning new tasks
+        if shutdown_flag.load(Ordering::SeqCst) {
+            tracing::info!("Shutdown requested — skipping remaining symbols");
+            break;
+        }
+
         let polygon = Arc::clone(&polygon);
         let tech_engine = Arc::clone(&tech_engine);
         let fund_engine = Arc::clone(&fund_engine);
@@ -246,8 +269,14 @@ async fn main() -> anyhow::Result<()> {
         let failed = Arc::clone(&failed);
         let semaphore = Arc::clone(&semaphore);
         let timespan = Arc::clone(&timespan);
+        let shutdown_flag = Arc::clone(&shutdown_flag);
 
         let handle = tokio::spawn(async move {
+            // Abort early if shutdown was requested
+            if shutdown_flag.load(Ordering::SeqCst) {
+                return;
+            }
+
             let _permit = semaphore.acquire().await.unwrap();
 
             let rows = process_symbol(
@@ -272,6 +301,16 @@ async fn main() -> anyhow::Result<()> {
                     tracing::warn!("[{}/{}] {} failed: {}", done, total_symbols, symbol, e);
                 }
             }
+
+            // Progress summary every 10 symbols
+            if done % 10 == 0 {
+                tracing::info!(
+                    "Progress: {}/{} completed, {} rows so far, {} failed",
+                    done, total_symbols,
+                    total_rows.load(Ordering::Relaxed),
+                    failed.load(Ordering::Relaxed),
+                );
+            }
         });
 
         handles.push(handle);
@@ -282,13 +321,56 @@ async fn main() -> anyhow::Result<()> {
         let _ = handle.await;
     }
 
+    let done = completed.load(Ordering::Relaxed);
     let rows = total_rows.load(Ordering::Relaxed);
     let fails = failed.load(Ordering::Relaxed);
-    tracing::info!(
-        "Done! {} total rows across {} symbols ({} failed)",
-        rows, total_symbols, fails
-    );
+    let remaining = total_symbols as u64 - done;
+    if remaining > 0 {
+        tracing::info!(
+            "Shutdown summary: {} completed, {} remaining (skipped), {} total rows, {} failed",
+            done, remaining, rows, fails
+        );
+    } else {
+        tracing::info!(
+            "Done! {} total rows across {} symbols ({} failed)",
+            rows, total_symbols, fails
+        );
+    }
     Ok(())
+}
+
+/// Retry an async operation with exponential backoff. Rate-limit (429-like) errors
+/// get extra delay. Returns the result of the first successful attempt.
+async fn retry_with_backoff<F, Fut, T>(label: &str, max_retries: u32, mut f: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                attempt += 1;
+                if attempt > max_retries {
+                    return Err(e);
+                }
+                // Check for rate-limit hint in the error message
+                let err_str = format!("{e}");
+                let is_rate_limit = err_str.contains("429") || err_str.contains("rate");
+                let base_delay = if is_rate_limit {
+                    std::time::Duration::from_secs(2u64.pow(attempt) * 2)
+                } else {
+                    std::time::Duration::from_secs(2u64.pow(attempt - 1))
+                };
+                tracing::warn!(
+                    "{} failed (attempt {}/{}): {} — retrying in {:?}",
+                    label, attempt, max_retries, e, base_delay
+                );
+                tokio::time::sleep(base_delay).await;
+            }
+        }
+    }
 }
 
 async fn process_symbol(
@@ -311,17 +393,30 @@ async fn process_symbol(
     let need_financials = store_flags.features;
     let need_news = store_flags.news;
 
-    let bars_fut = polygon.get_aggregates(symbol, 1, timespan, start, now);
+    let bars_label = format!("{symbol}/bars");
+    let fin_label = format!("{symbol}/financials");
+    let news_label = format!("{symbol}/news");
+
+    let bars_fut = retry_with_backoff(
+        &bars_label, 3,
+        || async { polygon.get_aggregates(symbol, 1, timespan, start, now).await.map_err(Into::into) },
+    );
     let fin_fut = async {
         if need_financials {
-            polygon.get_financials(symbol).await.unwrap_or_default()
+            retry_with_backoff(
+                &fin_label, 3,
+                || async { polygon.get_financials(symbol).await.map_err(Into::into) },
+            ).await.unwrap_or_default()
         } else {
             Vec::new()
         }
     };
     let news_fut = async {
         if need_news {
-            polygon.get_news(Some(symbol), news_limit).await.unwrap_or_default()
+            retry_with_backoff(
+                &news_label, 3,
+                || async { polygon.get_news(Some(symbol), news_limit).await.map_err(Into::into) },
+            ).await.unwrap_or_default()
         } else {
             Vec::new()
         }

@@ -15,7 +15,9 @@ use serenity::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
+use tokio::signal::unix::SignalKind;
 use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -24,12 +26,74 @@ const RATE_LIMIT_COMMANDS: u32 = 5;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 const MAX_WATCHLIST_SIZE: usize = 20;
 
+/// Simple circuit breaker for the API server. After `THRESHOLD` consecutive
+/// failures, skip API calls for `COOLDOWN_SECS` seconds to let it recover.
+struct CircuitBreaker {
+    consecutive_failures: AtomicU32,
+    open_until_epoch_secs: AtomicU64,
+}
+
+const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+const CIRCUIT_BREAKER_COOLDOWN_SECS: u64 = 30;
+
+impl CircuitBreaker {
+    fn new() -> Self {
+        Self {
+            consecutive_failures: AtomicU32::new(0),
+            open_until_epoch_secs: AtomicU64::new(0),
+        }
+    }
+
+    /// Returns true if the circuit is open (API calls should be skipped).
+    fn is_open(&self) -> bool {
+        let until = self.open_until_epoch_secs.load(Ordering::Relaxed);
+        if until == 0 {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now >= until {
+            // Cooldown expired — half-open, reset
+            self.open_until_epoch_secs.store(0, Ordering::Relaxed);
+            self.consecutive_failures.store(0, Ordering::Relaxed);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn record_success(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        self.open_until_epoch_secs.store(0, Ordering::Relaxed);
+    }
+
+    fn record_failure(&self) {
+        let count = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if count >= CIRCUIT_BREAKER_THRESHOLD {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            self.open_until_epoch_secs
+                .store(now + CIRCUIT_BREAKER_COOLDOWN_SECS, Ordering::Relaxed);
+            tracing::warn!(
+                "Circuit breaker OPEN: {} consecutive API failures, skipping for {}s",
+                count,
+                CIRCUIT_BREAKER_COOLDOWN_SECS
+            );
+        }
+    }
+}
+
 struct Handler {
     http_client: reqwest::Client,
     api_base: String,
     polygon_client: Arc<polygon_client::PolygonClient>,
     watchlists: Arc<RwLock<HashMap<UserId, Vec<String>>>>,
     rate_limits: Arc<RwLock<HashMap<UserId, (Instant, u32)>>>,
+    circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl Handler {
@@ -126,7 +190,7 @@ impl EventHandler for Handler {
             let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
             let url = format!("{}/api/analyze/{}", self.api_base, symbol);
-            match self.http_client.get(&url).send().await {
+            match self.api_get(&url).await {
                 Ok(resp) if resp.status().is_success() => {
                     match resp.json::<serde_json::Value>().await {
                         Ok(json) => {
@@ -196,6 +260,27 @@ impl EventHandler for Handler {
 // === Command Handlers ===
 
 impl Handler {
+    /// Send a GET request to the API server, respecting the circuit breaker.
+    async fn api_get(&self, url: &str) -> Result<reqwest::Response, String> {
+        if self.circuit_breaker.is_open() {
+            return Err("API server circuit breaker is open — skipping request".to_string());
+        }
+        match self.http_client.get(url).send().await {
+            Ok(resp) => {
+                if resp.status().is_server_error() {
+                    self.circuit_breaker.record_failure();
+                } else {
+                    self.circuit_breaker.record_success();
+                }
+                Ok(resp)
+            }
+            Err(e) => {
+                self.circuit_breaker.record_failure();
+                Err(format!("{}", e))
+            }
+        }
+    }
+
     async fn handle_analyze(
         &self,
         ctx: &Context,
@@ -213,7 +298,7 @@ impl Handler {
 
         // Use API server for analysis (gets all enhancements: ML weights, supplementary signals, etc.)
         let url = format!("{}/api/analyze/{}", self.api_base, symbol);
-        match self.http_client.get(&url).send().await {
+        match self.api_get(&url).await {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<serde_json::Value>().await {
                     Ok(json) => {
@@ -340,12 +425,8 @@ impl Handler {
         let start = now - chrono::Duration::days(days);
         match self.polygon_client.get_aggregates(&symbol, 1, "day", start, now).await {
             Ok(bars) if !bars.is_empty() => {
-                // Get signal from API server
-                let signal = match self.http_client
-                    .get(format!("{}/api/analyze/{}", self.api_base, symbol))
-                    .send()
-                    .await
-                {
+                // Get signal from API server (via circuit breaker)
+                let signal = match self.api_get(&format!("{}/api/analyze/{}", self.api_base, symbol)).await {
                     Ok(resp) => {
                         resp.json::<serde_json::Value>().await.ok()
                             .and_then(|json| {
@@ -566,16 +647,12 @@ impl Handler {
 
         let api_base = &self.api_base;
 
-        let account_fut = self
-            .http_client
-            .get(format!("{}/api/broker/account", api_base))
-            .send();
-        let positions_fut = self
-            .http_client
-            .get(format!("{}/api/broker/positions", api_base))
-            .send();
-
-        let (account_res, positions_res) = tokio::join!(account_fut, positions_fut);
+        let account_url = format!("{}/api/broker/account", api_base);
+        let positions_url = format!("{}/api/broker/positions", api_base);
+        let (account_res, positions_res) = tokio::join!(
+            self.api_get(&account_url),
+            self.api_get(&positions_url)
+        );
 
         let account = match account_res {
             Ok(resp) if resp.status().is_success() => {
@@ -658,8 +735,8 @@ impl Handler {
         let url2 = format!("{}/api/analyze/{}", self.api_base, sym2);
 
         let (res1, res2) = tokio::join!(
-            self.http_client.get(&url1).send(),
-            self.http_client.get(&url2).send()
+            self.api_get(&url1),
+            self.api_get(&url2)
         );
 
         let mut embed_list: Vec<CreateEmbed> = Vec::new();
@@ -760,7 +837,7 @@ impl Handler {
 
         let url = format!("{}/api/backtest/{}?days={}", self.api_base, symbol, days);
 
-        match self.http_client.get(&url).send().await {
+        match self.api_get(&url).await {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<serde_json::Value>().await {
                     Ok(json) => {
@@ -1026,13 +1103,24 @@ fn parse_signal_from_json(data: &serde_json::Value) -> SignalStrength {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "discord_bot=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let json_logging = std::env::var("RUST_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "discord_bot=info".into());
+
+    if json_logging {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 
     let discord_token =
         std::env::var("DISCORD_BOT_TOKEN").expect("DISCORD_BOT_TOKEN must be set");
@@ -1076,6 +1164,7 @@ async fn main() -> anyhow::Result<()> {
         polygon_client,
         watchlists: Arc::new(RwLock::new(HashMap::new())),
         rate_limits: Arc::new(RwLock::new(HashMap::new())),
+        circuit_breaker: Arc::new(CircuitBreaker::new()),
     };
 
     let mut client = Client::builder(&discord_token, intents)
@@ -1084,7 +1173,26 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Discord bot starting with slash commands...");
 
-    client.start().await?;
+    // Graceful shutdown: SIGINT + SIGTERM
+    let shard_manager = client.shard_manager.clone();
+    let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        result = client.start() => {
+            if let Err(e) = result {
+                tracing::error!("Discord client error: {}", e);
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received SIGINT — shutting down Discord bot...");
+        }
+        _ = sigterm.recv() => {
+            tracing::info!("Received SIGTERM — shutting down Discord bot...");
+        }
+    }
+
+    shard_manager.shutdown_all().await;
+    tracing::info!("Discord bot shut down.");
 
     Ok(())
 }

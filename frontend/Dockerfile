@@ -25,7 +25,7 @@ ENV API_ENDPOINT=http://localhost:3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8050 || exit 1
+    CMD curl -f http://localhost:8050/health || exit 1
 
-# Run the application
-CMD ["python3", "app.py"]
+# Run the application via gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:8050", "--workers", "4", "--timeout", "120", "app:server"]

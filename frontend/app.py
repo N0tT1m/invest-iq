@@ -822,7 +822,9 @@ def update_analysis(analyze_clicks, refresh_clicks, symbol, timeframe, days):
     if not symbol:
         return _empty_results()
 
-    symbol = symbol.upper()
+    symbol = _validate_symbol(symbol)
+    if symbol is None:
+        return _error_results("Invalid symbol format. Use 1-10 uppercase letters/digits.")
 
     try:
         # Fetch analysis and bars in parallel
@@ -920,8 +922,8 @@ def update_analysis(analyze_clicks, refresh_clicks, symbol, timeframe, days):
                 mini_daily, mini_weekly, mini_monthly)
 
     except Exception as e:
-        error_msg = f"Error: {str(e)}"
-        return _error_results(error_msg)
+        _logger.exception("Analysis failed for %s: %s", symbol, e)
+        return _error_results("Analysis failed. Please try again later.")
 
 
 def create_signal_card(analysis):
@@ -2081,7 +2083,8 @@ def update_suggestions(n_clicks, universe):
         ])
 
     except Exception as e:
-        return dbc.Alert(f"Error fetching suggestions: {str(e)}", color="danger")
+        _logger.exception("Failed to fetch suggestions: %s", e)
+        return dbc.Alert("Failed to fetch suggestions. Please try again later.", color="danger")
 
 
 # Callback to analyze suggested stock when clicked
@@ -2134,7 +2137,7 @@ def update_earnings_dividends(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             earnings_card = dbc.Card([
                 dbc.CardHeader(html.H5("Earnings Analysis", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
         try:
             dividend_data = f_dividends.result()
@@ -2142,7 +2145,7 @@ def update_earnings_dividends(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             dividend_card = dbc.Card([
                 dbc.CardHeader(html.H5("Dividend Analysis", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
     return earnings_card, dividend_card
 
@@ -2171,7 +2174,7 @@ def update_options_short_interest(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             options_card = dbc.Card([
                 dbc.CardHeader(html.H5("Options Flow", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
         try:
             short_data = f_short.result()
@@ -2179,7 +2182,7 @@ def update_options_short_interest(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             short_card = dbc.Card([
                 dbc.CardHeader(html.H5("Short Squeeze Risk", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
     return options_card, short_card
 
@@ -2201,7 +2204,7 @@ def update_insider_activity(analyze_clicks, refresh_clicks, symbol):
     except Exception as e:
         return dbc.Card([
             dbc.CardHeader(html.H5("Insider Activity", className="mb-0")),
-            dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+            dbc.CardBody(html.P("Data unavailable", className="text-muted"))
         ])
 
 
@@ -2222,7 +2225,7 @@ def update_correlation(analyze_clicks, refresh_clicks, symbol):
     except Exception as e:
         return dbc.Card([
             dbc.CardHeader(html.H5("Correlation & Beta", className="mb-0")),
-            dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+            dbc.CardBody(html.P("Data unavailable", className="text-muted"))
         ])
 
 
@@ -2251,7 +2254,7 @@ def update_social_macro(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             social_card = dbc.Card([
                 dbc.CardHeader(html.H5("Social Sentiment", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
         try:
             indicators = f_indicators.result()
@@ -2260,7 +2263,7 @@ def update_social_macro(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             macro_card = dbc.Card([
                 dbc.CardHeader(html.H5("Macro Overlay", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
     return social_card, macro_card
 
@@ -2307,7 +2310,7 @@ def update_alpha_flow(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             alpha_card = dbc.Card([
                 dbc.CardHeader(html.H5("Alpha Decay", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
 
         # --- Flow Map: summary + sector performance bars + rotation details ---
@@ -2367,7 +2370,7 @@ def update_alpha_flow(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             flow_card = dbc.Card([
                 dbc.CardHeader(html.H5("Flow Map", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
     return alpha_card, flow_card
 
@@ -2412,7 +2415,7 @@ def update_watchlist_tax(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             watchlist_card = dbc.Card([
                 dbc.CardHeader(html.H5("Smart Watchlist", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
 
         # --- Tax Dashboard: summary banner + opportunity cards ---
@@ -2441,7 +2444,7 @@ def update_watchlist_tax(analyze_clicks, refresh_clicks, symbol):
         except Exception as e:
             tax_card = dbc.Card([
                 dbc.CardHeader(html.H5("Tax Dashboard", className="mb-0")),
-                dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+                dbc.CardBody(html.P("Data unavailable", className="text-muted"))
             ])
     return watchlist_card, watchlist_raw, 0, tax_card
 
@@ -2571,7 +2574,7 @@ def update_paper_trading(analyze_clicks, refresh_clicks, notification_data, symb
     except Exception as e:
         return dbc.Card([
             dbc.CardHeader(html.H5("Paper Trading", className="mb-0")),
-            dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+            dbc.CardBody(html.P("Data unavailable", className="text-muted"))
         ]), symbol
 
 
@@ -2660,7 +2663,7 @@ def update_live_trading(analyze_clicks, refresh_clicks, notification_data, symbo
     except Exception as e:
         return dbc.Card([
             dbc.CardHeader(html.H5("Live Trading", className="mb-0")),
-            dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+            dbc.CardBody(html.P("Data unavailable", className="text-muted"))
         ]), symbol
 
 
@@ -2758,7 +2761,8 @@ def update_agent_trades(active_tab, sub_tab, _notification):
         try:
             analytics_panel = AgentAnalyticsComponent.create_panel()
         except Exception as e:
-            analytics_panel = dbc.Alert(f"Error loading analytics: {e}", color="danger")
+            _logger.exception("Failed to load analytics: %s", e)
+            analytics_panel = dbc.Alert("Failed to load analytics. Please try again later.", color="danger")
         return dash.no_update, hide, analytics_panel, show
 
     # Default: show pending trades
@@ -2766,7 +2770,8 @@ def update_agent_trades(active_tab, sub_tab, _notification):
         trades = AgentTradesComponent.fetch_pending_trades()
         trades_panel = AgentTradesComponent.create_panel(trades)
     except Exception as e:
-        trades_panel = dbc.Alert(f"Error loading agent trades: {e}", color="danger")
+        _logger.exception("Failed to load agent trades: %s", e)
+        trades_panel = dbc.Alert("Failed to load agent trades. Please try again later.", color="danger")
     return trades_panel, show, dash.no_update, hide
 
 
@@ -2892,7 +2897,7 @@ def update_portfolio_dashboard(analyze_clicks, refresh_clicks, notification_data
     except Exception as e:
         return dbc.Card([
             dbc.CardHeader(html.H5("Portfolio Dashboard", className="mb-0")),
-            dbc.CardBody(html.P(f"Error: {e}", className="text-muted"))
+            dbc.CardBody(html.P("Data unavailable", className="text-muted"))
         ])
 
 
@@ -2929,7 +2934,8 @@ def run_backtest(n_clicks, symbol, days):
                 backtest_id = data.get("id")
         return panel, backtest_id, "", ""
     except Exception as e:
-        return dbc.Alert(f"Backtest error: {e}", color="danger"), None, "", ""
+        _logger.exception("Backtest failed: %s", e)
+        return dbc.Alert("Backtest failed. Please try again later.", color="danger"), None, "", ""
 
 
 @app.callback(
@@ -2946,7 +2952,8 @@ def run_monte_carlo_cb(n_clicks, backtest_id):
         mc_data = BacktestPanelComponent.fetch_monte_carlo(backtest_id)
         return BacktestPanelComponent.create_monte_carlo_panel(mc_data)
     except Exception as e:
-        return dbc.Alert(f"Monte Carlo error: {e}", color="danger")
+        _logger.exception("Monte Carlo simulation failed: %s", e)
+        return dbc.Alert("Monte Carlo simulation failed. Please try again later.", color="danger")
 
 
 @app.callback(
@@ -2985,7 +2992,8 @@ def run_walk_forward_cb(n_clicks, symbol, days):
         wf_data = data.get("data") if data.get("success") else None
         return BacktestPanelComponent.create_walk_forward_panel(wf_data)
     except Exception as e:
-        return dbc.Alert(f"Walk-forward error: {e}", color="danger")
+        _logger.exception("Walk-forward analysis failed: %s", e)
+        return dbc.Alert("Walk-forward analysis failed. Please try again later.", color="danger")
 
 
 def _kill_port(port):
@@ -3142,8 +3150,31 @@ def navigate_to_analyze(n_clicks, detail_children):
 
 server = app.server
 
+import re
+import logging as _logging
+
+_logger = _logging.getLogger(__name__)
+
+# Symbol validation: 1-10 uppercase alphanumeric + dots
+_VALID_SYMBOL_RE = re.compile(r'^[A-Z0-9.]{1,10}$')
+
+
+def _validate_symbol(symbol: str) -> str | None:
+    """Return sanitised symbol or None if invalid."""
+    s = symbol.strip().upper()
+    if _VALID_SYMBOL_RE.match(s):
+        return s
+    return None
+
+
+@server.route('/health')
+def _health():
+    from flask import jsonify
+    return jsonify(status='ok'), 200
+
+
 if __name__ == '__main__':
-    dash_debug = os.environ.get('DASH_DEBUG', 'true').lower() in ('true', '1', 'yes')
+    dash_debug = os.environ.get('DASH_DEBUG', 'false').lower() in ('true', '1', 'yes')
     dash_host = os.environ.get('DASH_HOST', '0.0.0.0')
     dash_port = int(os.environ.get('DASH_PORT', '8050'))
 
