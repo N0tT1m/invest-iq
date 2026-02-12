@@ -1,15 +1,16 @@
 mod charts;
+mod commands;
 mod embeds;
 
 use analysis_core::SignalStrength;
 use serenity::{
     all::{
-        Command, CommandDataOption, CommandDataOptionValue, CommandInteraction, CommandOptionType,
+        Command, CommandInteraction, CommandOptionType,
         CreateCommand, CreateCommandOption, CreateInteractionResponse,
-        CreateInteractionResponseMessage, EditInteractionResponse, Interaction,
+        CreateInteractionResponseMessage, Interaction,
     },
     async_trait,
-    builder::{CreateAttachment, CreateEmbed, CreateMessage},
+    builder::{CreateAttachment, CreateMessage},
     model::{channel::Message, gateway::Ready, id::UserId},
     prelude::*,
 };
@@ -26,8 +27,8 @@ const RATE_LIMIT_COMMANDS: u32 = 5;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 const MAX_WATCHLIST_SIZE: usize = 20;
 
-/// Simple circuit breaker for the API server. After `THRESHOLD` consecutive
-/// failures, skip API calls for `COOLDOWN_SECS` seconds to let it recover.
+// ── Circuit Breaker ──────────────────────────────────────────────────
+
 struct CircuitBreaker {
     consecutive_failures: AtomicU32,
     open_until_epoch_secs: AtomicU64,
@@ -44,7 +45,6 @@ impl CircuitBreaker {
         }
     }
 
-    /// Returns true if the circuit is open (API calls should be skipped).
     fn is_open(&self) -> bool {
         let until = self.open_until_epoch_secs.load(Ordering::Relaxed);
         if until == 0 {
@@ -55,7 +55,6 @@ impl CircuitBreaker {
             .unwrap_or_default()
             .as_secs();
         if now >= until {
-            // Cooldown expired — half-open, reset
             self.open_until_epoch_secs.store(0, Ordering::Relaxed);
             self.consecutive_failures.store(0, Ordering::Relaxed);
             false
@@ -87,13 +86,16 @@ impl CircuitBreaker {
     }
 }
 
-struct Handler {
-    http_client: reqwest::Client,
-    api_base: String,
-    polygon_client: Arc<polygon_client::PolygonClient>,
-    watchlists: Arc<RwLock<HashMap<UserId, Vec<String>>>>,
-    rate_limits: Arc<RwLock<HashMap<UserId, (Instant, u32)>>>,
-    circuit_breaker: Arc<CircuitBreaker>,
+// ── Handler ──────────────────────────────────────────────────────────
+
+pub(crate) struct Handler {
+    pub(crate) http_client: reqwest::Client,
+    pub(crate) api_base: String,
+    pub(crate) polygon_client: Arc<polygon_client::PolygonClient>,
+    pub(crate) watchlists: Arc<RwLock<HashMap<UserId, Vec<String>>>>,
+    pub(crate) rate_limits: Arc<RwLock<HashMap<UserId, (Instant, u32)>>>,
+    pub(crate) circuit_breaker: Arc<CircuitBreaker>,
+    pub(crate) live_trading_key: Option<String>,
 }
 
 impl Handler {
@@ -122,7 +124,134 @@ impl Handler {
             Ok(())
         }
     }
+
+    /// GET request with circuit breaker.
+    pub(crate) async fn api_get(&self, url: &str) -> Result<reqwest::Response, String> {
+        if self.circuit_breaker.is_open() {
+            return Err("API server circuit breaker is open — skipping request".to_string());
+        }
+        match self.http_client.get(url).send().await {
+            Ok(resp) => {
+                if resp.status().is_server_error() {
+                    self.circuit_breaker.record_failure();
+                } else {
+                    self.circuit_breaker.record_success();
+                }
+                Ok(resp)
+            }
+            Err(e) => {
+                self.circuit_breaker.record_failure();
+                Err(format!("{}", e))
+            }
+        }
+    }
+
+    /// POST request with circuit breaker.
+    pub(crate) async fn api_post(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, String> {
+        if self.circuit_breaker.is_open() {
+            return Err("API server circuit breaker is open — skipping request".to_string());
+        }
+        match self.http_client.post(url).json(body).send().await {
+            Ok(resp) => {
+                if resp.status().is_server_error() {
+                    self.circuit_breaker.record_failure();
+                } else {
+                    self.circuit_breaker.record_success();
+                }
+                Ok(resp)
+            }
+            Err(e) => {
+                self.circuit_breaker.record_failure();
+                Err(format!("{}", e))
+            }
+        }
+    }
+
+    /// DELETE request with circuit breaker.
+    #[allow(dead_code)]
+    pub(crate) async fn api_delete(&self, url: &str) -> Result<reqwest::Response, String> {
+        if self.circuit_breaker.is_open() {
+            return Err("API server circuit breaker is open — skipping request".to_string());
+        }
+        match self.http_client.delete(url).send().await {
+            Ok(resp) => {
+                if resp.status().is_server_error() {
+                    self.circuit_breaker.record_failure();
+                } else {
+                    self.circuit_breaker.record_success();
+                }
+                Ok(resp)
+            }
+            Err(e) => {
+                self.circuit_breaker.record_failure();
+                Err(format!("{}", e))
+            }
+        }
+    }
+
+    /// POST request with X-Live-Trading-Key header.
+    pub(crate) async fn api_post_with_trading_key(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, String> {
+        if self.circuit_breaker.is_open() {
+            return Err("API server circuit breaker is open — skipping request".to_string());
+        }
+        let mut req = self.http_client.post(url).json(body);
+        if let Some(ref key) = self.live_trading_key {
+            req = req.header("X-Live-Trading-Key", key);
+        }
+        match req.send().await {
+            Ok(resp) => {
+                if resp.status().is_server_error() {
+                    self.circuit_breaker.record_failure();
+                } else {
+                    self.circuit_breaker.record_success();
+                }
+                Ok(resp)
+            }
+            Err(e) => {
+                self.circuit_breaker.record_failure();
+                Err(format!("{}", e))
+            }
+        }
+    }
+
+    /// DELETE request with X-Live-Trading-Key header.
+    pub(crate) async fn api_delete_with_trading_key(
+        &self,
+        url: &str,
+    ) -> Result<reqwest::Response, String> {
+        if self.circuit_breaker.is_open() {
+            return Err("API server circuit breaker is open — skipping request".to_string());
+        }
+        let mut req = self.http_client.delete(url);
+        if let Some(ref key) = self.live_trading_key {
+            req = req.header("X-Live-Trading-Key", key);
+        }
+        match req.send().await {
+            Ok(resp) => {
+                if resp.status().is_server_error() {
+                    self.circuit_breaker.record_failure();
+                } else {
+                    self.circuit_breaker.record_success();
+                }
+                Ok(resp)
+            }
+            Err(e) => {
+                self.circuit_breaker.record_failure();
+                Err(format!("{}", e))
+            }
+        }
+    }
 }
+
+// ── Event Handler ────────────────────────────────────────────────────
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -156,6 +285,7 @@ impl EventHandler for Handler {
         };
 
         match subcommand.name.as_str() {
+            // Existing top-level subcommands
             "analyze" => self.handle_analyze(&ctx, &command, subcommand).await,
             "price" => self.handle_price(&ctx, &command, subcommand).await,
             "chart" => self.handle_chart(&ctx, &command, subcommand).await,
@@ -164,6 +294,15 @@ impl EventHandler for Handler {
             "compare" => self.handle_compare(&ctx, &command, subcommand).await,
             "backtest" => self.handle_backtest(&ctx, &command, subcommand).await,
             "help" => self.handle_help(&ctx, &command).await,
+            // New subcommand groups
+            "agent" => self.handle_agent(&ctx, &command, subcommand).await,
+            "risk" => self.handle_risk(&ctx, &command, subcommand).await,
+            "market" => self.handle_market(&ctx, &command, subcommand).await,
+            "data" => self.handle_data(&ctx, &command, subcommand).await,
+            "trade" => self.handle_trade(&ctx, &command, subcommand).await,
+            "tax" => self.handle_tax(&ctx, &command, subcommand).await,
+            "advanced" => self.handle_advanced(&ctx, &command, subcommand).await,
+            "system" => self.handle_system(&ctx, &command, subcommand).await,
             _ => {
                 let _ =
                     respond_ephemeral(&ctx, &command, "Unknown subcommand. Use `/iq help`.").await;
@@ -198,7 +337,6 @@ impl EventHandler for Handler {
                             let embed = embeds::build_analysis_embed_from_json(&symbol, data);
                             let signal = parse_signal_from_json(data);
 
-                            // Try to generate chart
                             let now = chrono::Utc::now();
                             let start = now - chrono::Duration::days(90);
                             match self.polygon_client.get_aggregates(&symbol, 1, "day", start, now).await {
@@ -249,6 +387,10 @@ impl EventHandler for Handler {
         match Command::set_global_commands(&ctx.http, vec![create_iq_command()]).await {
             Ok(commands) => {
                 tracing::info!("Registered {} global slash commands", commands.len());
+                for cmd in &commands {
+                    let sub_count = cmd.options.len();
+                    tracing::info!("  /{} — {} subcommand(s)/group(s)", cmd.name, sub_count);
+                }
             }
             Err(e) => {
                 tracing::error!("Failed to register slash commands: {}", e);
@@ -257,820 +399,275 @@ impl EventHandler for Handler {
     }
 }
 
-// === Command Handlers ===
-
-impl Handler {
-    /// Send a GET request to the API server, respecting the circuit breaker.
-    async fn api_get(&self, url: &str) -> Result<reqwest::Response, String> {
-        if self.circuit_breaker.is_open() {
-            return Err("API server circuit breaker is open — skipping request".to_string());
-        }
-        match self.http_client.get(url).send().await {
-            Ok(resp) => {
-                if resp.status().is_server_error() {
-                    self.circuit_breaker.record_failure();
-                } else {
-                    self.circuit_breaker.record_success();
-                }
-                Ok(resp)
-            }
-            Err(e) => {
-                self.circuit_breaker.record_failure();
-                Err(format!("{}", e))
-            }
-        }
-    }
-
-    async fn handle_analyze(
-        &self,
-        ctx: &Context,
-        command: &CommandInteraction,
-        subcommand: &CommandDataOption,
-    ) {
-        let symbol = get_string_opt(subcommand, "symbol");
-        let Some(symbol) = symbol else {
-            let _ = respond_ephemeral(ctx, command, "Please provide a symbol.").await;
-            return;
-        };
-        let symbol = symbol.to_uppercase();
-
-        let _ = command.defer(&ctx.http).await;
-
-        // Use API server for analysis (gets all enhancements: ML weights, supplementary signals, etc.)
-        let url = format!("{}/api/analyze/{}", self.api_base, symbol);
-        match self.api_get(&url).await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        let data = json.get("data").unwrap_or(&json);
-                        let embed = embeds::build_analysis_embed_from_json(&symbol, data);
-
-                        // Fetch bars for chart via Polygon directly (lightweight)
-                        let chart_path = async {
-                            let now = chrono::Utc::now();
-                            let start = now - chrono::Duration::days(90);
-                            let bars = self.polygon_client
-                                .get_aggregates(&symbol, 1, "day", start, now)
-                                .await
-                                .ok()?;
-                            if bars.is_empty() {
-                                return None;
-                            }
-                            let signal = parse_signal_from_json(data);
-                            charts::generate_chart(&symbol, &bars, &signal)
-                                .await
-                                .ok()
-                        }
-                        .await;
-
-                        let mut response = EditInteractionResponse::new().embed(embed);
-
-                        if let Some(ref path) = chart_path {
-                            if let Ok(attachment) = CreateAttachment::path(path).await {
-                                response = response.new_attachment(attachment);
-                            }
-                        }
-
-                        let _ = command.edit_response(&ctx.http, response).await;
-
-                        if let Some(path) = chart_path {
-                            let _ = std::fs::remove_file(path);
-                        }
-                    }
-                    Err(e) => {
-                        let _ = command
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new()
-                                    .content(format!("Error parsing analysis for {}: {}", symbol, e)),
-                            )
-                            .await;
-                    }
-                }
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("Error analyzing {} ({}): {}", symbol, status, &body[..body.len().min(200)])),
-                    )
-                    .await;
-            }
-            Err(e) => {
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("Error analyzing {}: {}", symbol, e)),
-                    )
-                    .await;
-            }
-        }
-    }
-
-    async fn handle_price(
-        &self,
-        ctx: &Context,
-        command: &CommandInteraction,
-        subcommand: &CommandDataOption,
-    ) {
-        let symbol = get_string_opt(subcommand, "symbol");
-        let Some(symbol) = symbol else {
-            let _ = respond_ephemeral(ctx, command, "Please provide a symbol.").await;
-            return;
-        };
-        let symbol = symbol.to_uppercase();
-
-        let _ = command.defer(&ctx.http).await;
-
-        match self.polygon_client.get_snapshot(&symbol).await {
-            Ok(snapshot) => {
-                let embed = embeds::build_price_embed(&symbol, &snapshot);
-                let _ = command
-                    .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
-                    .await;
-            }
-            Err(e) => {
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("Error fetching price for {}: {}", symbol, e)),
-                    )
-                    .await;
-            }
-        }
-    }
-
-    async fn handle_chart(
-        &self,
-        ctx: &Context,
-        command: &CommandInteraction,
-        subcommand: &CommandDataOption,
-    ) {
-        let symbol = get_string_opt(subcommand, "symbol");
-        let Some(symbol) = symbol else {
-            let _ = respond_ephemeral(ctx, command, "Please provide a symbol.").await;
-            return;
-        };
-        let symbol = symbol.to_uppercase();
-        let days = get_int_opt(subcommand, "days").unwrap_or(90);
-
-        let _ = command.defer(&ctx.http).await;
-
-        let now = chrono::Utc::now();
-        let start = now - chrono::Duration::days(days);
-        match self.polygon_client.get_aggregates(&symbol, 1, "day", start, now).await {
-            Ok(bars) if !bars.is_empty() => {
-                // Get signal from API server (via circuit breaker)
-                let signal = match self.api_get(&format!("{}/api/analyze/{}", self.api_base, symbol)).await {
-                    Ok(resp) => {
-                        resp.json::<serde_json::Value>().await.ok()
-                            .and_then(|json| {
-                                let data = json.get("data").unwrap_or(&json);
-                                Some(parse_signal_from_json(data))
-                            })
-                            .unwrap_or(SignalStrength::Neutral)
-                    }
-                    Err(_) => SignalStrength::Neutral,
-                };
-
-                match charts::generate_chart(&symbol, &bars, &signal).await {
-                    Ok(chart_path) => {
-                        if let Ok(attachment) = CreateAttachment::path(&chart_path).await {
-                            let _ = command
-                                .edit_response(
-                                    &ctx.http,
-                                    EditInteractionResponse::new().new_attachment(attachment),
-                                )
-                                .await;
-                            let _ = std::fs::remove_file(chart_path);
-                        } else {
-                            let _ = command
-                                .edit_response(
-                                    &ctx.http,
-                                    EditInteractionResponse::new()
-                                        .content("Failed to upload chart."),
-                                )
-                                .await;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = command
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new()
-                                    .content(format!("Error generating chart: {}", e)),
-                            )
-                            .await;
-                    }
-                }
-            }
-            Ok(_) => {
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new().content("No bar data available."),
-                    )
-                    .await;
-            }
-            Err(e) => {
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("Error fetching data: {}", e)),
-                    )
-                    .await;
-            }
-        }
-    }
-
-    async fn handle_watchlist(
-        &self,
-        ctx: &Context,
-        command: &CommandInteraction,
-        subcommand: &CommandDataOption,
-    ) {
-        let action = get_string_opt(subcommand, "action").unwrap_or("show".to_string());
-        let symbol = get_string_opt(subcommand, "symbol").map(|s| s.to_uppercase());
-        let user_id = command.user.id;
-
-        match action.as_str() {
-            "add" => {
-                let Some(sym) = symbol else {
-                    let _ =
-                        respond_ephemeral(ctx, command, "Please provide a symbol to add.").await;
-                    return;
-                };
-
-                let mut wl = self.watchlists.write().await;
-                let list = wl.entry(user_id).or_default();
-
-                if list.len() >= MAX_WATCHLIST_SIZE {
-                    let _ = respond_ephemeral(
-                        ctx,
-                        command,
-                        &format!("Watchlist full (max {} symbols).", MAX_WATCHLIST_SIZE),
-                    )
-                    .await;
-                    return;
-                }
-
-                if list.contains(&sym) {
-                    let _ = respond_ephemeral(
-                        ctx,
-                        command,
-                        &format!("{} is already in your watchlist.", sym),
-                    )
-                    .await;
-                    return;
-                }
-
-                list.push(sym.clone());
-                let _ = respond_ephemeral(
-                    ctx,
-                    command,
-                    &format!(
-                        "Added {} to your watchlist ({}/{}).",
-                        sym,
-                        list.len(),
-                        MAX_WATCHLIST_SIZE
-                    ),
-                )
-                .await;
-            }
-            "remove" => {
-                let Some(sym) = symbol else {
-                    let _ = respond_ephemeral(ctx, command, "Please provide a symbol to remove.")
-                        .await;
-                    return;
-                };
-
-                let mut wl = self.watchlists.write().await;
-                if let Some(list) = wl.get_mut(&user_id) {
-                    if let Some(pos) = list.iter().position(|s| s == &sym) {
-                        list.remove(pos);
-                        let _ = respond_ephemeral(
-                            ctx,
-                            command,
-                            &format!("Removed {} from your watchlist.", sym),
-                        )
-                        .await;
-                    } else {
-                        let _ = respond_ephemeral(
-                            ctx,
-                            command,
-                            &format!("{} is not in your watchlist.", sym),
-                        )
-                        .await;
-                    }
-                } else {
-                    let _ = respond_ephemeral(ctx, command, "Your watchlist is empty.").await;
-                }
-            }
-            _ => {
-                // "show" or default
-                let wl = self.watchlists.read().await;
-                let list = wl.get(&user_id);
-
-                if list.is_none() || list.is_some_and(|l| l.is_empty()) {
-                    let _ = respond_ephemeral(
-                        ctx,
-                        command,
-                        "Your watchlist is empty. Use `/iq watchlist add <symbol>` to add symbols.",
-                    )
-                    .await;
-                    return;
-                }
-
-                let symbols = list.unwrap().clone();
-                drop(wl);
-
-                let _ = command.defer(&ctx.http).await;
-
-                let mut embed = CreateEmbed::new()
-                    .title(format!("Watchlist ({} symbols)", symbols.len()))
-                    .color(0x3498DB)
-                    .footer(serenity::builder::CreateEmbedFooter::new("InvestIQ"))
-                    .timestamp(serenity::model::Timestamp::now());
-
-                let futs: Vec<_> = symbols
-                    .iter()
-                    .map(|sym| {
-                        let client = &self.polygon_client;
-                        let sym = sym.clone();
-                        async move {
-                            let result = client.get_snapshot(&sym).await;
-                            (sym, result)
-                        }
-                    })
-                    .collect();
-
-                let results = futures::future::join_all(futs).await;
-
-                for (sym, result) in results {
-                    match result {
-                        Ok(snap) => {
-                            let price = snap
-                                .last_trade
-                                .as_ref()
-                                .and_then(|t| t.p)
-                                .or_else(|| snap.day.as_ref().and_then(|d| d.c))
-                                .unwrap_or(0.0);
-                            let change_pct = snap.todays_change_perc.unwrap_or(0.0);
-                            let arrow = if change_pct >= 0.0 { "+" } else { "" };
-                            embed = embed.field(
-                                sym,
-                                format!("${:.2} ({}{:.2}%)", price, arrow, change_pct),
-                                true,
-                            );
-                        }
-                        Err(_) => {
-                            embed = embed.field(sym, "N/A", true);
-                        }
-                    }
-                }
-
-                let _ = command
-                    .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
-                    .await;
-            }
-        }
-    }
-
-    async fn handle_portfolio(&self, ctx: &Context, command: &CommandInteraction) {
-        let _ = command.defer(&ctx.http).await;
-
-        let api_base = &self.api_base;
-
-        let account_url = format!("{}/api/broker/account", api_base);
-        let positions_url = format!("{}/api/broker/positions", api_base);
-        let (account_res, positions_res) = tokio::join!(
-            self.api_get(&account_url),
-            self.api_get(&positions_url)
-        );
-
-        let account = match account_res {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(json) => json.get("data").cloned().unwrap_or(json),
-                    Err(e) => {
-                        let _ = command
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new()
-                                    .content(format!("Error parsing account: {}", e)),
-                            )
-                            .await;
-                        return;
-                    }
-                }
-            }
-            Ok(resp) => {
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("API error: {}", resp.status())),
-                    )
-                    .await;
-                return;
-            }
-            Err(e) => {
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("Error fetching account: {}", e)),
-                    )
-                    .await;
-                return;
-            }
-        };
-
-        let positions: Vec<serde_json::Value> = match positions_res {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(json) => json
-                        .get("data")
-                        .and_then(|d| d.as_array())
-                        .cloned()
-                        .unwrap_or_default(),
-                    Err(_) => Vec::new(),
-                }
-            }
-            _ => Vec::new(),
-        };
-
-        let embed = embeds::build_portfolio_embed(&account, &positions);
-        let _ = command
-            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
-            .await;
-    }
-
-    async fn handle_compare(
-        &self,
-        ctx: &Context,
-        command: &CommandInteraction,
-        subcommand: &CommandDataOption,
-    ) {
-        let sym1 = get_string_opt(subcommand, "symbol1");
-        let sym2 = get_string_opt(subcommand, "symbol2");
-
-        let (Some(sym1), Some(sym2)) = (sym1, sym2) else {
-            let _ = respond_ephemeral(ctx, command, "Please provide two symbols.").await;
-            return;
-        };
-
-        let sym1 = sym1.to_uppercase();
-        let sym2 = sym2.to_uppercase();
-
-        let _ = command.defer(&ctx.http).await;
-
-        let url1 = format!("{}/api/analyze/{}", self.api_base, sym1);
-        let url2 = format!("{}/api/analyze/{}", self.api_base, sym2);
-
-        let (res1, res2) = tokio::join!(
-            self.api_get(&url1),
-            self.api_get(&url2)
-        );
-
-        let mut embed_list: Vec<CreateEmbed> = Vec::new();
-
-        match res1 {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        let data = json.get("data").unwrap_or(&json);
-                        embed_list.push(embeds::build_compare_embed_from_json(&sym1, data));
-                    }
-                    Err(e) => {
-                        embed_list.push(
-                            CreateEmbed::new()
-                                .title(format!("{} - Error", sym1))
-                                .description(format!("{}", e))
-                                .color(0xFF0000),
-                        );
-                    }
-                }
-            }
-            Ok(resp) => {
-                embed_list.push(
-                    CreateEmbed::new()
-                        .title(format!("{} - Error", sym1))
-                        .description(format!("API error: {}", resp.status()))
-                        .color(0xFF0000),
-                );
-            }
-            Err(e) => {
-                embed_list.push(
-                    CreateEmbed::new()
-                        .title(format!("{} - Error", sym1))
-                        .description(format!("{}", e))
-                        .color(0xFF0000),
-                );
-            }
-        }
-
-        match res2 {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        let data = json.get("data").unwrap_or(&json);
-                        embed_list.push(embeds::build_compare_embed_from_json(&sym2, data));
-                    }
-                    Err(e) => {
-                        embed_list.push(
-                            CreateEmbed::new()
-                                .title(format!("{} - Error", sym2))
-                                .description(format!("{}", e))
-                                .color(0xFF0000),
-                        );
-                    }
-                }
-            }
-            Ok(resp) => {
-                embed_list.push(
-                    CreateEmbed::new()
-                        .title(format!("{} - Error", sym2))
-                        .description(format!("API error: {}", resp.status()))
-                        .color(0xFF0000),
-                );
-            }
-            Err(e) => {
-                embed_list.push(
-                    CreateEmbed::new()
-                        .title(format!("{} - Error", sym2))
-                        .description(format!("{}", e))
-                        .color(0xFF0000),
-                );
-            }
-        }
-
-        let mut response = EditInteractionResponse::new();
-        for embed in embed_list {
-            response = response.add_embed(embed);
-        }
-
-        let _ = command.edit_response(&ctx.http, response).await;
-    }
-
-    async fn handle_backtest(
-        &self,
-        ctx: &Context,
-        command: &CommandInteraction,
-        subcommand: &CommandDataOption,
-    ) {
-        let symbol = get_string_opt(subcommand, "symbol");
-        let Some(symbol) = symbol else {
-            let _ = respond_ephemeral(ctx, command, "Please provide a symbol.").await;
-            return;
-        };
-        let symbol = symbol.to_uppercase();
-        let days = get_int_opt(subcommand, "days").unwrap_or(365);
-
-        let _ = command.defer(&ctx.http).await;
-
-        let url = format!("{}/api/backtest/{}?days={}", self.api_base, symbol, days);
-
-        match self.api_get(&url).await {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        let data = json.get("data").unwrap_or(&json);
-                        let embed = embeds::build_backtest_embed(&symbol, data);
-                        let _ = command
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new().embed(embed),
-                            )
-                            .await;
-                    }
-                    Err(e) => {
-                        let _ = command
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new()
-                                    .content(format!("Error parsing backtest: {}", e)),
-                            )
-                            .await;
-                    }
-                }
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("Backtest API error ({}): {}", status, body)),
-                    )
-                    .await;
-            }
-            Err(e) => {
-                let _ = command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("Error running backtest: {}", e)),
-                    )
-                    .await;
-            }
-        }
-    }
-
-    async fn handle_help(&self, ctx: &Context, command: &CommandInteraction) {
-        let embed = embeds::build_help_embed();
-        let msg = CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new().embed(embed),
-        );
-        let _ = command.create_response(&ctx.http, msg).await;
-    }
-}
-
-// === Slash Command Registration ===
+// ── Slash Command Registration ───────────────────────────────────────
 
 fn create_iq_command() -> CreateCommand {
     CreateCommand::new("iq")
         .description("InvestIQ stock analysis bot")
+        // ── Existing SubCommands ─────────────────────────
         .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "analyze",
-                "Full 4-engine analysis with chart",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "symbol",
-                    "Stock ticker symbol (e.g. AAPL)",
-                )
-                .required(true),
-            ),
+            CreateCommandOption::new(CommandOptionType::SubCommand, "analyze", "Full 4-engine analysis with chart")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Stock ticker symbol (e.g. AAPL)")
+                        .required(true),
+                ),
         )
         .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "price",
-                "Quick price snapshot",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "symbol",
-                    "Stock ticker symbol",
-                )
-                .required(true),
-            ),
+            CreateCommandOption::new(CommandOptionType::SubCommand, "price", "Quick price snapshot")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Stock ticker symbol")
+                        .required(true),
+                ),
         )
         .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "chart",
-                "Enhanced technical chart",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "symbol",
-                    "Stock ticker symbol",
+            CreateCommandOption::new(CommandOptionType::SubCommand, "chart", "Enhanced technical chart")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Stock ticker symbol")
+                        .required(true),
                 )
-                .required(true),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Integer,
-                    "days",
-                    "Number of days (default 90)",
-                )
-                .required(false)
-                .min_int_value(7)
-                .max_int_value(365),
-            ),
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "days", "Number of days (default 90)")
+                        .required(false)
+                        .min_int_value(7)
+                        .max_int_value(365),
+                ),
         )
         .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "watchlist",
-                "Manage your personal watchlist",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "action",
-                    "Action to perform",
+            CreateCommandOption::new(CommandOptionType::SubCommand, "watchlist", "Manage your personal watchlist")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "action", "Action to perform")
+                        .required(false)
+                        .add_string_choice("Show watchlist", "show")
+                        .add_string_choice("Add symbol", "add")
+                        .add_string_choice("Remove symbol", "remove"),
                 )
-                .required(false)
-                .add_string_choice("Show watchlist", "show")
-                .add_string_choice("Add symbol", "add")
-                .add_string_choice("Remove symbol", "remove"),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "symbol",
-                    "Symbol to add/remove",
-                )
-                .required(false),
-            ),
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Symbol to add/remove")
+                        .required(false),
+                ),
         )
-        .add_option(CreateCommandOption::new(
-            CommandOptionType::SubCommand,
-            "portfolio",
-            "View paper trading portfolio",
-        ))
+        .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "portfolio", "View paper trading portfolio"))
         .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "compare",
-                "Side-by-side analysis comparison",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "symbol1",
-                    "First stock ticker",
+            CreateCommandOption::new(CommandOptionType::SubCommand, "compare", "Side-by-side analysis comparison")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "symbol1", "First stock ticker")
+                        .required(true),
                 )
-                .required(true),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "symbol2",
-                    "Second stock ticker",
-                )
-                .required(true),
-            ),
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "symbol2", "Second stock ticker")
+                        .required(true),
+                ),
         )
         .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "backtest",
-                "Run backtest and show results",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "symbol",
-                    "Stock ticker symbol",
+            CreateCommandOption::new(CommandOptionType::SubCommand, "backtest", "Run backtest and show results")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Stock ticker symbol")
+                        .required(true),
                 )
-                .required(true),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Integer,
-                    "days",
-                    "Backtest period in days (default 365)",
-                )
-                .required(false)
-                .min_int_value(30)
-                .max_int_value(1825),
-            ),
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "days", "Backtest period in days (default 365)")
+                        .required(false)
+                        .min_int_value(30)
+                        .max_int_value(1825),
+                ),
         )
-        .add_option(CreateCommandOption::new(
-            CommandOptionType::SubCommand,
-            "help",
-            "Show command reference",
-        ))
+        .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "help", "Show command reference"))
+        // ── New SubCommandGroups ─────────────────────────
+        .add_option(create_agent_group())
+        .add_option(create_risk_group())
+        .add_option(create_market_group())
+        .add_option(create_data_group())
+        .add_option(create_trade_group())
+        .add_option(create_tax_group())
+        .add_option(create_advanced_group())
+        .add_option(create_system_group())
 }
 
-// === Utility Functions ===
-
-fn get_sub_options(opt: &CommandDataOption) -> &[CommandDataOption] {
-    match &opt.value {
-        CommandDataOptionValue::SubCommand(opts) => opts,
-        _ => &[],
-    }
+fn symbol_option(desc: &str) -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::String, "symbol", desc).required(true)
 }
 
-fn get_string_opt(subcommand: &CommandDataOption, name: &str) -> Option<String> {
-    for opt in get_sub_options(subcommand) {
-        if opt.name == name {
-            if let CommandDataOptionValue::String(s) = &opt.value {
-                return Some(s.clone());
-            }
-        }
-    }
-    None
+fn create_agent_group() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "agent", "Agent oversight commands")
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "pending", "List pending agent trades"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "approve", "Approve a pending trade")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "id", "Trade ID to approve")
+                        .required(true),
+                ),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "reject", "Reject a pending trade")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "id", "Trade ID to reject")
+                        .required(true),
+                ),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "stats", "Agent analytics summary"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "history", "Recent executed trades"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "regimes", "Win rate by market regime"),
+        )
 }
 
-fn get_int_opt(subcommand: &CommandDataOption, name: &str) -> Option<i64> {
-    for opt in get_sub_options(subcommand) {
-        if opt.name == name {
-            if let CommandDataOptionValue::Integer(v) = &opt.value {
-                return Some(*v);
-            }
-        }
-    }
-    None
+fn create_risk_group() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "risk", "Risk management commands")
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "overview", "Portfolio risk radar"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "symbol", "Per-symbol risk analysis")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "breakers", "Circuit breaker status"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "positions", "Stop-loss tracked positions"),
+        )
 }
 
-async fn respond_ephemeral(
+fn create_market_group() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "market", "Market intelligence commands")
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "news", "Headlines and sentiment")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "sectors", "Sector rotation and flows"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "macro", "Macro indicators and regime"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "screen", "Stock screener opportunities"),
+        )
+}
+
+fn create_data_group() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "data", "Supplementary data commands")
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "earnings", "Earnings data")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "dividends", "Dividend data")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "options", "Options flow data")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "insiders", "Insider transactions")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "short", "Short interest analysis")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "correlation", "Correlation with benchmarks")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+}
+
+fn create_trade_group() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "trade", "Trade execution commands")
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "buy", "Buy shares")
+                .add_sub_option(symbol_option("Stock ticker symbol"))
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "shares", "Number of shares")
+                        .required(true)
+                        .min_int_value(1),
+                ),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "sell", "Sell shares")
+                .add_sub_option(symbol_option("Stock ticker symbol"))
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "shares", "Number of shares")
+                        .required(true)
+                        .min_int_value(1),
+                ),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "close", "Close entire position")
+                .add_sub_option(symbol_option("Stock ticker symbol")),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "orders", "Recent orders list"),
+        )
+}
+
+fn create_tax_group() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "tax", "Tax tools")
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "harvest", "Tax-loss harvesting opportunities"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "summary", "Year-end tax summary")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "year", "Tax year (default current)")
+                        .required(false)
+                        .min_int_value(2020)
+                        .max_int_value(2030),
+                ),
+        )
+}
+
+fn create_advanced_group() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "advanced", "Advanced backtesting")
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "walkforward", "Walk-forward validation")
+                .add_sub_option(symbol_option("Stock ticker symbol"))
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "days", "Period in days (default 365)")
+                        .required(false)
+                        .min_int_value(90)
+                        .max_int_value(1825),
+                ),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "montecarlo", "Monte Carlo simulation")
+                .add_sub_option(symbol_option("Stock ticker symbol"))
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "sims", "Number of simulations (default 1000)")
+                        .required(false)
+                        .min_int_value(100)
+                        .max_int_value(10000),
+                ),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "strategies", "Strategy health / alpha decay"),
+        )
+}
+
+fn create_system_group() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "system", "System commands")
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "health", "Dependency health check"),
+        )
+        .add_sub_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "search", "Symbol search")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "query", "Search query (e.g. 'apple')")
+                        .required(true),
+                ),
+        )
+}
+
+// ── Utility Functions ────────────────────────────────────────────────
+
+pub(crate) async fn respond_ephemeral(
     ctx: &Context,
     command: &CommandInteraction,
     content: &str,
@@ -1083,8 +680,7 @@ async fn respond_ephemeral(
     command.create_response(&ctx.http, msg).await
 }
 
-/// Parse signal strength from API JSON response
-fn parse_signal_from_json(data: &serde_json::Value) -> SignalStrength {
+pub(crate) fn parse_signal_from_json(data: &serde_json::Value) -> SignalStrength {
     data.get("overall_signal")
         .and_then(|s| s.as_str())
         .map(|s| match s {
@@ -1098,6 +694,8 @@ fn parse_signal_from_json(data: &serde_json::Value) -> SignalStrength {
         })
         .unwrap_or(SignalStrength::Neutral)
 }
+
+// ── Main ─────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -1129,9 +727,15 @@ async fn main() -> anyhow::Result<()> {
 
     let api_base = std::env::var("API_BASE_URL").unwrap_or_else(|_| API_BASE_URL.to_string());
     let polygon_client = Arc::new(polygon_client::PolygonClient::new(polygon_api_key));
+    let live_trading_key = std::env::var("LIVE_TRADING_KEY").ok();
 
-    // Build HTTP client with API key for authenticated requests to the API server
-    // Reads API_KEY first, falls back to the first key from API_KEYS (comma-separated)
+    if live_trading_key.is_some() {
+        tracing::info!("Live trading key configured — trade commands enabled");
+    } else {
+        tracing::info!("No LIVE_TRADING_KEY — trade commands will be blocked");
+    }
+
+    // Build HTTP client with API key for authenticated requests
     let mut default_headers = reqwest::header::HeaderMap::new();
     let api_key = std::env::var("API_KEY").ok().or_else(|| {
         std::env::var("API_KEYS").ok().and_then(|keys| {
@@ -1165,15 +769,15 @@ async fn main() -> anyhow::Result<()> {
         watchlists: Arc::new(RwLock::new(HashMap::new())),
         rate_limits: Arc::new(RwLock::new(HashMap::new())),
         circuit_breaker: Arc::new(CircuitBreaker::new()),
+        live_trading_key,
     };
 
     let mut client = Client::builder(&discord_token, intents)
         .event_handler(handler)
         .await?;
 
-    tracing::info!("Discord bot starting with slash commands...");
+    tracing::info!("Discord bot starting with 36 slash commands (8 existing + 28 new)...");
 
-    // Graceful shutdown: SIGINT + SIGTERM
     let shard_manager = client.shard_manager.clone();
     let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
 

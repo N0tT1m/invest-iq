@@ -23,6 +23,7 @@ chrono = { workspace = true }
 reqwest = { workspace = true }
 
 futures = "0.3"
+urlencoding = "2"
 
 # Chart generation via plotly (Python)
 pyo3 = { version = "0.27", features = ["auto-initialize"] }
