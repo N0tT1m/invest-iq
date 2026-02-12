@@ -1,6 +1,7 @@
 use crate::models::*;
 use anyhow::{anyhow, Result};
 use reqwest::{Client, header};
+use std::time::Duration;
 
 pub struct AlpacaClient {
     client: Client,
@@ -12,7 +13,9 @@ pub struct AlpacaClient {
 impl AlpacaClient {
     /// Create a new Alpaca client
     pub fn new(api_key: String, secret_key: String, base_url: String) -> Result<Self> {
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()?;
 
         Ok(Self {
             client,

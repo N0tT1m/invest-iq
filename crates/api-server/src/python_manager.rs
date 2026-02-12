@@ -150,6 +150,16 @@ impl PythonManager {
         }
     }
 
+    /// Path to the venv's gunicorn executable.
+    fn venv_gunicorn(&self) -> PathBuf {
+        let venv_dir = self.base_dir.join("venv");
+        if cfg!(windows) {
+            venv_dir.join("Scripts").join("gunicorn.exe")
+        } else {
+            venv_dir.join("bin").join("gunicorn")
+        }
+    }
+
     /// Hash file that tracks the last-installed requirements hash.
     fn requirements_hash_path(&self) -> PathBuf {
         self.base_dir.join("venv").join(".requirements_hash")
@@ -204,15 +214,61 @@ impl PythonManager {
         Ok(())
     }
 
-    /// Spawn the Dash app child process.
+    /// Kill any process currently listening on the given port.
+    #[cfg(unix)]
+    fn kill_port(port: u16) {
+        let output = std::process::Command::new("lsof")
+            .args(["-ti", &format!(":{}", port)])
+            .output();
+
+        if let Ok(out) = output {
+            let pids = String::from_utf8_lossy(&out.stdout);
+            for pid_str in pids.split_whitespace() {
+                if let Ok(pid) = pid_str.parse::<i32>() {
+                    tracing::info!("Killing stale process on port {} (PID: {})", port, pid);
+                    unsafe { libc::kill(pid, libc::SIGTERM); }
+                }
+            }
+            if !pids.trim().is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+
+    /// Spawn the Dash app child process using gunicorn for production.
     fn spawn_child(&self) -> anyhow::Result<Child> {
-        let mut cmd = Command::new(self.venv_python());
-        cmd.arg("app.py")
-            .current_dir(&self.base_dir)
+        #[cfg(unix)]
+        Self::kill_port(self.dash_port);
+        let workers = std::env::var("DASH_WORKERS")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(4);
+        let bind = format!("0.0.0.0:{}", self.dash_port);
+
+        let gunicorn = self.venv_gunicorn();
+        let use_gunicorn = gunicorn.exists();
+
+        let mut cmd = if use_gunicorn {
+            let mut c = Command::new(&gunicorn);
+            c.args([
+                "--bind", &bind,
+                "--workers", &workers.to_string(),
+                "--timeout", "120",
+                "app:server",
+            ]);
+            c
+        } else {
+            tracing::warn!("gunicorn not found in venv, falling back to dev server");
+            let mut c = Command::new(self.venv_python());
+            c.arg("app.py");
+            c.env("DASH_HOST", "0.0.0.0");
+            c.env("DASH_PORT", self.dash_port.to_string());
+            c
+        };
+
+        cmd.current_dir(&self.base_dir)
             .env("API_BASE_URL", &self.api_base_url)
             .env("DASH_DEBUG", "false")
-            .env("DASH_HOST", "0.0.0.0")
-            .env("DASH_PORT", self.dash_port.to_string())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 

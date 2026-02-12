@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +23,9 @@ pub struct TradingSignal {
     /// Adjustments applied from supplementary signals
     #[serde(default)]
     pub signal_adjustments: Vec<String>,
+    /// Conviction tier from orchestrator (HIGH/MODERATE/LOW)
+    #[serde(default)]
+    pub conviction_tier: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,4 +62,6 @@ pub struct GateDecision {
     pub approved: bool,
     pub probability: f64,
     pub reasoning: String,
+    /// ML feature vector used for the decision (for context logging)
+    pub features: Option<HashMap<String, f64>>,
 }

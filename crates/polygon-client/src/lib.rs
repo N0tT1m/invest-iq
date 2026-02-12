@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::Instant;
 
 const BASE_URL: &str = "https://api.polygon.io";
@@ -61,6 +61,8 @@ pub struct PolygonClient {
     api_key: String,
     client: Client,
     rate_limiter: RateLimiter,
+    /// Limits the number of in-flight HTTP requests to Polygon.
+    concurrency_limit: Arc<Semaphore>,
 }
 
 // Finnhub article response structure
@@ -96,8 +98,16 @@ impl PolygonClient {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3000);
 
+        // Cap concurrent in-flight requests to avoid overwhelming the connection pool.
+        // Default 50 balances throughput vs connection overhead for most plans.
+        let max_concurrent: usize = std::env::var("POLYGON_MAX_CONCURRENT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50);
+
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(max_concurrent)
             .build()
             .unwrap_or_else(|_| Client::new());
 
@@ -105,12 +115,17 @@ impl PolygonClient {
             api_key,
             client,
             rate_limiter: RateLimiter::new(rate_limit, Duration::from_secs(60)),
+            concurrency_limit: Arc::new(Semaphore::new(max_concurrent)),
         }
     }
 
-    /// Send a request with rate limiting and automatic 429 retry.
+    /// Send a request with concurrency limiting, rate limiting, and automatic 429 retry.
     async fn send_request(&self, builder: reqwest::RequestBuilder) -> Result<reqwest::Response, AnalysisError> {
         let request = builder.build().map_err(|e| AnalysisError::ApiError(e.to_string()))?;
+
+        // Acquire concurrency permit (limits in-flight requests)
+        let _permit = self.concurrency_limit.acquire().await
+            .map_err(|_| AnalysisError::ApiError("Concurrency semaphore closed".to_string()))?;
 
         for attempt in 0..3u32 {
             self.rate_limiter.acquire().await;
@@ -151,7 +166,11 @@ impl PolygonClient {
         );
 
         let response = self.send_request(
-            self.client.get(&url).query(&[("apiKey", &self.api_key), ("adjusted", &"true".to_string())])
+            self.client.get(&url).query(&[
+                ("apiKey", &self.api_key),
+                ("adjusted", &"true".to_string()),
+                ("limit", &"50000".to_string()),
+            ])
         ).await?;
 
         if !response.status().is_success() {
@@ -444,6 +463,8 @@ impl PolygonClient {
             .build()
             .map_err(|e| AnalysisError::ApiError(e.to_string()))?;
 
+        let _permit = self.concurrency_limit.acquire().await
+            .map_err(|_| AnalysisError::ApiError("Concurrency semaphore closed".to_string()))?;
         self.rate_limiter.acquire().await;
         let response = heavy_client
             .get(&url)

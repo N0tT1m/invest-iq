@@ -51,4 +51,4 @@ echo "📊 Dashboard will be available at: http://localhost:8050"
 echo "⏹️  Press Ctrl+C to stop"
 echo ""
 
-python3 app.py
+gunicorn --bind 0.0.0.0:8050 --workers 4 --timeout 120 app:server

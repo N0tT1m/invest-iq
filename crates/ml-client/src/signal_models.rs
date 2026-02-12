@@ -97,6 +97,17 @@ impl SignalModelsClient {
         }
     }
 
+    pub fn with_client(client: reqwest::Client, base_url: String) -> Self {
+        Self {
+            client,
+            base_url,
+            prediction_cache: Arc::new(DashMap::new()),
+            calibration_cache: Arc::new(DashMap::new()),
+            weights_cache: Arc::new(DashMap::new()),
+            cache_ttl: Duration::from_secs(300),
+        }
+    }
+
     /// Meta-model: should we take this trade?
     pub async fn predict_trade(
         &self,

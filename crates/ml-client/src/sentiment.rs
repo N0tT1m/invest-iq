@@ -60,6 +60,10 @@ impl SentimentClient {
         Self { client, base_url }
     }
 
+    pub fn with_client(client: reqwest::Client, base_url: String) -> Self {
+        Self { client, base_url }
+    }
+
     /// Predict sentiment for text(s)
     pub async fn predict(
         &self,

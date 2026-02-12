@@ -36,6 +36,8 @@ pub struct AnalysisOrchestrator {
     news_cache: DashMap<String, CacheEntry<Vec<NewsArticle>>>,
     /// Cache bars per (symbol, timeframe_key, days) (5-min TTL)
     bars_cache: DashMap<String, CacheEntry<Vec<Bar>>>,
+    /// Secondary index for fast superset lookup: "AAPL:1:day" -> [30, 90, 365]
+    bars_days_index: DashMap<String, Vec<i64>>,
     /// Cache ticker details per symbol (5-min TTL)
     ticker_details_cache: DashMap<String, CacheEntry<TickerDetails>>,
     /// Cache financials per symbol (5-min TTL)
@@ -66,6 +68,7 @@ impl AnalysisOrchestrator {
             db_pool: None,
             news_cache: DashMap::new(),
             bars_cache: DashMap::new(),
+            bars_days_index: DashMap::new(),
             ticker_details_cache: DashMap::new(),
             financials_cache: DashMap::new(),
             consensus_cache: DashMap::new(),
@@ -346,36 +349,50 @@ impl AnalysisOrchestrator {
                 }
             });
 
-        // Run analyses using enhanced methods
-        let mut technical_result = None;
-        let mut quant_result = None;
-
-        if let Ok(bars) = &bars_result {
-            if bars.len() >= 50 {
-                tracing::info!("Running enhanced technical analysis with {} bars", bars.len());
-                match self.technical_analyzer.analyze_enhanced(symbol, bars, spy_bars_ok.as_deref()) {
-                    Ok(result) => technical_result = Some(result),
-                    Err(e) => tracing::warn!("Technical analysis failed: {:?}", e),
+        // Run all independent analysis engines concurrently.
+        // Technical & quant are CPU-bound but fast (sub-ms on a few hundred bars).
+        // Sentiment & consensus are async network calls to ML/Polygon services.
+        // Running them in parallel overlaps the network latency.
+        let (technical_result, quant_result, consensus_data, sentiment_result) = tokio::join!(
+            async {
+                if let Ok(bars) = &bars_result {
+                    if bars.len() >= 50 {
+                        tracing::info!("Running enhanced technical analysis with {} bars", bars.len());
+                        match self.technical_analyzer.analyze_enhanced(symbol, bars, spy_bars_ok.as_deref()) {
+                            Ok(result) => return Some(result),
+                            Err(e) => tracing::warn!("Technical analysis failed: {:?}", e),
+                        }
+                    }
                 }
-            }
-
-            if bars.len() >= 30 {
-                tracing::info!("Running enhanced quantitative analysis");
-                match self.quant_analyzer.analyze_with_benchmark_and_rate(
-                    symbol,
-                    bars,
-                    spy_bars_ok.as_deref(),
-                    dynamic_risk_free_rate,
-                ) {
-                    Ok(result) => quant_result = Some(result),
-                    Err(e) => tracing::warn!("Quant analysis failed: {:?}", e),
+                None
+            },
+            async {
+                if let Ok(bars) = &bars_result {
+                    if bars.len() >= 30 {
+                        tracing::info!("Running enhanced quantitative analysis");
+                        match self.quant_analyzer.analyze_with_benchmark_and_rate(
+                            symbol, bars, spy_bars_ok.as_deref(), dynamic_risk_free_rate,
+                        ) {
+                            Ok(result) => return Some(result),
+                            Err(e) => tracing::warn!("Quant analysis failed: {:?}", e),
+                        }
+                    }
                 }
-            }
-        }
+                None
+            },
+            self.get_analyst_consensus(symbol),
+            async {
+                if let Ok(news) = &news_result {
+                    tracing::info!("Running sentiment analysis with {} articles", news.len());
+                    if let Ok(result) = self.sentiment_analyzer.analyze(symbol, news).await {
+                        return Some(result);
+                    }
+                }
+                None
+            },
+        );
 
-        // Fetch analyst consensus (sequential to avoid rate limit pressure)
-        let consensus_data = self.get_analyst_consensus(symbol).await;
-
+        // Fundamental analysis depends on consensus data, so it runs after the parallel phase
         let mut fundamental_result = None;
         if let Ok(financials_vec) = &financials_result {
             if !financials_vec.is_empty() {
@@ -387,14 +404,6 @@ impl AnalysisOrchestrator {
                     Ok(result) => fundamental_result = Some(result),
                     Err(e) => tracing::warn!("Fundamental analysis failed: {:?}", e),
                 }
-            }
-        }
-
-        let mut sentiment_result = None;
-        if let Ok(news) = &news_result {
-            tracing::info!("Running sentiment analysis with {} articles", news.len());
-            if let Ok(result) = self.sentiment_analyzer.analyze(symbol, news).await {
-                sentiment_result = Some(result);
             }
         }
 
@@ -1259,23 +1268,22 @@ impl AnalysisOrchestrator {
             }
         }
 
-        // Check if a cached superset exists (same symbol/timeframe, more days).
+        // Fast superset lookup via secondary index instead of scanning all cache entries.
         // E.g. a request for 30 days can be served from a cached 90-day entry.
-        let prefix = format!("{}:{}:{}:", symbol, multiplier, span);
-        for entry in self.bars_cache.iter() {
-            if entry.key().starts_with(&prefix) && entry.key() != &cache_key {
-                let age = (Utc::now() - entry.value().cached_at).num_seconds();
-                if age < CACHE_TTL_SECS {
-                    if let Some(cached_days_str) = entry.key().strip_prefix(&prefix) {
-                        if let Ok(cached_days) = cached_days_str.parse::<i64>() {
-                            if cached_days >= days_back {
-                                let cutoff = Utc::now() - Duration::days(days_back);
-                                let subset: Vec<Bar> = entry.value().data.iter()
-                                    .filter(|b| b.timestamp >= cutoff)
-                                    .cloned()
-                                    .collect();
-                                return Ok(subset);
-                            }
+        let prefix = format!("{}:{}:{}", symbol, multiplier, span);
+        if let Some(cached_days_list) = self.bars_days_index.get(&prefix) {
+            for &cached_days in cached_days_list.value() {
+                if cached_days >= days_back {
+                    let superset_key = format!("{}:{}", prefix, cached_days);
+                    if let Some(entry) = self.bars_cache.get(&superset_key) {
+                        let age = (Utc::now() - entry.cached_at).num_seconds();
+                        if age < CACHE_TTL_SECS {
+                            let cutoff = Utc::now() - Duration::days(days_back);
+                            let subset: Vec<Bar> = entry.data.iter()
+                                .filter(|b| b.timestamp >= cutoff)
+                                .cloned()
+                                .collect();
+                            return Ok(subset);
                         }
                     }
                 }
@@ -1288,10 +1296,16 @@ impl AnalysisOrchestrator {
             .get_aggregates(symbol, multiplier, span, start, now)
             .await?;
 
-        self.bars_cache.insert(cache_key, CacheEntry {
+        self.bars_cache.insert(cache_key.clone(), CacheEntry {
             data: bars.clone(),
             cached_at: Utc::now(),
         });
+
+        // Update the secondary index
+        self.bars_days_index
+            .entry(prefix)
+            .or_insert_with(Vec::new)
+            .push(days_back);
 
         Ok(bars)
     }

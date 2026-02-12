@@ -37,7 +37,6 @@ impl TradeExecutor {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn execute_signal(&self, signal: &TradingSignal) -> Result<TradeExecution> {
         if !self.config.trading_enabled {
             return Err(anyhow::anyhow!("Trading is disabled"));
@@ -293,6 +292,16 @@ impl TradeExecutor {
             reason,
             strategy_name: signal.strategy_name.clone(),
         })
+    }
+
+    /// Get symbols that already have pending (unreviewed) trades.
+    pub async fn get_pending_symbols(&self) -> Result<std::collections::HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT symbol FROM pending_trades WHERE status = 'pending'"
+        )
+        .fetch_all(&self.db_pool)
+        .await?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
     }
 
     /// Insert a trade proposal into `pending_trades` for human review.

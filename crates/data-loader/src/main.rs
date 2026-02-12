@@ -63,8 +63,10 @@ const DEFAULT_SYMBOLS: &[&str] = &[
 const MIN_WINDOW: usize = 50;
 const FORWARD_5D: usize = 5;
 const FORWARD_20D: usize = 20;
-/// Max concurrent symbol processing tasks
-const DEFAULT_CONCURRENCY: usize = 20;
+/// How many years of history to fetch (more = more training samples)
+const HISTORY_DAYS: i64 = 1500;
+/// Max concurrent symbol processing tasks (defaults to CPU count for CPU-bound feature gen)
+const DEFAULT_CONCURRENCY: usize = 0; // 0 = auto-detect
 
 /// What data to store for each symbol
 #[derive(Clone, Copy)]
@@ -130,6 +132,11 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|i| args.get(i + 1))
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_CONCURRENCY);
+    let concurrency = if concurrency == 0 {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8)
+    } else {
+        concurrency
+    };
 
     let db_path = args
         .iter()
@@ -192,8 +199,11 @@ async fn main() -> anyhow::Result<()> {
     // Open DB (migrations handle table schema via sqlx::migrate!())
     let pool = Arc::new(SqlitePool::connect(&format!("sqlite:{}?mode=rwc", db_path)).await?);
 
-    // Enable WAL mode for concurrent writes from parallel tasks
+    // Bulk-load SQLite optimizations
     sqlx::query("PRAGMA journal_mode=WAL").execute(pool.as_ref()).await?;
+    sqlx::query("PRAGMA synchronous=OFF").execute(pool.as_ref()).await?;
+    sqlx::query("PRAGMA temp_store=MEMORY").execute(pool.as_ref()).await?;
+    sqlx::query("PRAGMA cache_size=-64000").execute(pool.as_ref()).await?; // 64MB cache
 
     // Run migrations to ensure training tables exist
     sqlx::migrate!("../../migrations").run(pool.as_ref()).await?;
@@ -207,7 +217,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Fetching SPY bars for benchmark...");
         let now = Utc::now();
         let bars = polygon
-            .get_aggregates("SPY", 1, "day", now - Duration::days(400), now)
+            .get_aggregates("SPY", 1, "day", now - Duration::days(HISTORY_DAYS), now)
             .await
             .unwrap_or_default();
         tracing::info!("SPY: {} bars", bars.len());
@@ -251,7 +261,11 @@ async fn main() -> anyhow::Result<()> {
             match rows {
                 Ok(n) => {
                     total_rows.fetch_add(n, Ordering::Relaxed);
-                    tracing::info!("[{}/{}] {} => {} rows", done, total_symbols, symbol, n);
+                    if n > 0 {
+                        tracing::info!("[{}/{}] {} => {} rows", done, total_symbols, symbol, n);
+                    } else {
+                        tracing::info!("[{}/{}] {} => 0 new rows (data already exists)", done, total_symbols, symbol, );
+                    }
                 }
                 Err(e) => {
                     failed.fetch_add(1, Ordering::Relaxed);
@@ -291,7 +305,7 @@ async fn process_symbol(
     news_limit: u32,
 ) -> anyhow::Result<u64> {
     let now = Utc::now();
-    let start = now - Duration::days(400);
+    let start = now - Duration::days(HISTORY_DAYS);
 
     // Fetch bars + financials + news concurrently
     let need_financials = store_flags.features;
@@ -316,6 +330,7 @@ async fn process_symbol(
     let (bars_result, financials, news) = tokio::join!(bars_fut, fin_fut, news_fut);
 
     let bars = bars_result?;
+    tracing::debug!("{}: {} bars fetched, {} news", symbol, bars.len(), news.len());
 
     let mut count = 0u64;
 
@@ -323,14 +338,18 @@ async fn process_symbol(
     if store_flags.bars && !dry_run && !bars.is_empty() {
         let stored = store_training_bars(pool, symbol, &bars, timespan).await?;
         count += stored;
-        tracing::debug!("  {} bars stored for {}", stored, symbol);
+        if stored > 0 {
+            tracing::debug!("  {} bars stored for {}", stored, symbol);
+        }
     }
 
     // Store training news with price labels
     if store_flags.news && !dry_run && !news.is_empty() {
         let stored = store_training_news(pool, symbol, &bars, &news).await?;
         count += stored;
-        tracing::debug!("  {} news articles stored for {}", stored, symbol);
+        if stored > 0 {
+            tracing::debug!("  {} news articles stored for {}", stored, symbol);
+        }
     }
 
     // Generate analysis features (existing behavior)
@@ -340,9 +359,34 @@ async fn process_symbol(
             return Ok(count);
         }
 
+        // Compute fundamentals once (they don't change per window)
+        let empty_consensus = AnalystConsensusData {
+            consensus: None,
+            recent_ratings: Vec::new(),
+        };
+        let fund = if !financials.is_empty() {
+            let price = bars.last().map(|b| b.close).unwrap_or(0.0);
+            fund_engine
+                .analyze_with_consensus(symbol, &financials, Some(price), None, &empty_consensus, None, None)
+                .ok()
+        } else {
+            None
+        };
+
         let max_t = bars.len() - FORWARD_20D;
-        let step = 5;
+        let step = 1;
         let mut t = MIN_WINDOW;
+
+        // Collect all rows, then batch-insert in a single transaction
+        struct FeatureRow {
+            date: String,
+            features_json: String,
+            signal: String,
+            confidence: f64,
+            return_5d: f64,
+            return_20d: f64,
+        }
+        let mut rows: Vec<FeatureRow> = Vec::with_capacity(max_t - MIN_WINDOW);
 
         while t < max_t {
             let window = &bars[..t];
@@ -359,40 +403,43 @@ async fn process_symbol(
                 .analyze_with_benchmark_and_rate(symbol, window, Some(spy_bars), None)
                 .ok();
 
-            let empty_consensus = AnalystConsensusData {
-                consensus: None,
-                recent_ratings: Vec::new(),
-            };
-            let fund = if !financials.is_empty() {
-                fund_engine
-                    .analyze_with_consensus(symbol, &financials, Some(current_price), None, &empty_consensus, None, None)
-                    .ok()
-            } else {
-                None
-            };
-
             let features = build_features(&tech, &fund, &quant);
             let features_json = serde_json::to_string(&features)?;
             let (overall_signal, overall_confidence) = combine_simple(&tech, &fund, &quant);
 
-            if !dry_run {
-                sqlx::query(
-                    "INSERT INTO analysis_features (symbol, analysis_date, features_json, overall_signal, overall_confidence, actual_return_5d, actual_return_20d, evaluated) VALUES (?, ?, ?, ?, ?, ?, ?, 1)"
-                )
-                .bind(symbol)
-                .bind(&date)
-                .bind(&features_json)
-                .bind(format!("{:?}", overall_signal))
-                .bind(overall_confidence)
-                .bind(return_5d)
-                .bind(return_20d)
-                .execute(pool)
-                .await?;
-            }
+            rows.push(FeatureRow {
+                date,
+                features_json,
+                signal: format!("{:?}", overall_signal),
+                confidence: overall_confidence,
+                return_5d,
+                return_20d,
+            });
 
-            count += 1;
             t += step;
         }
+
+        // Batch insert in a single transaction
+        if !dry_run && !rows.is_empty() {
+            let mut tx = pool.begin().await?;
+            for row in &rows {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO analysis_features (symbol, analysis_date, features_json, overall_signal, overall_confidence, actual_return_5d, actual_return_20d, evaluated) VALUES (?, ?, ?, ?, ?, ?, ?, 1)"
+                )
+                .bind(symbol)
+                .bind(&row.date)
+                .bind(&row.features_json)
+                .bind(&row.signal)
+                .bind(row.confidence)
+                .bind(row.return_5d)
+                .bind(row.return_20d)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+        }
+
+        count += rows.len() as u64;
     }
 
     Ok(count)

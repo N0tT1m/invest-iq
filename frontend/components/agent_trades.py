@@ -24,6 +24,20 @@ class AgentTradesComponent:
             return []
 
     @staticmethod
+    def fetch_trade_context(trade_id):
+        """Fetch rich context for a specific trade."""
+        try:
+            response = requests.get(
+                f"{API_BASE}/api/agent/trades/{trade_id}/context",
+                headers=get_headers(),
+                timeout=API_TIMEOUT,
+            )
+            data = response.json()
+            return data.get("data") if data.get("success") else None
+        except Exception:
+            return None
+
+    @staticmethod
     def review_trade(trade_id, action):
         """Approve or reject a pending trade."""
         try:
@@ -91,7 +105,9 @@ class AgentTradesComponent:
         if pending:
             children.append(html.H6(f"Pending Approval ({len(pending)})", className="text-warning mb-2"))
             for trade in pending:
-                children.append(_trade_card(trade, show_actions=True))
+                # Fetch context for pending trades
+                context = AgentTradesComponent.fetch_trade_context(trade.get("id", 0))
+                children.append(_trade_card(trade, show_actions=True, context=context))
         else:
             children.append(html.P("No trades awaiting approval.", className="text-muted small mb-2"))
 
@@ -105,7 +121,7 @@ class AgentTradesComponent:
         return html.Div(children)
 
 
-def _trade_card(trade, show_actions=False):
+def _trade_card(trade, show_actions=False, context=None):
     """Render a single trade proposal card."""
     trade_id = trade.get("id", 0)
     symbol = trade.get("symbol", "???")
@@ -146,6 +162,62 @@ def _trade_card(trade, show_actions=False):
             ], md=4, className="text-end"),
         ]),
     ]
+
+    # Context badges (conviction, regime, ML probability)
+    if context:
+        badges = []
+        conv = context.get("conviction_tier")
+        if conv:
+            conv_color = {"HIGH": "success", "MODERATE": "warning", "LOW": "danger"}.get(conv, "secondary")
+            badges.append(dbc.Badge(conv, color=conv_color, className="me-1"))
+
+        regime = context.get("entry_regime")
+        if regime:
+            badges.append(dbc.Badge(regime, color="info", className="me-1"))
+
+        ml_prob = context.get("ml_probability")
+        if ml_prob is not None:
+            badges.append(dbc.Badge(f"ML: {ml_prob * 100:.0f}%", color="primary", className="me-1"))
+
+        atr = context.get("entry_atr")
+        if atr is not None:
+            badges.append(dbc.Badge(f"ATR: {atr:.2f}", color="secondary", className="me-1"))
+
+        if badges:
+            body_children.append(html.Div(badges, className="mt-1"))
+
+        # Supplementary signal summary
+        supp_items = []
+        import json
+        supp_raw = context.get("supplementary_signals")
+        if supp_raw:
+            try:
+                supp = json.loads(supp_raw) if isinstance(supp_raw, str) else supp_raw
+                insiders = supp.get("insiders", {})
+                exec_buys = insiders.get("executive_buy_count", 0)
+                if exec_buys:
+                    supp_items.append(f"Insider buys: {exec_buys}")
+
+                options = supp.get("options", {})
+                pcr = options.get("put_call_ratio")
+                if pcr is not None:
+                    supp_items.append(f"P/C: {pcr:.2f}")
+
+                smart = supp.get("smart_money", {})
+                score = smart.get("composite_score")
+                if score is not None:
+                    label = "bullish" if score > 0.2 else ("bearish" if score < -0.2 else "neutral")
+                    supp_items.append(f"Smart$: {label}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if supp_items:
+            body_children.append(
+                html.Small(
+                    " | ".join(supp_items),
+                    className="text-muted d-block mt-1",
+                )
+            )
 
     if reason:
         body_children.append(

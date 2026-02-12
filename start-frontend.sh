@@ -15,4 +15,4 @@ fi
 # Start the frontend application
 cd frontend
 source venv/bin/activate
-python3 app.py
+gunicorn --bind 0.0.0.0:8050 --workers 4 --timeout 120 app:server

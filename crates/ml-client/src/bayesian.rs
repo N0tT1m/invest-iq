@@ -66,6 +66,10 @@ impl BayesianClient {
         Self { client, base_url }
     }
 
+    pub fn with_client(client: reqwest::Client, base_url: String) -> Self {
+        Self { client, base_url }
+    }
+
     /// Update strategy with trade outcome
     pub async fn update_strategy(
         &self,

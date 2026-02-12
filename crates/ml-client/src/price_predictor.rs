@@ -45,6 +45,10 @@ impl PricePredictorClient {
         Self { client, base_url }
     }
 
+    pub fn with_client(client: reqwest::Client, base_url: String) -> Self {
+        Self { client, base_url }
+    }
+
     /// Predict price direction for next N steps
     pub async fn predict(
         &self,

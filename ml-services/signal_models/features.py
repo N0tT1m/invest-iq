@@ -148,8 +148,44 @@ def extract_features_from_analysis(analysis: Dict[str, Any]) -> Dict[str, float]
 
 
 def features_to_array(features: Dict[str, float]) -> np.ndarray:
-    """Convert feature dict to ordered numpy array matching FEATURE_NAMES."""
-    return np.array([features.get(name, 0.0) for name in FEATURE_NAMES], dtype=np.float32)
+    """Convert feature dict to ordered numpy array matching FEATURE_NAMES.
+
+    Handles key mapping from Rust ML client (which uses shorter names) to the
+    canonical training feature names.
+    """
+    # Map Rust client keys → training feature names
+    ALIAS_MAP = {
+        "tech_signal": "technical_score",
+        "fund_signal": "fundamental_score",
+        "quant_signal": "quant_score",
+        "sent_signal": "sentiment_score",
+        "tech_confidence": "technical_confidence",
+        "fund_confidence": "fundamental_confidence",
+        "quant_confidence": "quant_confidence",
+        "sent_confidence": "sentiment_confidence",
+        "rsi": "rsi",
+        "macd_histogram": "bb_percent_b",       # best-effort: no bb_percent_b from Rust
+        "bb_width": "sma_20_vs_50",             # best-effort mapping
+        "adx": "adx",
+        "pe_ratio": "pe_ratio",
+        "debt_to_equity": "debt_to_equity",
+        "sharpe_ratio": "sharpe_ratio",
+        "var_95": "max_drawdown",               # closest proxy
+        "max_drawdown": "max_drawdown",
+        "volatility": "volatility",
+        "news_sentiment_score": "normalized_sentiment_score",
+        "regime": "market_regime_encoded",
+        "spy_return": "inter_engine_agreement",  # repurposed slot
+        "vix_proxy": "vix_proxy",
+    }
+
+    # Normalize keys: apply alias mapping
+    normalized = {}
+    for key, val in features.items():
+        canonical = ALIAS_MAP.get(key, key)
+        normalized[canonical] = val
+
+    return np.array([normalized.get(name, 0.0) for name in FEATURE_NAMES], dtype=np.float32)
 
 
 def features_from_array(arr: np.ndarray) -> Dict[str, float]:

@@ -38,7 +38,7 @@ impl Default for MLConfig {
     }
 }
 
-/// Complete ML client with all services
+/// Complete ML client with all services sharing a single connection pool.
 #[derive(Clone)]
 pub struct MLClient {
     pub sentiment: SentimentClient,
@@ -49,11 +49,18 @@ pub struct MLClient {
 
 impl MLClient {
     pub fn new(config: MLConfig) -> Self {
+        // Single shared reqwest client for all ML services — one connection pool.
+        let shared_client = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .pool_max_idle_per_host(20)
+            .build()
+            .expect("Failed to create shared ML HTTP client");
+
         Self {
-            sentiment: SentimentClient::new(config.sentiment_url.clone(), config.timeout),
-            bayesian: BayesianClient::new(config.bayesian_url.clone(), config.timeout),
-            price_predictor: PricePredictorClient::new(config.price_predictor_url.clone(), config.timeout),
-            signal_models: SignalModelsClient::new(config.signal_models_url.clone(), config.timeout),
+            sentiment: SentimentClient::with_client(shared_client.clone(), config.sentiment_url),
+            bayesian: BayesianClient::with_client(shared_client.clone(), config.bayesian_url),
+            price_predictor: PricePredictorClient::with_client(shared_client.clone(), config.price_predictor_url),
+            signal_models: SignalModelsClient::with_client(shared_client, config.signal_models_url),
         }
     }
 

@@ -211,6 +211,7 @@ impl StrategyManager {
             atr: atr_val,
             regime,
             signal_adjustments: adjustments,
+            conviction_tier: analysis.conviction_tier.clone(),
         })
     }
 }

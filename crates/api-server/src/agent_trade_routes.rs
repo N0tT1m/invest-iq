@@ -4,8 +4,9 @@
 //! Trades stay "pending" until approved or rejected from the dashboard.
 
 use axum::{
-    extract::{Path, State},
-    routing::{get, post},
+    extract::{Path, Query, State},
+    routing::get,
+    routing::post,
     Json, Router,
 };
 use rust_decimal::Decimal;
@@ -56,6 +57,14 @@ pub fn agent_trade_routes() -> Router<AppState> {
         .route("/api/agent/trades", post(propose_trade))
         .route("/api/agent/trades/:id/review", post(review_trade))
         .route("/api/agent/trades/:id", get(get_pending_trade))
+        .route("/api/agent/trades/:id/context", get(get_trade_context))
+        .route("/api/agent/analytics/summary", get(get_analytics_summary))
+        .route("/api/agent/analytics/win-rate-by-regime", get(get_win_rate_by_regime))
+        .route("/api/agent/analytics/win-rate-by-conviction", get(get_win_rate_by_conviction))
+        .route("/api/agent/analytics/pnl-by-symbol", get(get_pnl_by_symbol))
+        .route("/api/agent/analytics/confidence-calibration", get(get_confidence_calibration))
+        .route("/api/agent/analytics/supplementary-outcomes", get(get_supplementary_outcomes))
+        .route("/api/agent/analytics/daily-snapshots", get(get_daily_snapshots))
 }
 
 /// List pending trades (optionally filter by status)
@@ -219,6 +228,16 @@ async fn review_trade(
             .execute(pool)
             .await?;
 
+            // Record rejection in trade context
+            sqlx::query(
+                "UPDATE agent_trade_context_v2 SET exit_reason='REJECTED', outcome='rejected', exit_date=datetime('now')
+                 WHERE pending_trade_id = ?"
+            )
+            .bind(id)
+            .execute(pool)
+            .await
+            .ok();
+
             tracing::info!("Rejected agent trade {}: {} {} shares of {}", id, trade.action, trade.shares, trade.symbol);
 
             audit::log_audit(pool, "agent_trade_rejected", Some(&trade.symbol), Some(&trade.action),
@@ -231,4 +250,369 @@ async fn review_trade(
         }
         _ => Err(anyhow::anyhow!("Invalid review action: must be 'approve' or 'reject'").into()),
     }
+}
+
+// ============================================================================
+// Analytics endpoints
+// ============================================================================
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct TradeContextRow {
+    id: i64,
+    pending_trade_id: Option<i64>,
+    symbol: String,
+    action: String,
+    entry_price: Option<f64>,
+    stop_loss: Option<f64>,
+    take_profit: Option<f64>,
+    entry_regime: Option<String>,
+    conviction_tier: Option<String>,
+    entry_confidence: Option<f64>,
+    entry_atr: Option<f64>,
+    ml_probability: Option<f64>,
+    ml_reasoning: Option<String>,
+    ml_features_json: Option<String>,
+    technical_reason: Option<String>,
+    fundamental_reason: Option<String>,
+    sentiment_score: Option<f64>,
+    signal_adjustments: Option<String>,
+    supplementary_signals: Option<String>,
+    engine_signals_json: Option<String>,
+    time_horizon_signals: Option<String>,
+    created_at: String,
+    exit_regime: Option<String>,
+    exit_reason: Option<String>,
+    exit_price: Option<f64>,
+    exit_date: Option<String>,
+    pnl: Option<f64>,
+    pnl_percent: Option<f64>,
+    outcome: Option<String>,
+}
+
+/// GET /api/agent/trades/:id/context
+async fn get_trade_context(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<TradeContextRow>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    let ctx: TradeContextRow = sqlx::query_as(
+        "SELECT * FROM agent_trade_context_v2 WHERE pending_trade_id = ?"
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Json(ApiResponse::success(ctx)))
+}
+
+/// GET /api/agent/analytics/summary
+async fn get_analytics_summary(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    let row: Option<(i64, i64, i64, f64)> = sqlx::query_as(
+        "SELECT
+            COUNT(*) as total,
+            COALESCE(SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END), 0) as wins,
+            COALESCE(SUM(CASE WHEN outcome = 'loss' THEN 1 ELSE 0 END), 0) as losses,
+            COALESCE(SUM(pnl), 0.0) as total_pnl
+         FROM agent_trade_context_v2
+         WHERE outcome IS NOT NULL AND outcome != 'rejected'"
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    let (total, wins, losses, total_pnl) = row.unwrap_or((0, 0, 0, 0.0));
+    let win_rate = if (wins + losses) > 0 {
+        wins as f64 / (wins + losses) as f64
+    } else {
+        0.0
+    };
+
+    // Load metrics from agent_state
+    let metrics_json: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM agent_state WHERE key = 'agent_metrics'"
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    let metrics: serde_json::Value = metrics_json
+        .and_then(|(s,)| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({}));
+
+    let ml_approved = metrics.get("signals_ml_approved").and_then(|v| v.as_u64()).unwrap_or(0);
+    let ml_rejected = metrics.get("signals_ml_rejected").and_then(|v| v.as_u64()).unwrap_or(0);
+    let ml_total = ml_approved + ml_rejected;
+    let ml_gate_rate = if ml_total > 0 {
+        ml_approved as f64 / ml_total as f64
+    } else {
+        0.0
+    };
+
+    Ok(Json(ApiResponse::success(serde_json::json!({
+        "total_trades": total,
+        "wins": wins,
+        "losses": losses,
+        "total_pnl": total_pnl,
+        "win_rate": win_rate,
+        "ml_gate_approval_rate": ml_gate_rate,
+        "signals_ml_approved": ml_approved,
+        "signals_ml_rejected": ml_rejected,
+        "agent_metrics": metrics,
+    }))))
+}
+
+/// GET /api/agent/analytics/win-rate-by-regime
+async fn get_win_rate_by_regime(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT
+            COALESCE(entry_regime, 'unknown') as regime,
+            COUNT(*) as total,
+            COALESCE(SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END), 0) as wins
+         FROM agent_trade_context_v2
+         WHERE outcome IS NOT NULL AND outcome != 'rejected'
+         GROUP BY entry_regime
+         ORDER BY total DESC"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let result: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(regime, total, wins)| {
+            serde_json::json!({
+                "regime": regime,
+                "total": total,
+                "wins": wins,
+                "win_rate": if total > 0 { wins as f64 / total as f64 } else { 0.0 },
+            })
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::success(result)))
+}
+
+/// GET /api/agent/analytics/win-rate-by-conviction
+async fn get_win_rate_by_conviction(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT
+            COALESCE(conviction_tier, 'UNKNOWN') as tier,
+            COUNT(*) as total,
+            COALESCE(SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END), 0) as wins
+         FROM agent_trade_context_v2
+         WHERE outcome IS NOT NULL AND outcome != 'rejected'
+         GROUP BY conviction_tier
+         ORDER BY total DESC"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let result: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(tier, total, wins)| {
+            serde_json::json!({
+                "conviction_tier": tier,
+                "total": total,
+                "wins": wins,
+                "win_rate": if total > 0 { wins as f64 / total as f64 } else { 0.0 },
+            })
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::success(result)))
+}
+
+/// GET /api/agent/analytics/pnl-by-symbol
+async fn get_pnl_by_symbol(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    let rows: Vec<(String, i64, i64, f64)> = sqlx::query_as(
+        "SELECT
+            symbol,
+            COUNT(*) as total,
+            COALESCE(SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END), 0) as wins,
+            COALESCE(SUM(pnl), 0.0) as total_pnl
+         FROM agent_trade_context_v2
+         WHERE outcome IS NOT NULL AND outcome != 'rejected'
+         GROUP BY symbol
+         ORDER BY total_pnl DESC"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let result: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(symbol, total, wins, total_pnl)| {
+            serde_json::json!({
+                "symbol": symbol,
+                "total": total,
+                "wins": wins,
+                "total_pnl": total_pnl,
+                "win_rate": if total > 0 { wins as f64 / total as f64 } else { 0.0 },
+            })
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::success(result)))
+}
+
+/// GET /api/agent/analytics/confidence-calibration
+async fn get_confidence_calibration(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    // Bucket entry_confidence into ranges
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT
+            CASE
+                WHEN entry_confidence < 0.6 THEN '50-60%'
+                WHEN entry_confidence < 0.7 THEN '60-70%'
+                WHEN entry_confidence < 0.8 THEN '70-80%'
+                ELSE '80%+'
+            END as bucket,
+            COUNT(*) as total,
+            COALESCE(SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END), 0) as wins
+         FROM agent_trade_context_v2
+         WHERE outcome IS NOT NULL AND outcome != 'rejected' AND entry_confidence IS NOT NULL
+         GROUP BY bucket
+         ORDER BY bucket"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let result: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(bucket, total, wins)| {
+            serde_json::json!({
+                "bucket": bucket,
+                "total": total,
+                "wins": wins,
+                "win_rate": if total > 0 { wins as f64 / total as f64 } else { 0.0 },
+            })
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::success(result)))
+}
+
+/// GET /api/agent/analytics/supplementary-outcomes
+async fn get_supplementary_outcomes(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    // Fetch all completed trades with signal adjustments
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT signal_adjustments, outcome FROM agent_trade_context_v2
+         WHERE outcome IS NOT NULL AND outcome != 'rejected'
+           AND signal_adjustments IS NOT NULL AND signal_adjustments != '[]'"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Parse and aggregate by adjustment type
+    let mut counts: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
+    for (adj_json, outcome) in &rows {
+        if let Ok(adjustments) = serde_json::from_str::<Vec<String>>(adj_json) {
+            for adj in adjustments {
+                let adj_type = adj.split('(').next().unwrap_or(&adj).trim().to_string();
+                let entry = counts.entry(adj_type).or_insert((0, 0));
+                entry.0 += 1; // total
+                if outcome == "win" {
+                    entry.1 += 1; // wins
+                }
+            }
+        }
+    }
+
+    let result: Vec<serde_json::Value> = counts
+        .into_iter()
+        .map(|(adj_type, (total, wins))| {
+            serde_json::json!({
+                "adjustment_type": adj_type,
+                "total": total,
+                "wins": wins,
+                "win_rate": if total > 0 { wins as f64 / total as f64 } else { 0.0 },
+            })
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::success(result)))
+}
+
+#[derive(Deserialize)]
+struct SnapshotQuery {
+    days: Option<i64>,
+}
+
+/// GET /api/agent/analytics/daily-snapshots?days=30
+async fn get_daily_snapshots(
+    State(state): State<AppState>,
+    Query(query): Query<SnapshotQuery>,
+) -> Result<Json<ApiResponse<Vec<serde_json::Value>>>, AppError> {
+    let pool = state.portfolio_manager.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
+        .db().pool();
+
+    let days = query.days.unwrap_or(30).min(365);
+
+    let rows: Vec<(String, i64, i64, i64, i64, i64, i64, i64, i64, f64, Option<String>)> = sqlx::query_as(
+        "SELECT snapshot_date, cycles_run, signals_generated, signals_filtered,
+                signals_ml_approved, signals_ml_rejected, trades_proposed,
+                winning_trades, losing_trades, total_pnl, regime
+         FROM agent_daily_snapshots
+         ORDER BY snapshot_date DESC
+         LIMIT ?"
+    )
+    .bind(days)
+    .fetch_all(pool)
+    .await?;
+
+    let result: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(date, cycles, gen, filt, approved, rejected, proposed, wins, losses, pnl, regime)| {
+            serde_json::json!({
+                "date": date,
+                "cycles_run": cycles,
+                "signals_generated": gen,
+                "signals_filtered": filt,
+                "signals_ml_approved": approved,
+                "signals_ml_rejected": rejected,
+                "trades_proposed": proposed,
+                "winning_trades": wins,
+                "losing_trades": losses,
+                "total_pnl": pnl,
+                "regime": regime,
+            })
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::success(result)))
 }

@@ -1,8 +1,7 @@
 mod charts;
 mod embeds;
 
-use analysis_core::Timeframe;
-use analysis_orchestrator::AnalysisOrchestrator;
+use analysis_core::SignalStrength;
 use serenity::{
     all::{
         Command, CommandDataOption, CommandDataOptionValue, CommandInteraction, CommandOptionType,
@@ -26,8 +25,9 @@ const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 const MAX_WATCHLIST_SIZE: usize = 20;
 
 struct Handler {
-    orchestrator: Arc<AnalysisOrchestrator>,
     http_client: reqwest::Client,
+    api_base: String,
+    polygon_client: Arc<polygon_client::PolygonClient>,
     watchlists: Arc<RwLock<HashMap<UserId, Vec<String>>>>,
     rate_limits: Arc<RwLock<HashMap<UserId, (Instant, u32)>>>,
 }
@@ -125,55 +125,55 @@ impl EventHandler for Handler {
             let symbol = parts[2].to_uppercase();
             let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
-            match self
-                .orchestrator
-                .analyze(&symbol, Timeframe::Day1, 365)
-                .await
-            {
-                Ok(analysis) => {
-                    let embed = embeds::build_analysis_embed(&symbol, &analysis);
-                    match self
-                        .orchestrator
-                        .get_bars(&symbol, Timeframe::Day1, 90)
-                        .await
-                    {
-                        Ok(bars) if !bars.is_empty() => {
-                            match charts::generate_chart(&symbol, &bars, &analysis.overall_signal)
-                                .await
-                            {
-                                Ok(chart_path) => {
-                                    if let Ok(attachment) =
-                                        CreateAttachment::path(&chart_path).await
-                                    {
-                                        let builder = CreateMessage::default()
-                                            .embed(embed)
-                                            .add_file(attachment);
-                                        let _ =
-                                            msg.channel_id.send_message(&ctx.http, builder).await;
-                                        let _ = std::fs::remove_file(chart_path);
-                                    } else {
-                                        let builder = CreateMessage::default().embed(embed);
-                                        let _ =
-                                            msg.channel_id.send_message(&ctx.http, builder).await;
+            let url = format!("{}/api/analyze/{}", self.api_base, symbol);
+            match self.http_client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.json::<serde_json::Value>().await {
+                        Ok(json) => {
+                            let data = json.get("data").unwrap_or(&json);
+                            let embed = embeds::build_analysis_embed_from_json(&symbol, data);
+                            let signal = parse_signal_from_json(data);
+
+                            // Try to generate chart
+                            let now = chrono::Utc::now();
+                            let start = now - chrono::Duration::days(90);
+                            match self.polygon_client.get_aggregates(&symbol, 1, "day", start, now).await {
+                                Ok(bars) if !bars.is_empty() => {
+                                    match charts::generate_chart(&symbol, &bars, &signal).await {
+                                        Ok(chart_path) => {
+                                            if let Ok(attachment) = CreateAttachment::path(&chart_path).await {
+                                                let builder = CreateMessage::default()
+                                                    .embed(embed)
+                                                    .add_file(attachment);
+                                                let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+                                                let _ = std::fs::remove_file(chart_path);
+                                            } else {
+                                                let builder = CreateMessage::default().embed(embed);
+                                                let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+                                            }
+                                        }
+                                        Err(_) => {
+                                            let builder = CreateMessage::default().embed(embed);
+                                            let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+                                        }
                                     }
                                 }
-                                Err(_) => {
+                                _ => {
                                     let builder = CreateMessage::default().embed(embed);
                                     let _ = msg.channel_id.send_message(&ctx.http, builder).await;
                                 }
                             }
                         }
-                        _ => {
-                            let builder = CreateMessage::default().embed(embed);
-                            let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+                        Err(e) => {
+                            let _ = msg.channel_id.say(&ctx.http, format!("Error analyzing {}: {}", symbol, e)).await;
                         }
                     }
                 }
+                Ok(resp) => {
+                    let _ = msg.channel_id.say(&ctx.http, format!("Error analyzing {}: {}", symbol, resp.status())).await;
+                }
                 Err(e) => {
-                    let _ = msg
-                        .channel_id
-                        .say(&ctx.http, format!("Error analyzing {}: {}", symbol, e))
-                        .await;
+                    let _ = msg.channel_id.say(&ctx.http, format!("Error analyzing {}: {}", symbol, e)).await;
                 }
             }
         }
@@ -211,42 +211,68 @@ impl Handler {
 
         let _ = command.defer(&ctx.http).await;
 
-        match self
-            .orchestrator
-            .analyze(&symbol, Timeframe::Day1, 365)
-            .await
-        {
-            Ok(analysis) => {
-                let embed = embeds::build_analysis_embed(&symbol, &analysis);
+        // Use API server for analysis (gets all enhancements: ML weights, supplementary signals, etc.)
+        let url = format!("{}/api/analyze/{}", self.api_base, symbol);
+        match self.http_client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        let data = json.get("data").unwrap_or(&json);
+                        let embed = embeds::build_analysis_embed_from_json(&symbol, data);
 
-                let chart_path = async {
-                    let bars = self
-                        .orchestrator
-                        .get_bars(&symbol, Timeframe::Day1, 90)
-                        .await
-                        .ok()?;
-                    if bars.is_empty() {
-                        return None;
+                        // Fetch bars for chart via Polygon directly (lightweight)
+                        let chart_path = async {
+                            let now = chrono::Utc::now();
+                            let start = now - chrono::Duration::days(90);
+                            let bars = self.polygon_client
+                                .get_aggregates(&symbol, 1, "day", start, now)
+                                .await
+                                .ok()?;
+                            if bars.is_empty() {
+                                return None;
+                            }
+                            let signal = parse_signal_from_json(data);
+                            charts::generate_chart(&symbol, &bars, &signal)
+                                .await
+                                .ok()
+                        }
+                        .await;
+
+                        let mut response = EditInteractionResponse::new().embed(embed);
+
+                        if let Some(ref path) = chart_path {
+                            if let Ok(attachment) = CreateAttachment::path(path).await {
+                                response = response.new_attachment(attachment);
+                            }
+                        }
+
+                        let _ = command.edit_response(&ctx.http, response).await;
+
+                        if let Some(path) = chart_path {
+                            let _ = std::fs::remove_file(path);
+                        }
                     }
-                    charts::generate_chart(&symbol, &bars, &analysis.overall_signal)
-                        .await
-                        .ok()
-                }
-                .await;
-
-                let mut response = EditInteractionResponse::new().embed(embed);
-
-                if let Some(ref path) = chart_path {
-                    if let Ok(attachment) = CreateAttachment::path(path).await {
-                        response = response.new_attachment(attachment);
+                    Err(e) => {
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content(format!("Error parsing analysis for {}: {}", symbol, e)),
+                            )
+                            .await;
                     }
                 }
-
-                let _ = command.edit_response(&ctx.http, response).await;
-
-                if let Some(path) = chart_path {
-                    let _ = std::fs::remove_file(path);
-                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("Error analyzing {} ({}): {}", symbol, status, &body[..body.len().min(200)])),
+                    )
+                    .await;
             }
             Err(e) => {
                 let _ = command
@@ -275,12 +301,7 @@ impl Handler {
 
         let _ = command.defer(&ctx.http).await;
 
-        match self
-            .orchestrator
-            .polygon_client
-            .get_snapshot(&symbol)
-            .await
-        {
+        match self.polygon_client.get_snapshot(&symbol).await {
             Ok(snapshot) => {
                 let embed = embeds::build_price_embed(&symbol, &snapshot);
                 let _ = command
@@ -315,19 +336,25 @@ impl Handler {
 
         let _ = command.defer(&ctx.http).await;
 
-        match self
-            .orchestrator
-            .get_bars(&symbol, Timeframe::Day1, days)
-            .await
-        {
+        let now = chrono::Utc::now();
+        let start = now - chrono::Duration::days(days);
+        match self.polygon_client.get_aggregates(&symbol, 1, "day", start, now).await {
             Ok(bars) if !bars.is_empty() => {
-                let signal = match self
-                    .orchestrator
-                    .analyze(&symbol, Timeframe::Day1, 365)
+                // Get signal from API server
+                let signal = match self.http_client
+                    .get(format!("{}/api/analyze/{}", self.api_base, symbol))
+                    .send()
                     .await
                 {
-                    Ok(a) => a.overall_signal,
-                    Err(_) => analysis_core::SignalStrength::Neutral,
+                    Ok(resp) => {
+                        resp.json::<serde_json::Value>().await.ok()
+                            .and_then(|json| {
+                                let data = json.get("data").unwrap_or(&json);
+                                Some(parse_signal_from_json(data))
+                            })
+                            .unwrap_or(SignalStrength::Neutral)
+                    }
+                    Err(_) => SignalStrength::Neutral,
                 };
 
                 match charts::generate_chart(&symbol, &bars, &signal).await {
@@ -493,7 +520,7 @@ impl Handler {
                 let futs: Vec<_> = symbols
                     .iter()
                     .map(|sym| {
-                        let client = &self.orchestrator.polygon_client;
+                        let client = &self.polygon_client;
                         let sym = sym.clone();
                         async move {
                             let result = client.get_snapshot(&sym).await;
@@ -537,8 +564,7 @@ impl Handler {
     async fn handle_portfolio(&self, ctx: &Context, command: &CommandInteraction) {
         let _ = command.defer(&ctx.http).await;
 
-        let api_base =
-            std::env::var("API_BASE_URL").unwrap_or_else(|_| API_BASE_URL.to_string());
+        let api_base = &self.api_base;
 
         let account_fut = self
             .http_client
@@ -628,15 +654,41 @@ impl Handler {
 
         let _ = command.defer(&ctx.http).await;
 
+        let url1 = format!("{}/api/analyze/{}", self.api_base, sym1);
+        let url2 = format!("{}/api/analyze/{}", self.api_base, sym2);
+
         let (res1, res2) = tokio::join!(
-            self.orchestrator.analyze(&sym1, Timeframe::Day1, 365),
-            self.orchestrator.analyze(&sym2, Timeframe::Day1, 365)
+            self.http_client.get(&url1).send(),
+            self.http_client.get(&url2).send()
         );
 
         let mut embed_list: Vec<CreateEmbed> = Vec::new();
 
         match res1 {
-            Ok(a) => embed_list.push(embeds::build_compare_embed(&sym1, &a)),
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        let data = json.get("data").unwrap_or(&json);
+                        embed_list.push(embeds::build_compare_embed_from_json(&sym1, data));
+                    }
+                    Err(e) => {
+                        embed_list.push(
+                            CreateEmbed::new()
+                                .title(format!("{} - Error", sym1))
+                                .description(format!("{}", e))
+                                .color(0xFF0000),
+                        );
+                    }
+                }
+            }
+            Ok(resp) => {
+                embed_list.push(
+                    CreateEmbed::new()
+                        .title(format!("{} - Error", sym1))
+                        .description(format!("API error: {}", resp.status()))
+                        .color(0xFF0000),
+                );
+            }
             Err(e) => {
                 embed_list.push(
                     CreateEmbed::new()
@@ -648,7 +700,30 @@ impl Handler {
         }
 
         match res2 {
-            Ok(a) => embed_list.push(embeds::build_compare_embed(&sym2, &a)),
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        let data = json.get("data").unwrap_or(&json);
+                        embed_list.push(embeds::build_compare_embed_from_json(&sym2, data));
+                    }
+                    Err(e) => {
+                        embed_list.push(
+                            CreateEmbed::new()
+                                .title(format!("{} - Error", sym2))
+                                .description(format!("{}", e))
+                                .color(0xFF0000),
+                        );
+                    }
+                }
+            }
+            Ok(resp) => {
+                embed_list.push(
+                    CreateEmbed::new()
+                        .title(format!("{} - Error", sym2))
+                        .description(format!("API error: {}", resp.status()))
+                        .color(0xFF0000),
+                );
+            }
             Err(e) => {
                 embed_list.push(
                     CreateEmbed::new()
@@ -683,10 +758,7 @@ impl Handler {
 
         let _ = command.defer(&ctx.http).await;
 
-        let api_base =
-            std::env::var("API_BASE_URL").unwrap_or_else(|_| API_BASE_URL.to_string());
-
-        let url = format!("{}/api/backtest/{}?days={}", api_base, symbol, days);
+        let url = format!("{}/api/backtest/{}?days={}", self.api_base, symbol, days);
 
         match self.http_client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
@@ -934,6 +1006,22 @@ async fn respond_ephemeral(
     command.create_response(&ctx.http, msg).await
 }
 
+/// Parse signal strength from API JSON response
+fn parse_signal_from_json(data: &serde_json::Value) -> SignalStrength {
+    data.get("overall_signal")
+        .and_then(|s| s.as_str())
+        .map(|s| match s {
+            "StrongBuy" => SignalStrength::StrongBuy,
+            "Buy" => SignalStrength::Buy,
+            "WeakBuy" => SignalStrength::WeakBuy,
+            "WeakSell" => SignalStrength::WeakSell,
+            "Sell" => SignalStrength::Sell,
+            "StrongSell" => SignalStrength::StrongSell,
+            _ => SignalStrength::Neutral,
+        })
+        .unwrap_or(SignalStrength::Neutral)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -951,10 +1039,31 @@ async fn main() -> anyhow::Result<()> {
     let polygon_api_key =
         std::env::var("POLYGON_API_KEY").expect("POLYGON_API_KEY must be set");
 
-    let orchestrator = Arc::new(AnalysisOrchestrator::new(polygon_api_key));
+    let api_base = std::env::var("API_BASE_URL").unwrap_or_else(|_| API_BASE_URL.to_string());
+    let polygon_client = Arc::new(polygon_client::PolygonClient::new(polygon_api_key));
 
+    // Build HTTP client with API key for authenticated requests to the API server
+    // Reads API_KEY first, falls back to the first key from API_KEYS (comma-separated)
+    let mut default_headers = reqwest::header::HeaderMap::new();
+    let api_key = std::env::var("API_KEY").ok().or_else(|| {
+        std::env::var("API_KEYS").ok().and_then(|keys| {
+            keys.split(',')
+                .next()
+                .map(|k| k.split(':').next().unwrap_or(k).trim().to_string())
+        })
+    });
+    if let Some(key) = api_key {
+        tracing::info!("API authentication configured for API server requests");
+        default_headers.insert(
+            reqwest::header::HeaderName::from_static("x-api-key"),
+            reqwest::header::HeaderValue::from_str(&key).expect("Invalid API key value"),
+        );
+    } else {
+        tracing::warn!("No API_KEY or API_KEYS set — API server requests will be unauthenticated");
+    }
     let http_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(30))
+        .default_headers(default_headers)
         .build()?;
 
     let intents = GatewayIntents::GUILD_MESSAGES
@@ -962,8 +1071,9 @@ async fn main() -> anyhow::Result<()> {
         | GatewayIntents::MESSAGE_CONTENT;
 
     let handler = Handler {
-        orchestrator,
         http_client,
+        api_base,
+        polygon_client,
         watchlists: Arc::new(RwLock::new(HashMap::new())),
         rate_limits: Arc::new(RwLock::new(HashMap::new())),
     };

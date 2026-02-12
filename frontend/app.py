@@ -37,6 +37,7 @@ from components.flow_map import FlowMapComponent
 from components.smart_watchlist import SmartWatchlistComponent
 from components.tax_dashboard import TaxDashboardComponent
 from components.agent_trades import AgentTradesComponent
+from components.agent_analytics import AgentAnalyticsComponent
 from components.symbol_search import SymbolSearchComponent
 
 # Initialize the Dash app with a modern theme
@@ -417,7 +418,13 @@ app.layout = dbc.Container([
             ], id='tab-live-trade-content', style={'display': 'none'}),
             html.Div([
                 html.Div(id='agent-trade-notification-area'),
+                dbc.Tabs([
+                    dbc.Tab(label="Pending Trades", tab_id="agent-sub-trades"),
+                    dbc.Tab(label="Analytics", tab_id="agent-sub-analytics"),
+                ], id="agent-sub-tabs", active_tab="agent-sub-trades",
+                   className="mb-3", style={"fontSize": "0.85rem"}),
                 dcc.Loading(html.Div(id='agent-trades-section'), type="circle"),
+                dcc.Loading(html.Div(id='agent-analytics-section'), type="circle"),
             ], id='tab-agent-trades-content', style={'display': 'none'}),
         ]),
     ], className="mb-4"),
@@ -2731,20 +2738,36 @@ def execute_live_trade(buy_clicks, sell_clicks, shares, symbol, confirmed):
 # ============================================================================
 
 @app.callback(
-    Output('agent-trades-section', 'children'),
+    [Output('agent-trades-section', 'children'),
+     Output('agent-trades-section', 'style'),
+     Output('agent-analytics-section', 'children'),
+     Output('agent-analytics-section', 'style')],
     [Input('trading-tabs', 'active_tab'),
+     Input('agent-sub-tabs', 'active_tab'),
      Input('agent-trade-notification-area', 'children')],
     prevent_initial_call=True
 )
-def update_agent_trades(active_tab, _notification):
+def update_agent_trades(active_tab, sub_tab, _notification):
     if active_tab != 'tab-agent-trades':
         raise dash.exceptions.PreventUpdate
 
+    show = {'display': 'block'}
+    hide = {'display': 'none'}
+
+    if sub_tab == 'agent-sub-analytics':
+        try:
+            analytics_panel = AgentAnalyticsComponent.create_panel()
+        except Exception as e:
+            analytics_panel = dbc.Alert(f"Error loading analytics: {e}", color="danger")
+        return dash.no_update, hide, analytics_panel, show
+
+    # Default: show pending trades
     try:
         trades = AgentTradesComponent.fetch_pending_trades()
-        return AgentTradesComponent.create_panel(trades)
+        trades_panel = AgentTradesComponent.create_panel(trades)
     except Exception as e:
-        return dbc.Alert(f"Error loading agent trades: {e}", color="danger")
+        trades_panel = dbc.Alert(f"Error loading agent trades: {e}", color="danger")
+    return trades_panel, show, dash.no_update, hide
 
 
 @app.callback(
@@ -3117,6 +3140,8 @@ def navigate_to_analyze(n_clicks, detail_children):
     return 1, dash.no_update
 
 
+server = app.server
+
 if __name__ == '__main__':
     dash_debug = os.environ.get('DASH_DEBUG', 'true').lower() in ('true', '1', 'yes')
     dash_host = os.environ.get('DASH_HOST', '0.0.0.0')
@@ -3125,7 +3150,7 @@ if __name__ == '__main__':
     # Clean up stale processes from previous runs
     _kill_port(dash_port)
 
-    print("🚀 Starting InvestIQ Dash Application...")
-    print(f"📊 Dashboard will be available at: http://localhost:{dash_port}")
-    print("⚠️  Make sure the API server is running on http://localhost:3000")
+    print("Starting InvestIQ Dash Application...")
+    print(f"Dashboard will be available at: http://localhost:{dash_port}")
+    print("Make sure the API server is running on http://localhost:3000")
     app.run_server(debug=dash_debug, host=dash_host, port=dash_port)

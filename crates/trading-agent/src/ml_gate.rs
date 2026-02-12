@@ -38,31 +38,47 @@ impl MLTradeGate {
 
         match self.client.predict_trade(&features).await {
             Ok(prediction) => {
-                // Dual-gate: ML meta-model AND average calibrated confidence must agree
                 let avg_calibrated = if calibrated.is_empty() {
                     signal.confidence
                 } else {
                     calibrated.values().sum::<f64>() / calibrated.len() as f64
                 };
 
-                let ml_approved = prediction.probability > ml_threshold;
-                let confidence_approved = avg_calibrated >= 0.60 || prediction.probability > 0.7;
-                let approved = ml_approved && confidence_approved;
+                // Three paths to approval:
+                // 1. ML model confident: P(profitable) > regime threshold
+                // 2. ML model not negative + orchestrator confident: P >= 0.45 AND signal.confidence >= 0.70
+                // 3. Strong consensus: avg_calibrated >= 0.65 AND P >= 0.40 (ML not bearish)
+                let ml_confident = prediction.probability > ml_threshold;
+                let orchestrator_override = prediction.probability >= 0.45 && signal.confidence >= 0.70;
+                let consensus_override = avg_calibrated >= 0.65 && prediction.probability >= 0.40;
+                let approved = ml_confident || orchestrator_override || consensus_override;
+
+                let gate_reason = if ml_confident {
+                    "ML_PASS"
+                } else if orchestrator_override {
+                    "ORCH_OVERRIDE"
+                } else if consensus_override {
+                    "CONSENSUS"
+                } else {
+                    "FAIL"
+                };
 
                 GateDecision {
                     approved,
                     probability: prediction.probability,
                     reasoning: format!(
-                        "ML model: P(profitable)={:.2} (threshold={:.2}, regime={}), \
-                         expected_return={:.2}%, rec={}, avg_cal_conf={:.2}, dual_gate={}",
+                        "ML: P(win)={:.2} (thr={:.2}, regime={}), \
+                         exp_ret={:.2}%, rec={}, avg_cal={:.2}, orch_conf={:.2}, gate={}",
                         prediction.probability,
                         ml_threshold,
                         regime,
                         prediction.expected_return,
                         prediction.recommendation,
                         avg_calibrated,
-                        if approved { "PASS" } else { "FAIL" }
+                        signal.confidence,
+                        gate_reason,
                     ),
+                    features: Some(features),
                 }
             }
             Err(e) => {
@@ -85,6 +101,7 @@ impl MLTradeGate {
                         fallback_threshold,
                         regime
                     ),
+                    features: None,
                 }
             }
         }
@@ -131,7 +148,8 @@ impl MLTradeGate {
         }
     }
 
-    /// Compute SPY 1-day return from real bars
+    /// Compute SPY 1-day return from real bars (kept for potential future use)
+    #[allow(dead_code)]
     async fn compute_spy_return(&self) -> f64 {
         match self.orchestrator.get_bars("SPY", Timeframe::Day1, 5).await {
             Ok(bars) if bars.len() >= 2 => {
@@ -202,20 +220,21 @@ impl MLTradeGate {
             .map(|r| r.signal.to_score() as f64 / 100.0)
             .unwrap_or(0.0);
 
-        features.insert("tech_signal".to_string(), tech_score);
-        features.insert("fund_signal".to_string(), fund_score);
-        features.insert("quant_signal".to_string(), quant_score);
-        features.insert("sent_signal".to_string(), sent_score);
+        // Use canonical feature names matching FEATURE_NAMES in features.py
+        features.insert("technical_score".to_string(), tech_score);
+        features.insert("fundamental_score".to_string(), fund_score);
+        features.insert("quant_score".to_string(), quant_score);
+        features.insert("sentiment_score".to_string(), sent_score);
 
         // Use calibrated confidences if available, else raw
         features.insert(
-            "tech_confidence".to_string(),
+            "technical_confidence".to_string(),
             *calibrated.get("technical").unwrap_or(
                 &analysis.technical.as_ref().map(|r| r.confidence).unwrap_or(0.0),
             ),
         );
         features.insert(
-            "fund_confidence".to_string(),
+            "fundamental_confidence".to_string(),
             *calibrated.get("fundamental").unwrap_or(
                 &analysis.fundamental.as_ref().map(|r| r.confidence).unwrap_or(0.0),
             ),
@@ -227,7 +246,7 @@ impl MLTradeGate {
             ),
         );
         features.insert(
-            "sent_confidence".to_string(),
+            "sentiment_confidence".to_string(),
             *calibrated.get("sentiment").unwrap_or(
                 &analysis.sentiment.as_ref().map(|r| r.confidence).unwrap_or(0.0),
             ),
@@ -245,17 +264,17 @@ impl MLTradeGate {
             tech_metrics["rsi"].as_f64().unwrap_or(50.0),
         );
         features.insert(
-            "macd_histogram".to_string(),
-            tech_metrics["macd_histogram"].as_f64().unwrap_or(0.0),
-        );
-        features.insert(
-            "bb_width".to_string(),
-            tech_metrics["bb_width"].as_f64().unwrap_or(0.0),
+            "bb_percent_b".to_string(),
+            tech_metrics["bb_percent_b"].as_f64().unwrap_or(0.5),
         );
         features.insert(
             "adx".to_string(),
-            tech_metrics["adx"].as_f64().unwrap_or(0.0),
+            tech_metrics["adx"].as_f64().unwrap_or(20.0),
         );
+        let sma_20 = tech_metrics["sma_20"].as_f64().unwrap_or(0.0);
+        let sma_50 = tech_metrics["sma_50"].as_f64().unwrap_or(0.0);
+        let sma_20_vs_50 = if sma_20 > sma_50 { 1.0 } else if sma_50 > sma_20 { -1.0 } else { 0.0 };
+        features.insert("sma_20_vs_50".to_string(), sma_20_vs_50);
 
         // Fundamental metrics
         let fund_metrics = analysis
@@ -266,11 +285,19 @@ impl MLTradeGate {
             .unwrap_or_default();
         features.insert(
             "pe_ratio".to_string(),
-            fund_metrics["pe_ratio"].as_f64().unwrap_or(0.0),
+            fund_metrics["pe_ratio"].as_f64().unwrap_or(20.0),
         );
         features.insert(
             "debt_to_equity".to_string(),
-            fund_metrics["debt_to_equity"].as_f64().unwrap_or(0.0),
+            fund_metrics["debt_to_equity"].as_f64().unwrap_or(1.0),
+        );
+        features.insert(
+            "revenue_growth".to_string(),
+            fund_metrics["revenue_growth"].as_f64().unwrap_or(0.0),
+        );
+        features.insert(
+            "roic".to_string(),
+            fund_metrics["roic"].as_f64().unwrap_or(0.0),
         );
 
         // Quant metrics
@@ -285,39 +312,63 @@ impl MLTradeGate {
             quant_metrics["sharpe_ratio"].as_f64().unwrap_or(0.0),
         );
         features.insert(
-            "var_95".to_string(),
-            quant_metrics["var_95"].as_f64().unwrap_or(0.0),
+            "volatility".to_string(),
+            quant_metrics["volatility"].as_f64().unwrap_or(0.2),
         );
         features.insert(
             "max_drawdown".to_string(),
             quant_metrics["max_drawdown"].as_f64().unwrap_or(0.0),
         );
         features.insert(
-            "volatility".to_string(),
-            quant_metrics["volatility"].as_f64().unwrap_or(0.0),
+            "beta".to_string(),
+            quant_metrics["beta"].as_f64().unwrap_or(1.0),
         );
 
         // Sentiment metrics
         features.insert(
-            "news_sentiment_score".to_string(),
+            "normalized_sentiment_score".to_string(),
             signal.sentiment_score.unwrap_or(0.0),
         );
+        let sent_metrics = analysis
+            .sentiment
+            .as_ref()
+            .map(|r| &r.metrics)
+            .cloned()
+            .unwrap_or_default();
+        features.insert(
+            "article_count".to_string(),
+            sent_metrics["article_count"].as_f64().unwrap_or(0.0),
+        );
+        features.insert(
+            "direct_mention_ratio".to_string(),
+            sent_metrics["direct_mention_ratio"].as_f64().unwrap_or(0.5),
+        );
 
-        // Market context — richer 9-regime encoding
+        // Market context
         let regime_val = encode_regime(analysis.market_regime.as_deref());
-        features.insert("regime".to_string(), regime_val);
+        features.insert("market_regime_encoded".to_string(), regime_val);
 
-        // Real SPY return and VIX proxy
-        let (spy_return, vix_proxy) =
-            tokio::join!(self.compute_spy_return(), self.compute_vix_proxy());
-        features.insert("spy_return".to_string(), spy_return);
+        // Inter-engine agreement (std dev of scores — lower = more agreement)
+        let active_scores: Vec<f64> = [tech_score, fund_score, quant_score, sent_score]
+            .iter().filter(|&&s| s != 0.0).copied().collect();
+        let agreement = if active_scores.len() >= 2 {
+            let mean = active_scores.iter().sum::<f64>() / active_scores.len() as f64;
+            let var = active_scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / active_scores.len() as f64;
+            var.sqrt()
+        } else {
+            0.0
+        };
+        features.insert("inter_engine_agreement".to_string(), agreement);
+
+        // VIX proxy from real data
+        let vix_proxy = self.compute_vix_proxy().await;
         features.insert("vix_proxy".to_string(), vix_proxy);
 
         tracing::debug!(
-            "ML features: spy_return={:.4}, vix_proxy={:.2}, regime={:.2}",
-            spy_return,
+            "ML features: vix_proxy={:.2}, regime={:.2}, agreement={:.2}",
             vix_proxy,
-            regime_val
+            regime_val,
+            agreement,
         );
 
         features

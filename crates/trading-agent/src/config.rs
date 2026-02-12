@@ -60,6 +60,10 @@ pub struct AgentConfig {
     // Order management (P3)
     pub order_timeout_seconds: u64,        // 30
 
+    // Auto-execution: when true, execute trades immediately instead of pending review
+    pub auto_execute: bool,                // false (safe default — requires explicit opt-in)
+    pub max_concurrent_executions: usize,  // 5 (concurrent order submissions)
+
     // Portfolio guard (P4)
     pub max_open_positions: usize,         // 50 (absolute hard cap)
     pub min_position_value: f64,           // $2500 (dynamic: max_positions = portfolio / min_position_value)
@@ -214,6 +218,14 @@ impl AgentConfig {
             // Order management (P3)
             order_timeout_seconds: env::var("ORDER_TIMEOUT_SECONDS")
                 .unwrap_or_else(|_| "30".to_string())
+                .parse()?,
+
+            // Auto-execution
+            auto_execute: env::var("AUTO_EXECUTE_TRADES")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse()?,
+            max_concurrent_executions: env::var("MAX_CONCURRENT_EXECUTIONS")
+                .unwrap_or_else(|_| "5".to_string())
                 .parse()?,
 
             // Portfolio guard (P4)

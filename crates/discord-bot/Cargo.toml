@@ -9,7 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 analysis-core = { path = "../analysis-core" }
-analysis-orchestrator = { path = "../analysis-orchestrator" }
 polygon-client = { path = "../polygon-client" }
 
 tokio = { workspace = true }
@@ -25,6 +24,5 @@ reqwest = { workspace = true }
 
 futures = "0.3"
 
-# Chart generation
-plotters = "0.3"
-plotters-backend = "0.3"
+# Chart generation via plotly (Python)
+pyo3 = { version = "0.27", features = ["auto-initialize"] }

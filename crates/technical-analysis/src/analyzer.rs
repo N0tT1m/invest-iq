@@ -309,7 +309,7 @@ impl TechnicalAnalysisEngine {
         };
 
         let signal = SignalStrength::from_score(normalized_score as i32);
-        let confidence = (total_weight as f64 / 20.0).min(1.0);
+        let confidence = compute_confidence(&data.signals, bars.len());
 
         let reason = data.signals
             .iter()
@@ -980,7 +980,7 @@ impl TechnicalAnalysisEngine {
         };
 
         let signal = SignalStrength::from_score(normalized_score as i32);
-        let confidence = (total_weight as f64 / 20.0).min(1.0);
+        let confidence = compute_confidence(&data.signals, bars.len());
 
         let reason = data.signals
             .iter()
@@ -1036,4 +1036,53 @@ impl Default for TechnicalAnalysisEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Compute technical analysis confidence based on signal agreement + data quality.
+///
+/// Uses the same approach as fundamental/quant engines:
+/// - Signal agreement: what fraction of signals agree with the majority direction?
+/// - Data quality: more bars = more reliable indicators
+/// - Capped at 0.95 for conservative bias (like other engines)
+fn compute_confidence(signals: &[(&str, i32, bool)], bar_count: usize) -> f64 {
+    if signals.is_empty() {
+        return 0.3;
+    }
+
+    // Signal agreement: what % of weighted signals align with the majority?
+    let mut bullish_weight = 0i32;
+    let mut bearish_weight = 0i32;
+    for (_, weight, bullish) in signals {
+        if *bullish {
+            bullish_weight += weight;
+        } else {
+            bearish_weight += weight;
+        }
+    }
+    let total_weight = bullish_weight + bearish_weight;
+    let majority_weight = bullish_weight.max(bearish_weight);
+    let agreement = if total_weight > 0 {
+        majority_weight as f64 / total_weight as f64
+    } else {
+        0.5
+    };
+
+    // Data quality: more bars = more reliable
+    let data_quality = if bar_count >= 200 {
+        0.9
+    } else if bar_count >= 100 {
+        0.8
+    } else if bar_count >= 50 {
+        0.65
+    } else {
+        0.4
+    };
+
+    // Signal coverage: having more signals is slightly better, but diminishing returns
+    let coverage = (signals.len() as f64 / 15.0).min(1.0);
+
+    // Weighted combination: agreement matters most
+    let confidence = agreement * 0.55 + data_quality * 0.30 + coverage * 0.15;
+
+    confidence.clamp(0.15, 0.95)
 }

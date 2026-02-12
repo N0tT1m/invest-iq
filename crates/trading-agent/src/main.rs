@@ -52,6 +52,7 @@ async fn main() -> Result<()> {
     tracing::info!("  Min confidence: {:.0}%", config.min_confidence * 100.0);
     tracing::info!("  Position limit: dynamic (min ${}/position, hard cap {})", config.min_position_value, config.max_open_positions);
     tracing::info!("  Order timeout: {}s", config.order_timeout_seconds);
+    tracing::info!("  Auto-execute: {} (max {} concurrent)", config.auto_execute, config.max_concurrent_executions);
 
     // 3. Initialize Alpaca (paper trading)
     let alpaca = Arc::new(AlpacaClient::new(
@@ -110,12 +111,12 @@ async fn main() -> Result<()> {
         strategy_manager.strategy_count()
     );
 
-    let executor = TradeExecutor::new(
+    let executor = Arc::new(TradeExecutor::new(
         config.clone(),
         Arc::clone(&alpaca),
         Arc::clone(&risk_manager),
         db_pool.clone(),
-    );
+    ));
     tracing::info!("Trade executor initialized");
 
     // 8b. Cancel stale open orders from previous runs (P3/P8)
@@ -127,6 +128,7 @@ async fn main() -> Result<()> {
     tracing::info!("Position manager initialized");
 
     let notifier = DiscordNotifier::new(config.discord_webhook_url.clone())?;
+    let notifier_webhook_url = config.discord_webhook_url.clone();
     tracing::info!("Discord notifier ready");
 
     // 8c. Initialize metrics (P7) with optional restore from persisted state (P8)
@@ -181,6 +183,12 @@ async fn main() -> Result<()> {
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
+    // Heartbeat: send a Discord status every N cycles so the user knows the bot is alive
+    let heartbeat_interval_cycles: u64 = std::env::var("HEARTBEAT_INTERVAL_CYCLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6); // Every 6 cycles = every 30 min at 5-min intervals
+
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -191,17 +199,47 @@ async fn main() -> Result<()> {
                     &executor,
                     &position_manager,
                     &notifier,
+                    &notifier_webhook_url,
                     &config,
                     &mut agent_metrics,
+                    &state_manager,
                 )
                 .await
                 {
                     tracing::error!("Error in trading cycle: {}", e);
+                    // Notify Discord about cycle errors so the user doesn't think it stopped
+                    notifier
+                        .send_message(&format!(
+                            "**Cycle Error** (cycle #{}): {}\n_Agent is still running._",
+                            agent_metrics.cycles_run + 1,
+                            e
+                        ))
+                        .await
+                        .ok();
                 }
 
                 // Persist metrics after each cycle (P8)
                 if let Err(e) = state_manager.save_metrics(&agent_metrics.to_json()).await {
                     tracing::debug!("Failed to persist metrics: {}", e);
+                }
+
+                // Heartbeat: periodic Discord status so the user knows the bot is alive
+                if heartbeat_interval_cycles > 0
+                    && agent_metrics.cycles_run > 0
+                    && agent_metrics.cycles_run % heartbeat_interval_cycles == 0
+                {
+                    let positions = alpaca.get_positions().await.map(|p| p.len()).unwrap_or(0);
+                    notifier
+                        .send_message(&format!(
+                            "**Heartbeat** | Cycle #{} | {} signals scanned, {} proposed, {} positions | Last cycle: {:.1}s",
+                            agent_metrics.cycles_run,
+                            agent_metrics.signals_generated,
+                            agent_metrics.trades_executed,
+                            positions,
+                            agent_metrics.last_total_duration_ms as f64 / 1000.0,
+                        ))
+                        .await
+                        .ok();
                 }
 
                 // Daily report check (P9): send after 4:05 PM ET
@@ -216,6 +254,7 @@ async fn main() -> Result<()> {
                         &alpaca,
                         &notifier,
                         &agent_metrics,
+                        &state_manager,
                     ).await {
                         tracing::warn!("Failed to send daily report: {}", e);
                     }
@@ -247,11 +286,13 @@ async fn run_trading_cycle(
     scanner: &MarketScanner,
     strategy_manager: &StrategyManager,
     ml_gate: &MLTradeGate,
-    executor: &TradeExecutor,
+    executor: &Arc<TradeExecutor>,
     position_manager: &PositionManager,
     notifier: &DiscordNotifier,
+    notifier_webhook_url: &str,
     config: &AgentConfig,
     metrics: &mut AgentMetrics,
+    state_manager: &StateManager,
 ) -> Result<()> {
     let cycle_start = AgentMetrics::start_timer();
     tracing::info!("Starting trading cycle...");
@@ -265,6 +306,32 @@ async fn run_trading_cycle(
             tracing::error!("Failed to execute position action for {}: {}", action.symbol, e);
         } else {
             metrics.record_trade_result(action.pnl);
+
+            // Record exit in trade context
+            let pending_id: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM pending_trades WHERE symbol = ? AND status = 'executed'
+                 ORDER BY proposed_at DESC LIMIT 1"
+            )
+            .bind(&action.symbol)
+            .fetch_optional(&state_manager.db_pool)
+            .await
+            .ok()
+            .flatten();
+
+            if let Some((trade_id,)) = pending_id {
+                let regime = state_manager.load_state("current_regime").await.ok().flatten();
+                if let Err(e) = state_manager.record_trade_exit(
+                    trade_id,
+                    &action.action_type,
+                    action.price,
+                    action.pnl,
+                    0.0,
+                    regime.as_deref(),
+                ).await {
+                    tracing::debug!("Failed to record trade exit context: {}", e);
+                }
+            }
+
             let message = format!(
                 "**{}** {}\nPrice: ${:.2}\nP/L: ${:.2}",
                 action.action_type, action.symbol, action.price, action.pnl
@@ -281,6 +348,7 @@ async fn run_trading_cycle(
 
     if opportunities.is_empty() {
         metrics.finish_cycle(cycle_start);
+        tracing::info!("Cycle #{} complete (no opportunities found)", metrics.cycles_run);
         return Ok(());
     }
 
@@ -290,6 +358,13 @@ async fn run_trading_cycle(
     metrics.record_analysis_duration(analysis_start);
     metrics.signals_generated += signal_results.len() as u64;
     tracing::info!("Generated {} signals from orchestrator", signal_results.len());
+
+    // Save current regime from first signal
+    if let Some(first) = signal_results.first() {
+        if let Some(regime) = &first.signal.regime {
+            state_manager.save_state("current_regime", regime).await.ok();
+        }
+    }
 
     // 4. Filter by config thresholds
     if !signal_results.is_empty() {
@@ -327,33 +402,20 @@ async fn run_trading_cycle(
         })
         .collect();
 
-    metrics.signals_filtered += filtered.len() as u64;
-    tracing::info!("{} signals passed confidence/win-rate filter", filtered.len());
+    let filtered_count = filtered.len();
+    metrics.signals_filtered += filtered_count as u64;
+    tracing::info!("{} signals passed confidence/win-rate filter", filtered_count);
 
-    // 5. Check if market is open for trading
+    // 5. Check if market is open (for logging only — signals still go to pending review)
     let market_open = scanner.is_market_open();
-    if !market_open {
-        if !filtered.is_empty() {
-            tracing::info!(
-                "Market closed: {} signals identified but trade execution skipped",
-                filtered.len()
-            );
-            for sr in &filtered {
-                tracing::info!(
-                    "  Signal (analysis-only): {} {} @ ${:.2} (confidence: {:.1}%, win rate: {:.1}%)",
-                    sr.signal.action,
-                    sr.signal.symbol,
-                    sr.signal.entry_price,
-                    sr.signal.confidence * 100.0,
-                    sr.signal.historical_win_rate.unwrap_or(0.0) * 100.0
-                );
-            }
-        }
-        metrics.finish_cycle(cycle_start);
-        return Ok(());
+    if !market_open && !filtered.is_empty() {
+        tracing::info!(
+            "Market closed: {} signals will be queued for approval",
+            filtered.len()
+        );
     }
 
-    // 6. For each signal, run through ML gate then execute
+    // 6. For each signal, run through ML gate then propose for review
     let gate_start = AgentMetrics::start_timer();
     let mut approved_signals = Vec::new();
 
@@ -394,57 +456,164 @@ async fn run_trading_cycle(
     }
     metrics.record_gate_duration(gate_start);
 
-    // 7. Propose approved signals for manual review (pending trades)
-    let exec_start = AgentMetrics::start_timer();
-    for (sr, decision) in approved_signals {
-        match executor.propose_signal(&sr.signal, &decision.reasoning).await {
-            Ok(proposal) => {
-                // Save to pending_trades table for human review
-                match executor.save_pending_trade(&proposal).await {
-                    Ok(trade_id) => {
-                        metrics.trades_executed += 1;
-                        tracing::info!(
-                            "Trade #{} proposed for review: {} {} x{} @ ~${:.2}",
-                            trade_id,
-                            proposal.action.to_uppercase(),
-                            proposal.symbol,
-                            proposal.shares,
-                            proposal.entry_price
-                        );
+    // 7. Execute or propose approved signals
+    // Skip symbols that already have a pending (unreviewed) trade
+    let pending_symbols = executor.get_pending_symbols().await.unwrap_or_default();
+    let approved_signals: Vec<_> = approved_signals
+        .into_iter()
+        .filter(|(sr, _)| {
+            if pending_symbols.contains(&sr.signal.symbol) {
+                tracing::info!(
+                    "Skipping {} {} — already has a pending trade awaiting review",
+                    sr.signal.action, sr.signal.symbol
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
 
-                        // Notify via Discord for manual review
-                        let message = format!(
-                            "**Trade Pending Review** (#{trade_id})\n\
-                             **{action} {symbol}** — {shares} shares @ ~${price:.2}\n\
-                             Confidence: {conf:.1}% | ML P(win): {ml:.1}%\n\
-                             {reason}\n\
-                             _Approve or reject in the Agent Trades tab._",
-                            trade_id = trade_id,
-                            action = proposal.action.to_uppercase(),
-                            symbol = proposal.symbol,
-                            shares = proposal.shares,
-                            price = proposal.entry_price,
-                            conf = proposal.confidence * 100.0,
-                            ml = decision.probability * 100.0,
-                            reason = proposal.reason,
-                        );
-                        notifier.send_message(&message).await?;
-                    }
-                    Err(e) => {
-                        metrics.trades_failed += 1;
-                        tracing::warn!("Failed to save pending trade for {}: {}", sr.signal.symbol, e);
+    let approved_signals_count = approved_signals.len();
+    let exec_start = AgentMetrics::start_timer();
+
+    let auto_execute = config.auto_execute && market_open;
+    if auto_execute && !approved_signals.is_empty() {
+        tracing::info!(
+            "Auto-executing {} trades concurrently (max {})",
+            approved_signals.len(),
+            config.max_concurrent_executions
+        );
+    }
+
+    // Concurrent execution via semaphore
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_executions));
+    let mut handles = Vec::new();
+
+    for (sr, decision) in &approved_signals {
+        let signal = sr.signal.clone();
+        let decision_reasoning = decision.reasoning.clone();
+        let decision_probability = decision.probability;
+        let sem = std::sync::Arc::clone(&sem);
+
+        if auto_execute {
+            // Auto-execute: submit order to Alpaca immediately
+            handles.push(tokio::spawn({
+                let executor = std::sync::Arc::clone(executor);
+                let _url = notifier_webhook_url.to_string();
+                async move {
+                    let _permit = sem.acquire().await.unwrap();
+                    match executor.execute_signal(&signal).await {
+                        Ok(exec) => {
+                            tracing::info!(
+                                "Executed {} {} x{} @ ${:.2} (order {})",
+                                exec.action, exec.symbol, exec.quantity, exec.price, exec.order_id
+                            );
+                            let msg = format!(
+                                "**Trade Executed**\n\
+                                 **{} {}** — {} shares @ ${:.2}\n\
+                                 Confidence: {:.1}% | ML P(win): {:.1}%\n\
+                                 Order: {}",
+                                exec.action, exec.symbol, exec.quantity, exec.price,
+                                signal.confidence * 100.0,
+                                decision_probability * 100.0,
+                                exec.order_id,
+                            );
+                            (true, signal.symbol.clone(), Some(msg))
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to execute {} {}: {}", signal.action, signal.symbol, e);
+                            (false, signal.symbol.clone(), None)
+                        }
                     }
                 }
-            }
-            Err(e) => {
+            }));
+        } else {
+            // Manual review: save as pending trade
+            handles.push(tokio::spawn({
+                let executor = std::sync::Arc::clone(executor);
+                async move {
+                    let _permit = sem.acquire().await.unwrap();
+                    match executor.propose_signal(&signal, &decision_reasoning).await {
+                        Ok(proposal) => {
+                            match executor.save_pending_trade(&proposal).await {
+                                Ok(trade_id) => {
+                                    let msg = format!(
+                                        "**Trade Pending Review** (#{trade_id})\n\
+                                         **{action} {symbol}** — {shares} shares @ ~${price:.2}\n\
+                                         Confidence: {conf:.1}% | ML P(win): {ml:.1}%\n\
+                                         {reason}\n\
+                                         _Approve or reject in the Agent Trades tab._",
+                                        trade_id = trade_id,
+                                        action = proposal.action.to_uppercase(),
+                                        symbol = proposal.symbol,
+                                        shares = proposal.shares,
+                                        price = proposal.entry_price,
+                                        conf = proposal.confidence * 100.0,
+                                        ml = decision_probability * 100.0,
+                                        reason = proposal.reason,
+                                    );
+                                    (true, signal.symbol.clone(), Some(msg))
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to save pending trade for {}: {}", signal.symbol, e);
+                                    (false, signal.symbol.clone(), None)
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Skipped {} {}: {}", signal.action, signal.symbol, e);
+                            (false, signal.symbol.clone(), None)
+                        }
+                    }
+                }
+            }));
+        }
+    }
+
+    // Collect results
+    let mut proposed_count = 0usize;
+    for handle in handles {
+        if let Ok((success, _symbol, msg)) = handle.await {
+            if success {
+                metrics.trades_executed += 1;
+                proposed_count += 1;
+            } else {
                 metrics.trades_failed += 1;
-                tracing::warn!("Skipped {} {}: {}", sr.signal.action, sr.signal.symbol, e);
+            }
+            if let Some(msg) = msg {
+                notifier.send_message(&msg).await.ok();
             }
         }
     }
+
+    // Save trade context for all approved signals (fire-and-forget)
+    for (sr, decision) in &approved_signals {
+        if let Ok(Some((trade_id,))) = sqlx::query_as::<_, (i64,)>(
+            "SELECT id FROM pending_trades WHERE symbol = ? ORDER BY id DESC LIMIT 1"
+        )
+        .bind(&sr.signal.symbol)
+        .fetch_optional(&state_manager.db_pool)
+        .await
+        {
+            state_manager.save_trade_context_v2(
+                trade_id, &sr.signal, &sr.analysis, decision
+            ).await.ok();
+        }
+    }
+
     metrics.record_execution_duration(exec_start);
 
     metrics.finish_cycle(cycle_start);
+    tracing::info!(
+        "Cycle #{} complete in {:.1}s — {} opportunities, {} filtered, {} ML-approved, {} proposed",
+        metrics.cycles_run,
+        metrics.last_total_duration_ms as f64 / 1000.0,
+        opportunities.len(),
+        filtered_count,
+        approved_signals_count,
+        proposed_count,
+    );
     Ok(())
 }
 
@@ -453,6 +622,7 @@ async fn send_daily_report(
     alpaca: &Arc<AlpacaClient>,
     notifier: &DiscordNotifier,
     metrics: &AgentMetrics,
+    state_manager: &StateManager,
 ) -> Result<()> {
     let account = alpaca.get_account().await?;
     let positions = alpaca.get_positions().await?;
@@ -498,20 +668,82 @@ async fn send_daily_report(
         0.0
     };
 
+    // Query best/worst trades today
+    let (best, worst) = state_manager
+        .get_best_worst_trades_today()
+        .await
+        .unwrap_or((None, None));
+
+    let best_trade_symbol = best.as_ref().map(|(s, _)| s.clone()).unwrap_or_else(|| "N/A".to_string());
+    let best_trade_pnl = best.map(|(_, p)| p).unwrap_or(0.0);
+    let worst_trade_symbol = worst.as_ref().map(|(s, _)| s.clone()).unwrap_or_else(|| "N/A".to_string());
+    let worst_trade_pnl = worst.map(|(_, p)| p).unwrap_or(0.0);
+
+    // Load regime
+    let regime = state_manager
+        .load_state("current_regime")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "N/A".to_string());
+
+    // Conviction breakdown
+    let conviction = state_manager
+        .get_conviction_breakdown_today()
+        .await
+        .unwrap_or_default();
+    let conviction_high = *conviction.get("HIGH").unwrap_or(&0) as usize;
+    let conviction_moderate = *conviction.get("MODERATE").unwrap_or(&0) as usize;
+    let conviction_low = *conviction.get("LOW").unwrap_or(&0) as usize;
+
+    // Adjustment summary
+    let adjustments = state_manager
+        .get_adjustment_summary_today()
+        .await
+        .unwrap_or_default();
+    let insider_signals = *adjustments.get("insider_buying").unwrap_or(&0);
+    let smart_money_boosts = *adjustments.get("smart_money_boost").unwrap_or(&0);
+    let iv_penalties = *adjustments.get("high_iv_penalty").unwrap_or(&0);
+    let gap_boosts = *adjustments.get("gap_up_boost").unwrap_or(&0)
+        + *adjustments.get("gap_down_boost").unwrap_or(&0);
+
+    // Save daily snapshot
+    let today = chrono::Utc::now()
+        .with_timezone(&chrono_tz::US::Eastern)
+        .format("%Y-%m-%d")
+        .to_string();
+    if let Err(e) = state_manager
+        .save_daily_snapshot(&today, metrics, Some(&regime))
+        .await
+    {
+        tracing::debug!("Failed to save daily snapshot: {}", e);
+    }
+
     let report = DailyReport {
         pnl: daily_pl,
         pnl_percent,
         trade_count: metrics.trades_executed as usize,
         win_rate,
-        best_trade_symbol: "N/A".to_string(),
-        best_trade_pnl: 0.0,
-        worst_trade_symbol: "N/A".to_string(),
-        worst_trade_pnl: 0.0,
+        best_trade_symbol,
+        best_trade_pnl,
+        worst_trade_symbol,
+        worst_trade_pnl,
         account_balance,
         positions_held: positions.len(),
         largest_position,
         exposure_percent: exposure_pct,
-        regime: "N/A".to_string(),
+        regime,
+        signals_generated: metrics.signals_generated,
+        signals_filtered: metrics.signals_filtered,
+        signals_ml_approved: metrics.signals_ml_approved,
+        signals_ml_rejected: metrics.signals_ml_rejected,
+        conviction_high,
+        conviction_moderate,
+        conviction_low,
+        insider_signals,
+        smart_money_boosts,
+        iv_penalties,
+        gap_boosts,
     };
 
     notifier.send_daily_report(&report).await?;

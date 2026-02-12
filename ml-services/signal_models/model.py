@@ -80,7 +80,8 @@ class MetaModel:
         if not self._loaded:
             return 0.5, 0.0, "SKIP"
 
-        dmat = xgb.DMatrix(features.reshape(1, -1))
+        from .features import FEATURE_NAMES
+        dmat = xgb.DMatrix(features.reshape(1, -1), feature_names=FEATURE_NAMES)
         probability = float(self.classifier.predict(dmat)[0])
         expected_return = float(self.regressor.predict(dmat)[0])
 

@@ -135,7 +135,7 @@ pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
 echo -e "${GREEN}✅ Starting Dashboard...${NC}"
-python3 app.py > ../dashboard.log 2>&1 &
+gunicorn --bind 0.0.0.0:8050 --workers 4 --timeout 120 app:server > ../dashboard.log 2>&1 &
 DASH_PID=$!
 
 cd ..

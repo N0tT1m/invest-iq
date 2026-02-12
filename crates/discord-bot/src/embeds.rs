@@ -1,11 +1,8 @@
-use analysis_core::{SignalStrength, UnifiedAnalysis};
+use analysis_core::SignalStrength;
 use polygon_client::SnapshotTicker;
 use serenity::builder::CreateEmbed;
 use serenity::model::Timestamp;
 
-fn to_timestamp(dt: &chrono::DateTime<chrono::Utc>) -> Timestamp {
-    Timestamp::from_unix_timestamp(dt.timestamp()).unwrap_or_else(|_| Timestamp::now())
-}
 
 const COLOR_GREEN: u32 = 0x00FF00;
 const COLOR_RED: u32 = 0xFF0000;
@@ -32,13 +29,16 @@ fn signal_emoji(signal: &SignalStrength) -> &'static str {
     }
 }
 
-pub fn build_analysis_embed(symbol: &str, analysis: &UnifiedAnalysis) -> CreateEmbed {
-    let emoji = signal_emoji(&analysis.overall_signal);
-    let label = analysis.overall_signal.to_label();
-    let color = signal_color(&analysis.overall_signal);
+/// Build analysis embed from API JSON response (uses all server-side enhancements)
+pub fn build_analysis_embed_from_json(symbol: &str, data: &serde_json::Value) -> CreateEmbed {
+    let signal = parse_signal(data.get("overall_signal").and_then(|v| v.as_str()).unwrap_or("Neutral"));
+    let emoji = signal_emoji(&signal);
+    let label = signal.to_label();
+    let color = signal_color(&signal);
 
-    let mut desc = analysis.recommendation.clone();
-    if let Some(tier) = &analysis.conviction_tier {
+    let recommendation = data.get("recommendation").and_then(|v| v.as_str()).unwrap_or("");
+    let mut desc = recommendation.to_string();
+    if let Some(tier) = data.get("conviction_tier").and_then(|v| v.as_str()) {
         desc.push_str(&format!("\n**Conviction:** {}", tier));
     }
 
@@ -50,89 +50,57 @@ pub fn build_analysis_embed(symbol: &str, analysis: &UnifiedAnalysis) -> CreateE
         .footer(serenity::builder::CreateEmbedFooter::new(
             "InvestIQ | Powered by Polygon.io",
         ))
-        .timestamp(to_timestamp(&analysis.timestamp));
+        .timestamp(Timestamp::now());
 
     // Price + regime
-    if let Some(price) = analysis.current_price {
+    if let Some(price) = data.get("current_price").and_then(|v| v.as_f64()) {
         embed = embed.field("Price", format!("${:.2}", price), true);
     }
-    if let Some(regime) = &analysis.market_regime {
+    if let Some(regime) = data.get("market_regime").and_then(|v| v.as_str()) {
         embed = embed.field("Market Regime", regime.replace('_', " "), true);
     }
-    embed = embed.field(
-        "Confidence",
-        format!("{:.0}%", analysis.overall_confidence * 100.0),
-        true,
-    );
+    if let Some(conf) = data.get("overall_confidence").and_then(|v| v.as_f64()) {
+        embed = embed.field("Confidence", format!("{:.0}%", conf * 100.0), true);
+    }
 
     // Engine results
-    if let Some(tech) = &analysis.technical {
-        embed = embed.field(
-            "\u{1F4CA} Technical",
-            format!(
-                "{:?} ({:.0}%) - {}",
-                tech.signal,
-                tech.confidence * 100.0,
-                truncate(&tech.reason, 80)
-            ),
-            false,
-        );
-    }
-    if let Some(fund) = &analysis.fundamental {
-        embed = embed.field(
-            "\u{1F4BC} Fundamental",
-            format!(
-                "{:?} ({:.0}%) - {}",
-                fund.signal,
-                fund.confidence * 100.0,
-                truncate(&fund.reason, 80)
-            ),
-            false,
-        );
-    }
-    if let Some(quant) = &analysis.quantitative {
-        let sharpe = quant
-            .metrics
-            .get("sharpe_ratio")
-            .and_then(|v| v.as_f64())
-            .map(|s| format!(" | Sharpe: {:.2}", s))
-            .unwrap_or_default();
-        embed = embed.field(
-            "\u{1F522} Quantitative",
-            format!(
-                "{:?} ({:.0}%){}",
-                quant.signal,
-                quant.confidence * 100.0,
-                sharpe
-            ),
-            false,
-        );
-    }
-    if let Some(sent) = &analysis.sentiment {
-        embed = embed.field(
-            "\u{1F4F0} Sentiment",
-            format!(
-                "{:?} ({:.0}%) - {}",
-                sent.signal,
-                sent.confidence * 100.0,
-                truncate(&sent.reason, 80)
-            ),
-            false,
-        );
+    for (key, label_str, icon) in &[
+        ("technical", "Technical", "\u{1F4CA}"),
+        ("fundamental", "Fundamental", "\u{1F4BC}"),
+        ("quantitative", "Quantitative", "\u{1F522}"),
+        ("sentiment", "Sentiment", "\u{1F4F0}"),
+    ] {
+        if let Some(engine) = data.get(*key) {
+            let sig = engine.get("signal").and_then(|v| v.as_str()).unwrap_or("?");
+            let conf = engine.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let reason = engine.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+            let extra = if *key == "quantitative" {
+                engine.get("metrics")
+                    .and_then(|m| m.get("sharpe_ratio"))
+                    .and_then(|v| v.as_f64())
+                    .map(|s| format!(" | Sharpe: {:.2}", s))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let text = if reason.is_empty() {
+                format!("{} ({:.0}%){}", sig, conf * 100.0, extra)
+            } else {
+                format!("{} ({:.0}%) - {}{}", sig, conf * 100.0, truncate(reason, 80), extra)
+            };
+            embed = embed.field(format!("{} {}", icon, label_str), text, false);
+        }
     }
 
     // Time horizon signals
-    if let Some(horizons) = &analysis.time_horizon_signals {
+    if let Some(horizons) = data.get("time_horizon_signals") {
         let mut horizon_text = String::new();
         for key in &["short_term", "medium_term", "long_term"] {
             if let Some(h) = horizons.get(key) {
-                let sig = h
-                    .get("signal")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("N/A");
-                let label = key.replace('_', " ");
-                let label = capitalize_first(&label);
-                horizon_text.push_str(&format!("**{}:** {}\n", label, sig));
+                let sig = h.get("signal").and_then(|v| v.as_str()).unwrap_or("N/A");
+                let label_t = key.replace('_', " ");
+                let label_t = capitalize_first(&label_t);
+                horizon_text.push_str(&format!("**{}:** {}\n", label_t, sig));
             }
         }
         if !horizon_text.is_empty() {
@@ -141,15 +109,12 @@ pub fn build_analysis_embed(symbol: &str, analysis: &UnifiedAnalysis) -> CreateE
     }
 
     // Supplementary signals
-    if let Some(supp) = &analysis.supplementary_signals {
+    if let Some(supp) = data.get("supplementary_signals") {
         let mut supp_fields: Vec<(String, String)> = Vec::new();
 
         if let Some(sm) = supp.get("smart_money") {
             if let Some(score) = sm.get("score").and_then(|v| v.as_f64()) {
-                let sig = sm
-                    .get("signal")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("N/A");
+                let sig = sm.get("signal").and_then(|v| v.as_str()).unwrap_or("N/A");
                 supp_fields.push(("Smart Money".into(), format!("{:.0} ({})", score, sig)));
             }
         }
@@ -173,6 +138,18 @@ pub fn build_analysis_embed(symbol: &str, analysis: &UnifiedAnalysis) -> CreateE
     }
 
     embed
+}
+
+fn parse_signal(s: &str) -> SignalStrength {
+    match s {
+        "StrongBuy" => SignalStrength::StrongBuy,
+        "Buy" => SignalStrength::Buy,
+        "WeakBuy" => SignalStrength::WeakBuy,
+        "WeakSell" => SignalStrength::WeakSell,
+        "Sell" => SignalStrength::Sell,
+        "StrongSell" => SignalStrength::StrongSell,
+        _ => SignalStrength::Neutral,
+    }
 }
 
 pub fn build_price_embed(symbol: &str, snapshot: &SnapshotTicker) -> CreateEmbed {
@@ -318,41 +295,37 @@ pub fn build_backtest_embed(symbol: &str, result: &serde_json::Value) -> CreateE
     embed
 }
 
-pub fn build_compare_embed(symbol: &str, analysis: &UnifiedAnalysis) -> CreateEmbed {
-    let emoji = signal_emoji(&analysis.overall_signal);
-    let label = analysis.overall_signal.to_label();
-    let color = signal_color(&analysis.overall_signal);
+/// Build compare embed from API JSON response
+pub fn build_compare_embed_from_json(symbol: &str, data: &serde_json::Value) -> CreateEmbed {
+    let signal = parse_signal(data.get("overall_signal").and_then(|v| v.as_str()).unwrap_or("Neutral"));
+    let emoji = signal_emoji(&signal);
+    let label = signal.to_label();
+    let color = signal_color(&signal);
 
     let mut embed = CreateEmbed::new()
         .title(format!("{} {}", emoji, symbol))
         .color(color)
         .footer(serenity::builder::CreateEmbedFooter::new("InvestIQ"))
-        .timestamp(to_timestamp(&analysis.timestamp));
+        .timestamp(Timestamp::now());
 
     embed = embed.field("Signal", label, true);
-    embed = embed.field(
-        "Confidence",
-        format!("{:.0}%", analysis.overall_confidence * 100.0),
-        true,
-    );
-    if let Some(price) = analysis.current_price {
+    if let Some(conf) = data.get("overall_confidence").and_then(|v| v.as_f64()) {
+        embed = embed.field("Confidence", format!("{:.0}%", conf * 100.0), true);
+    }
+    if let Some(price) = data.get("current_price").and_then(|v| v.as_f64()) {
         embed = embed.field("Price", format!("${:.2}", price), true);
     }
 
-    if let Some(tech) = &analysis.technical {
-        embed = embed.field("Technical", format!("{:?}", tech.signal), true);
-    }
-    if let Some(fund) = &analysis.fundamental {
-        embed = embed.field("Fundamental", format!("{:?}", fund.signal), true);
-    }
-    if let Some(quant) = &analysis.quantitative {
-        embed = embed.field("Quantitative", format!("{:?}", quant.signal), true);
-    }
-    if let Some(sent) = &analysis.sentiment {
-        embed = embed.field("Sentiment", format!("{:?}", sent.signal), true);
+    for key in &["technical", "fundamental", "quantitative", "sentiment"] {
+        if let Some(engine) = data.get(*key) {
+            let sig = engine.get("signal").and_then(|v| v.as_str()).unwrap_or("?");
+            let label_str = capitalize_first(key);
+            embed = embed.field(label_str, sig, true);
+        }
     }
 
-    embed = embed.description(truncate(&analysis.recommendation, 200));
+    let recommendation = data.get("recommendation").and_then(|v| v.as_str()).unwrap_or("");
+    embed = embed.description(truncate(recommendation, 200));
 
     embed
 }
