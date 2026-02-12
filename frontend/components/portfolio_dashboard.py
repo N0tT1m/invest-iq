@@ -1,10 +1,20 @@
-"""Portfolio Dashboard Component - full positions, allocation, and order history."""
-import requests
+"""Portfolio Dashboard Component - positions, allocation, P&L, bank accounts, transfers."""
+import json
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 from dash import html, dcc
 
 from components.config import API_BASE, get_headers, API_TIMEOUT
+
+try:
+    import requests
+except ImportError:
+    pass
+
+DEFAULT_BANK_ACCOUNTS = [
+    {"id": "pnc", "name": "PNC Bank", "lastFour": "4821", "balance": 0, "color": "#F58220"},
+    {"id": "cap1", "name": "Capital One", "lastFour": "7135", "balance": 0, "color": "#D03027"},
+]
 
 
 class PortfolioDashboardComponent:
@@ -55,14 +65,21 @@ class PortfolioDashboardComponent:
             return []
 
     @staticmethod
-    def create_dashboard(account, positions, orders):
+    def create_dashboard(account, positions, orders, bank_accounts=None, transfer_history=None):
         """Build the full portfolio dashboard card.
 
         Args:
             account: Alpaca account dict (or None if not configured)
             positions: list of position dicts
             orders: list of order dicts
+            bank_accounts: list of bank account dicts (from dcc.Store)
+            transfer_history: list of transfer record dicts (from dcc.Store)
         """
+        if bank_accounts is None:
+            bank_accounts = DEFAULT_BANK_ACCOUNTS
+        if transfer_history is None:
+            transfer_history = []
+
         if account is None:
             return dbc.Card([
                 dbc.CardHeader(
@@ -83,21 +100,45 @@ class PortfolioDashboardComponent:
         portfolio_value = float(account.get("portfolio_value", 0))
         buying_power = float(account.get("buying_power", 0))
         cash = float(account.get("cash", 0))
+        equity = float(account.get("equity", 0))
+        last_equity = float(account.get("last_equity", 0) or 0)
+
+        # P&L totals
+        total_unrealized_pl = sum(float(p.get("unrealized_pl", 0)) for p in positions)
+        total_cost_basis = sum(float(p.get("cost_basis", 0)) for p in positions)
+        total_pl_pct = (total_unrealized_pl / total_cost_basis * 100) if total_cost_basis > 0 else 0
+        day_change = equity - last_equity if last_equity > 0 else 0
+        day_change_pct = (day_change / last_equity * 100) if last_equity > 0 else 0
+
+        pl_color = "text-success" if total_unrealized_pl >= 0 else "text-danger"
+        pl_sign = "+" if total_unrealized_pl >= 0 else ""
+        day_color = "text-success" if day_change >= 0 else "text-danger"
+        day_sign = "+" if day_change >= 0 else ""
 
         # --- Row 1: Account Summary ---
         account_row = dbc.Row([
             dbc.Col([
-                html.Small("Portfolio Value", className="text-muted d-block"),
-                html.H4(f"${portfolio_value:,.2f}", className="text-info mb-0"),
-            ], md=4, className="text-center"),
-            dbc.Col([
-                html.Small("Buying Power", className="text-muted d-block"),
-                html.H4(f"${buying_power:,.2f}", className="text-success mb-0"),
-            ], md=4, className="text-center"),
+                html.Small("Equity", className="text-muted d-block"),
+                html.H4(f"${equity:,.2f}", className="text-info mb-0"),
+            ], md=2, className="text-center"),
             dbc.Col([
                 html.Small("Cash", className="text-muted d-block"),
                 html.H4(f"${cash:,.2f}", className="text-warning mb-0"),
-            ], md=4, className="text-center"),
+            ], md=2, className="text-center"),
+            dbc.Col([
+                html.Small("Buying Power", className="text-muted d-block"),
+                html.H4(f"${buying_power:,.2f}", className="text-success mb-0"),
+            ], md=2, className="text-center"),
+            dbc.Col([
+                html.Small("Unrealized P&L", className="text-muted d-block"),
+                html.H4(f"{pl_sign}${total_unrealized_pl:,.2f}", className=f"{pl_color} mb-0"),
+                html.Small(f"{pl_sign}{total_pl_pct:.2f}%", className=pl_color),
+            ], md=3, className="text-center"),
+            dbc.Col([
+                html.Small("Day Change", className="text-muted d-block"),
+                html.H4(f"{day_sign}${day_change:,.2f}", className=f"{day_color} mb-0"),
+                html.Small(f"{day_sign}{day_change_pct:.2f}%", className=day_color),
+            ], md=3, className="text-center"),
         ], className="mb-3")
 
         # --- Row 2: Positions table + Allocation chart ---
@@ -156,7 +197,16 @@ class PortfolioDashboardComponent:
             ], md=5),
         ])
 
-        # --- Row 3: Recent Orders ---
+        # --- P&L Bar Chart ---
+        pl_chart_section = PortfolioDashboardComponent._create_pl_bar_chart(positions)
+
+        # --- Bank Accounts ---
+        bank_section = PortfolioDashboardComponent._create_bank_accounts_section(bank_accounts)
+
+        # --- Transfer Form ---
+        transfer_section = PortfolioDashboardComponent._create_transfer_section(bank_accounts, transfer_history)
+
+        # --- Recent Orders ---
         if orders:
             order_rows = []
             for order in orders[:20]:
@@ -244,6 +294,12 @@ class PortfolioDashboardComponent:
                 html.Hr(),
                 positions_row,
                 html.Hr(),
+                pl_chart_section,
+                html.Hr(),
+                bank_section,
+                html.Hr(),
+                transfer_section,
+                html.Hr(),
                 orders_section,
             ]),
         ])
@@ -287,3 +343,167 @@ class PortfolioDashboardComponent:
             showlegend=False,
         )
         return fig
+
+    @staticmethod
+    def _create_pl_bar_chart(positions):
+        """Create a horizontal bar chart showing P&L per position."""
+        if not positions:
+            return html.Div()
+
+        sorted_positions = sorted(
+            positions,
+            key=lambda p: float(p.get("unrealized_pl", 0)),
+            reverse=True,
+        )
+
+        symbols = [p.get("symbol", "?") for p in sorted_positions]
+        pnl_values = [float(p.get("unrealized_pl", 0)) for p in sorted_positions]
+        colors = ["#00CC96" if v >= 0 else "#EF553B" for v in pnl_values]
+
+        fig = go.Figure(data=[go.Bar(
+            y=symbols,
+            x=pnl_values,
+            orientation="h",
+            marker=dict(color=colors),
+            text=[f"${v:+,.2f}" for v in pnl_values],
+            textposition="auto",
+            textfont=dict(size=11),
+        )])
+        fig.update_layout(
+            template="plotly_dark",
+            height=max(200, len(symbols) * 40),
+            margin=dict(l=60, r=20, t=10, b=10),
+            xaxis=dict(title="P&L ($)", gridcolor="rgba(255,255,255,0.1)"),
+            yaxis=dict(autorange="reversed"),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        fig.add_vline(x=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+
+        return html.Div([
+            html.H6("P&L by Position", className="mb-2"),
+            dcc.Graph(figure=fig, config={"displayModeBar": False}),
+        ])
+
+    @staticmethod
+    def _create_bank_accounts_section(bank_accounts):
+        """Create bank account cards for PNC and Capital One."""
+        cards = []
+        for bank in bank_accounts:
+            balance = bank.get("balance", 0)
+            color = bank.get("color", "#888")
+            cards.append(
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.I(className="fas fa-university me-2", style={"color": color, "fontSize": "1.3rem"}),
+                                html.Div([
+                                    html.Strong(bank.get("name", "Bank"), className="d-block"),
+                                    html.Small(f"****{bank.get('lastFour', '0000')}", className="text-muted"),
+                                ]),
+                            ], className="d-flex align-items-center mb-2"),
+                            html.H4(f"${balance:,.2f}", className="mb-0"),
+                            html.Small("Transferred total", className="text-muted"),
+                        ]),
+                    ], style={"borderLeft": f"4px solid {color}"}),
+                ], md=6),
+            )
+
+        return html.Div([
+            html.H6("Linked Bank Accounts", className="mb-2"),
+            dbc.Row(cards),
+        ])
+
+    @staticmethod
+    def _create_transfer_section(bank_accounts, transfer_history):
+        """Create the transfer form and history table."""
+        pnc = next((b for b in bank_accounts if b["id"] == "pnc"), bank_accounts[0] if bank_accounts else {})
+        cap1 = next((b for b in bank_accounts if b["id"] == "cap1"), bank_accounts[1] if len(bank_accounts) > 1 else {})
+
+        preset_buttons = []
+        for label, pnc_pct in [("20/80", 20), ("40/60", 40), ("50/50", 50), ("60/40", 60), ("80/20", 80)]:
+            preset_buttons.append(
+                dbc.Button(
+                    label,
+                    id={"type": "transfer-preset-btn", "index": pnc_pct},
+                    color="outline-primary",
+                    size="sm",
+                    className="me-1",
+                )
+            )
+
+        transfer_form = dbc.Card([
+            dbc.CardBody([
+                html.Div([
+                    html.I(className="fas fa-exchange-alt me-2 text-primary"),
+                    html.H6("Transfer Funds", className="mb-0 d-inline"),
+                ], className="d-flex align-items-center mb-3"),
+                dbc.InputGroup([
+                    dbc.InputGroupText("$"),
+                    dbc.Input(
+                        id="transfer-amount-input",
+                        type="number",
+                        placeholder="Enter amount",
+                        min=0,
+                        step=100,
+                    ),
+                ], className="mb-3"),
+                html.Small("Split Ratio (PNC / Capital One)", className="text-muted d-block mb-2"),
+                html.Div(preset_buttons, className="mb-2"),
+                dcc.Slider(
+                    id="transfer-split-slider",
+                    min=0,
+                    max=100,
+                    step=5,
+                    value=40,
+                    marks={0: "0%", 25: "25%", 50: "50%", 75: "75%", 100: "100%"},
+                    tooltip={"placement": "bottom", "always_visible": False},
+                    className="mb-3",
+                ),
+                html.Div(id="transfer-preview", className="mb-3"),
+                dbc.Button(
+                    "Transfer",
+                    id="transfer-confirm-btn",
+                    color="primary",
+                    className="w-100",
+                    disabled=True,
+                ),
+            ]),
+        ])
+
+        # Transfer history
+        if transfer_history:
+            history_rows = []
+            for t in transfer_history[:20]:
+                date_str = t.get("date", "")
+                if date_str and len(date_str) > 10:
+                    date_str = date_str[:10]
+                total = t.get("totalAmount", 0)
+                splits = t.get("splits", [])
+                pnc_split = next((s for s in splits if s.get("bankId") == "pnc"), None)
+                cap1_split = next((s for s in splits if s.get("bankId") == "cap1"), None)
+
+                history_rows.append(html.Tr([
+                    html.Td(date_str, className="small"),
+                    html.Td(f"${total:,.2f}"),
+                    html.Td(f"${pnc_split['amount']:,.2f} ({pnc_split['pct']}%)" if pnc_split else "-"),
+                    html.Td(f"${cap1_split['amount']:,.2f} ({cap1_split['pct']}%)" if cap1_split else "-"),
+                ]))
+
+            history_table = dbc.Table(
+                [html.Thead(html.Tr([
+                    html.Th("Date"), html.Th("Total"),
+                    html.Th("PNC"), html.Th("Capital One"),
+                ]))] + [html.Tbody(history_rows)],
+                bordered=True, hover=True, responsive=True,
+                className="table-dark table-sm mt-3",
+            )
+        else:
+            history_table = html.P("No transfers yet", className="text-muted small mt-3")
+
+        return html.Div([
+            transfer_form,
+            html.H6("Transfer History", className="mt-3 mb-2"),
+            history_table,
+        ])

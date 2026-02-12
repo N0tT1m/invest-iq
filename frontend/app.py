@@ -355,6 +355,11 @@ app.layout = dbc.Container([
     dcc.Store(id='paper-trade-symbol-store', data=''),
     dcc.Store(id='paper-trade-notification-store'),
     dcc.Store(id='live-trade-symbol-store', data=''),
+    dcc.Store(id='bank-accounts-store', storage_type='local', data=[
+        {"id": "pnc", "name": "PNC Bank", "lastFour": "4821", "balance": 0, "color": "#F58220"},
+        {"id": "cap1", "name": "Capital One", "lastFour": "7135", "balance": 0, "color": "#D03027"},
+    ]),
+    dcc.Store(id='transfer-history-store', storage_type='local', data=[]),
     dcc.Store(id='live-trade-notification-store'),
     dbc.Card([
         dbc.CardHeader(
@@ -3112,11 +3117,13 @@ def handle_portfolio_order_actions(cancel_clicks, close_clicks):
     Output('portfolio-dashboard-section', 'children'),
     [Input('analyze-button', 'n_clicks'),
      Input('refresh-button', 'n_clicks'),
-     Input('paper-trade-notification-store', 'data')],
+     Input('paper-trade-notification-store', 'data'),
+     Input('bank-accounts-store', 'data'),
+     Input('transfer-history-store', 'data')],
     [State('symbol-input', 'value')],
     prevent_initial_call=True
 )
-def update_portfolio_dashboard(analyze_clicks, refresh_clicks, notification_data, symbol):
+def update_portfolio_dashboard(analyze_clicks, refresh_clicks, notification_data, bank_accounts, transfer_history, symbol):
     if not symbol:
         return ""
 
@@ -3130,12 +3137,105 @@ def update_portfolio_dashboard(analyze_clicks, refresh_clicks, notification_data
             positions = f_positions.result()
             orders = f_orders.result()
 
-        return PortfolioDashboardComponent.create_dashboard(account, positions, orders)
+        return PortfolioDashboardComponent.create_dashboard(
+            account, positions, orders, bank_accounts, transfer_history
+        )
     except Exception as e:
         return dbc.Card([
             dbc.CardHeader(html.H5("Portfolio Dashboard", className="mb-0")),
             dbc.CardBody(html.P("Data unavailable", className="text-muted"))
         ])
+
+
+# ============================================================================
+# TRANSFER FUNDS CALLBACKS
+# ============================================================================
+
+@app.callback(
+    Output('transfer-split-slider', 'value'),
+    Input({'type': 'transfer-preset-btn', 'index': dash.dependencies.ALL}, 'n_clicks'),
+    prevent_initial_call=True,
+)
+def set_transfer_preset(n_clicks_list):
+    ctx = dash.callback_context
+    if not ctx.triggered or not any(n_clicks_list):
+        raise dash.exceptions.PreventUpdate
+    prop_id = ctx.triggered[0]['prop_id']
+    import json as _json
+    idx = _json.loads(prop_id.split('.')[0])['index']
+    return idx
+
+
+@app.callback(
+    [Output('transfer-preview', 'children'),
+     Output('transfer-confirm-btn', 'disabled')],
+    [Input('transfer-amount-input', 'value'),
+     Input('transfer-split-slider', 'value')],
+)
+def update_transfer_preview(amount, split_pct):
+    if not amount or float(amount) <= 0:
+        return "", True
+
+    amount = float(amount)
+    pnc_amount = round(amount * split_pct / 100, 2)
+    cap1_amount = round(amount - pnc_amount, 2)
+
+    preview = dbc.Row([
+        dbc.Col([
+            html.Small("PNC Bank", className="d-block", style={"color": "#F58220", "fontWeight": "bold"}),
+            html.Span(f"${pnc_amount:,.2f} ({split_pct}%)"),
+        ], md=6),
+        dbc.Col([
+            html.Small("Capital One", className="d-block", style={"color": "#D03027", "fontWeight": "bold"}),
+            html.Span(f"${cap1_amount:,.2f} ({100 - split_pct}%)"),
+        ], md=6),
+    ], className="p-2 rounded", style={"backgroundColor": "rgba(102, 126, 234, 0.08)"})
+
+    return preview, False
+
+
+@app.callback(
+    [Output('bank-accounts-store', 'data'),
+     Output('transfer-history-store', 'data'),
+     Output('transfer-amount-input', 'value')],
+    Input('transfer-confirm-btn', 'n_clicks'),
+    [State('transfer-amount-input', 'value'),
+     State('transfer-split-slider', 'value'),
+     State('bank-accounts-store', 'data'),
+     State('transfer-history-store', 'data')],
+    prevent_initial_call=True,
+)
+def execute_transfer(n_clicks, amount, split_pct, bank_accounts, transfer_history):
+    if not n_clicks or not amount or float(amount) <= 0:
+        raise dash.exceptions.PreventUpdate
+
+    import uuid
+    from datetime import datetime as _dt
+
+    amount = float(amount)
+    pnc_amount = round(amount * split_pct / 100, 2)
+    cap1_amount = round(amount - pnc_amount, 2)
+
+    # Update bank balances
+    for bank in bank_accounts:
+        if bank["id"] == "pnc":
+            bank["balance"] = bank.get("balance", 0) + pnc_amount
+        elif bank["id"] == "cap1":
+            bank["balance"] = bank.get("balance", 0) + cap1_amount
+
+    # Add transfer record
+    record = {
+        "id": str(uuid.uuid4()),
+        "date": _dt.now().isoformat(),
+        "totalAmount": amount,
+        "splits": [
+            {"bankId": "pnc", "bankName": "PNC Bank", "amount": pnc_amount, "pct": split_pct},
+            {"bankId": "cap1", "bankName": "Capital One", "amount": cap1_amount, "pct": 100 - split_pct},
+        ],
+    }
+    transfer_history = [record] + (transfer_history or [])
+
+    return bank_accounts, transfer_history, None
 
 
 # ============================================================================
