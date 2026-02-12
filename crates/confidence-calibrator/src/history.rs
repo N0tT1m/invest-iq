@@ -75,11 +75,17 @@ impl CalibrationRow {
             actual_outcome: self.actual_outcome,
             actual_return: self.actual_return,
             source: self.source,
-            prediction_date: self.prediction_date.parse::<DateTime<Utc>>()
+            prediction_date: self
+                .prediction_date
+                .parse::<DateTime<Utc>>()
                 .unwrap_or_else(|_| Utc::now()),
-            outcome_date: self.outcome_date.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+            outcome_date: self
+                .outcome_date
+                .and_then(|s| s.parse::<DateTime<Utc>>().ok()),
             timeframe: self.timeframe,
-            created_at: self.created_at.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+            created_at: self
+                .created_at
+                .and_then(|s| s.parse::<DateTime<Utc>>().ok()),
         }
     }
 }
@@ -253,10 +259,7 @@ impl CalibrationHistoryStore {
     }
 
     /// Get calibration data as (confidence, outcome) pairs for fitting
-    pub async fn get_calibration_data(
-        &self,
-        source: Option<&str>,
-    ) -> Result<Vec<(f64, bool)>> {
+    pub async fn get_calibration_data(&self, source: Option<&str>) -> Result<Vec<(f64, bool)>> {
         let history = self.get_completed_predictions(source, 1000).await?;
 
         Ok(history
@@ -337,9 +340,10 @@ impl CalibrationHistoryStore {
             / n;
 
         // Accuracy
-        let correct = data.iter().filter(|(conf, outcome)| {
-            (*conf >= 0.5 && *outcome) || (*conf < 0.5 && !*outcome)
-        }).count();
+        let correct = data
+            .iter()
+            .filter(|(conf, outcome)| (*conf >= 0.5 && *outcome) || (*conf < 0.5 && !*outcome))
+            .count();
         let accuracy = correct as f64 / n;
 
         Ok(CalibrationMetrics {
@@ -403,7 +407,8 @@ impl CalibrationMetrics {
             .iter()
             .filter(|b| b.mid_confidence > 0.5)
             .map(|b| b.calibration_gap)
-            .sum::<f64>() > 0.0
+            .sum::<f64>()
+            > 0.0
     }
 
     /// Check if the model is underconfident
@@ -412,7 +417,8 @@ impl CalibrationMetrics {
             .iter()
             .filter(|b| b.mid_confidence > 0.5)
             .map(|b| b.calibration_gap)
-            .sum::<f64>() < 0.0
+            .sum::<f64>()
+            < 0.0
     }
 }
 

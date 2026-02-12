@@ -14,6 +14,7 @@ import torch
 import requests
 import numpy as np
 import pandas as pd
+import transformers
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
@@ -407,7 +408,11 @@ class FinBERTTrainer:
         logger.info("Starting training...")
 
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        # Suppress position_ids UNEXPECTED warning from older FinBERT checkpoints
+        prev_verbosity = transformers.logging.get_verbosity()
+        transformers.logging.set_verbosity_error()
         model = AutoModelForSequenceClassification.from_pretrained(self.model_name, num_labels=3)
+        transformers.logging.set_verbosity(prev_verbosity)
 
         train_tokenized = self.tokenize_dataset(train_dataset, tokenizer)
         eval_tokenized = self.tokenize_dataset(eval_dataset, tokenizer)

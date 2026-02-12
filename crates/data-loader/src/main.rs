@@ -11,52 +11,41 @@
 //!   cargo run -p data-loader -- --all --all-data   # bars + news + features
 //!   cargo run -p data-loader -- --all --bars --news # bars + news only
 
-use analysis_core::{
-    AnalysisResult, AnalystConsensusData, Bar, NewsArticle,
-    SignalStrength,
-};
+use analysis_core::{AnalysisResult, AnalystConsensusData, Bar, NewsArticle, SignalStrength};
 use chrono::{Duration, Utc};
 use fundamental_analysis::FundamentalAnalysisEngine;
 use polygon_client::PolygonClient;
 use quant_analysis::QuantAnalysisEngine;
-use technical_analysis::TechnicalAnalysisEngine;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use technical_analysis::TechnicalAnalysisEngine;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::Semaphore;
 
 const DEFAULT_SYMBOLS: &[&str] = &[
     // Technology (20)
-    "AAPL", "MSFT", "GOOGL", "NVDA", "META", "AVGO", "TSM", "ORCL", "CRM", "AMD",
-    "ADBE", "INTC", "CSCO", "QCOM", "TXN", "NOW", "IBM", "AMAT", "MU", "SNPS",
-    // Healthcare (15)
-    "JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO", "ABT", "DHR", "BMY",
-    "AMGN", "GILD", "MDT", "ISRG", "VRTX",
-    // Financials (15)
-    "JPM", "BAC", "GS", "V", "MA", "BRK.B", "WFC", "MS", "AXP", "SCHW",
-    "BLK", "C", "CB", "MMC", "ICE",
-    // Energy (10)
+    "AAPL", "MSFT", "GOOGL", "NVDA", "META", "AVGO", "TSM", "ORCL", "CRM", "AMD", "ADBE", "INTC",
+    "CSCO", "QCOM", "TXN", "NOW", "IBM", "AMAT", "MU", "SNPS", // Healthcare (15)
+    "JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO", "ABT", "DHR", "BMY", "AMGN", "GILD", "MDT",
+    "ISRG", "VRTX", // Financials (15)
+    "JPM", "BAC", "GS", "V", "MA", "BRK.B", "WFC", "MS", "AXP", "SCHW", "BLK", "C", "CB", "MMC",
+    "ICE", // Energy (10)
     "XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY", "HAL",
     // Consumer Discretionary (15)
-    "AMZN", "TSLA", "HD", "NKE", "SBUX", "MCD", "LOW", "TJX", "BKNG", "CMG",
-    "ORLY", "ROST", "DHI", "LEN", "GM",
-    // Industrials (15)
-    "CAT", "BA", "HON", "UPS", "GE", "RTX", "DE", "LMT", "UNP", "ETN",
-    "WM", "EMR", "ITW", "FDX", "NSC",
-    // Utilities (8)
-    "NEE", "DUK", "SO", "AEP", "D", "SRE", "EXC", "XEL",
-    // Materials (8)
-    "LIN", "APD", "ECL", "SHW", "NEM", "FCX", "DOW", "NUE",
-    // Real Estate (8)
-    "AMT", "PLD", "CCI", "EQIX", "SPG", "PSA", "O", "DLR",
-    // Communications (10)
+    "AMZN", "TSLA", "HD", "NKE", "SBUX", "MCD", "LOW", "TJX", "BKNG", "CMG", "ORLY", "ROST", "DHI",
+    "LEN", "GM", // Industrials (15)
+    "CAT", "BA", "HON", "UPS", "GE", "RTX", "DE", "LMT", "UNP", "ETN", "WM", "EMR", "ITW", "FDX",
+    "NSC", // Utilities (8)
+    "NEE", "DUK", "SO", "AEP", "D", "SRE", "EXC", "XEL", // Materials (8)
+    "LIN", "APD", "ECL", "SHW", "NEM", "FCX", "DOW", "NUE", // Real Estate (8)
+    "AMT", "PLD", "CCI", "EQIX", "SPG", "PSA", "O", "DLR", // Communications (10)
     "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS", "CHTR", "EA", "TTWO", "WBD",
     // Consumer Staples (10)
     "PG", "KO", "PEP", "COST", "WMT", "PM", "MO", "CL", "KHC", "GIS",
     // Mid-caps / high-vol names for diversity (16)
-    "SQ", "SHOP", "SNAP", "ROKU", "DKNG", "COIN", "PLTR", "CRWD",
-    "PANW", "ZS", "NET", "DDOG", "SNOW", "MELI", "SE", "UBER",
+    "SQ", "SHOP", "SNAP", "ROKU", "DKNG", "COIN", "PLTR", "CRWD", "PANW", "ZS", "NET", "DDOG",
+    "SNOW", "MELI", "SE", "UBER",
 ];
 
 /// Minimum bars needed for technical analysis (50) + forward window (20)
@@ -98,11 +87,23 @@ async fn main() -> anyhow::Result<()> {
 
     // If no new flags are set, default to features-only (backward compatible)
     let store_flags = if flag_all_data {
-        StoreFlags { bars: true, news: true, features: true }
+        StoreFlags {
+            bars: true,
+            news: true,
+            features: true,
+        }
     } else if flag_bars || flag_news {
-        StoreFlags { bars: flag_bars, news: flag_news, features: false }
+        StoreFlags {
+            bars: flag_bars,
+            news: flag_news,
+            features: false,
+        }
     } else {
-        StoreFlags { bars: false, news: false, features: true }
+        StoreFlags {
+            bars: false,
+            news: false,
+            features: true,
+        }
     };
 
     let timespan: String = args
@@ -133,7 +134,9 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_CONCURRENCY);
     let concurrency = if concurrency == 0 {
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8)
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(8)
     } else {
         concurrency
     };
@@ -145,8 +148,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.as_str())
         .unwrap_or("portfolio.db");
 
-    let api_key = std::env::var("POLYGON_API_KEY")
-        .expect("POLYGON_API_KEY must be set");
+    let api_key = std::env::var("POLYGON_API_KEY").expect("POLYGON_API_KEY must be set");
 
     // Default to 5500 req/min for bulk loading (Polygon Starter allows ~6000/min).
     // Free tier users should set POLYGON_RATE_LIMIT=5.
@@ -156,7 +158,10 @@ async fn main() -> anyhow::Result<()> {
     let polygon = Arc::new(PolygonClient::new(api_key));
 
     let symbols: Vec<String> = if fetch_tickers {
-        tracing::info!("Fetching active US tickers from Polygon (limit: {})...", limit);
+        tracing::info!(
+            "Fetching active US tickers from Polygon (limit: {})...",
+            limit
+        );
         let tickers = polygon.list_tickers(limit).await?;
         tracing::info!("Fetched {} tickers", tickers.len());
         tickers
@@ -170,20 +175,25 @@ async fn main() -> anyhow::Result<()> {
             .collect()
     } else {
         eprintln!("Usage:");
-        eprintln!("  data-loader --fetch-tickers            Fetch all active US stocks from Polygon");
+        eprintln!(
+            "  data-loader --fetch-tickers            Fetch all active US stocks from Polygon"
+        );
         eprintln!("  data-loader --fetch-tickers --limit N  Fetch up to N tickers (default 5000)");
         eprintln!("  data-loader --all                      Use built-in 150 symbols");
         eprintln!("  data-loader --symbols AAPL MSFT ...    Specific symbols");
-        eprintln!("");
+        eprintln!();
         eprintln!("Data flags (default: features only):");
         eprintln!("  --bars             Store OHLCV bars into training_bars");
         eprintln!("  --news             Fetch news + compute price labels into training_news");
         eprintln!("  --all-data         Everything: bars + news + analysis features");
-        eprintln!("");
+        eprintln!();
         eprintln!("Options:");
         eprintln!("  --dry-run          Print stats without writing to DB");
         eprintln!("  --db PATH          SQLite DB path (default: portfolio.db)");
-        eprintln!("  --concurrency N    Max parallel symbols (default: {})", DEFAULT_CONCURRENCY);
+        eprintln!(
+            "  --concurrency N    Max parallel symbols (default: {})",
+            DEFAULT_CONCURRENCY
+        );
         eprintln!("  --timespan SPAN    Bar timespan (default: day)");
         eprintln!("  --news-limit N     Max articles per symbol (default: 100)");
         std::process::exit(1);
@@ -192,8 +202,13 @@ async fn main() -> anyhow::Result<()> {
     let total_symbols = symbols.len();
     tracing::info!(
         "data-loader: {} symbols, db={}, dry_run={}, concurrency={}, bars={}, news={}, features={}",
-        total_symbols, db_path, dry_run, concurrency,
-        store_flags.bars, store_flags.news, store_flags.features
+        total_symbols,
+        db_path,
+        dry_run,
+        concurrency,
+        store_flags.bars,
+        store_flags.news,
+        store_flags.features
     );
 
     // Open DB (migrations handle table schema via sqlx::migrate!())
@@ -203,14 +218,24 @@ async fn main() -> anyhow::Result<()> {
 
     // Bulk-load SQLite optimizations — use NORMAL sync to avoid corruption risk
     if db_url.starts_with("sqlite") {
-        sqlx::query("PRAGMA journal_mode=WAL").execute(pool.as_ref()).await?;
-        sqlx::query("PRAGMA synchronous=NORMAL").execute(pool.as_ref()).await?;
-        sqlx::query("PRAGMA temp_store=MEMORY").execute(pool.as_ref()).await?;
-        sqlx::query("PRAGMA cache_size=-64000").execute(pool.as_ref()).await?; // 64MB cache
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(pool.as_ref())
+            .await?;
+        sqlx::query("PRAGMA synchronous=NORMAL")
+            .execute(pool.as_ref())
+            .await?;
+        sqlx::query("PRAGMA temp_store=MEMORY")
+            .execute(pool.as_ref())
+            .await?;
+        sqlx::query("PRAGMA cache_size=-64000")
+            .execute(pool.as_ref())
+            .await?; // 64MB cache
     }
 
     // Run migrations to ensure training tables exist
-    sqlx::migrate!("../../migrations/sqlite").run(pool.as_ref()).await?;
+    sqlx::migrate!("../../migrations/sqlite")
+        .run(pool.as_ref())
+        .await?;
 
     // Graceful shutdown: SIGINT + SIGTERM set a flag so in-flight tasks finish
     let shutdown_flag = Arc::new(AtomicBool::new(false));
@@ -283,10 +308,19 @@ async fn main() -> anyhow::Result<()> {
             let _permit = semaphore.acquire().await.unwrap();
 
             let rows = process_symbol(
-                &polygon, &tech_engine, &fund_engine, &quant_engine,
-                &symbol, &spy_bars, pool.as_ref(), dry_run,
-                store_flags, &timespan, news_limit,
-            ).await;
+                &polygon,
+                &tech_engine,
+                &fund_engine,
+                &quant_engine,
+                &symbol,
+                &spy_bars,
+                pool.as_ref(),
+                dry_run,
+                store_flags,
+                &timespan,
+                news_limit,
+            )
+            .await;
 
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -296,7 +330,12 @@ async fn main() -> anyhow::Result<()> {
                     if n > 0 {
                         tracing::info!("[{}/{}] {} => {} rows", done, total_symbols, symbol, n);
                     } else {
-                        tracing::info!("[{}/{}] {} => 0 new rows (data already exists)", done, total_symbols, symbol, );
+                        tracing::info!(
+                            "[{}/{}] {} => 0 new rows (data already exists)",
+                            done,
+                            total_symbols,
+                            symbol,
+                        );
                     }
                 }
                 Err(e) => {
@@ -306,10 +345,11 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // Progress summary every 10 symbols
-            if done % 10 == 0 {
+            if done.is_multiple_of(10) {
                 tracing::info!(
                     "Progress: {}/{} completed, {} rows so far, {} failed",
-                    done, total_symbols,
+                    done,
+                    total_symbols,
                     total_rows.load(Ordering::Relaxed),
                     failed.load(Ordering::Relaxed),
                 );
@@ -331,12 +371,17 @@ async fn main() -> anyhow::Result<()> {
     if remaining > 0 {
         tracing::info!(
             "Shutdown summary: {} completed, {} remaining (skipped), {} total rows, {} failed",
-            done, remaining, rows, fails
+            done,
+            remaining,
+            rows,
+            fails
         );
     } else {
         tracing::info!(
             "Done! {} total rows across {} symbols ({} failed)",
-            rows, total_symbols, fails
+            rows,
+            total_symbols,
+            fails
         );
     }
     Ok(())
@@ -368,7 +413,11 @@ where
                 };
                 tracing::warn!(
                     "{} failed (attempt {}/{}): {} — retrying in {:?}",
-                    label, attempt, max_retries, e, base_delay
+                    label,
+                    attempt,
+                    max_retries,
+                    e,
+                    base_delay
                 );
                 tokio::time::sleep(base_delay).await;
             }
@@ -376,6 +425,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_symbol(
     polygon: &PolygonClient,
     tech_engine: &TechnicalAnalysisEngine,
@@ -400,26 +450,33 @@ async fn process_symbol(
     let fin_label = format!("{symbol}/financials");
     let news_label = format!("{symbol}/news");
 
-    let bars_fut = retry_with_backoff(
-        &bars_label, 3,
-        || async { polygon.get_aggregates(symbol, 1, timespan, start, now).await.map_err(Into::into) },
-    );
+    let bars_fut = retry_with_backoff(&bars_label, 3, || async {
+        polygon
+            .get_aggregates(symbol, 1, timespan, start, now)
+            .await
+            .map_err(Into::into)
+    });
     let fin_fut = async {
         if need_financials {
-            retry_with_backoff(
-                &fin_label, 3,
-                || async { polygon.get_financials(symbol).await.map_err(Into::into) },
-            ).await.unwrap_or_default()
+            retry_with_backoff(&fin_label, 3, || async {
+                polygon.get_financials(symbol).await.map_err(Into::into)
+            })
+            .await
+            .unwrap_or_default()
         } else {
             Vec::new()
         }
     };
     let news_fut = async {
         if need_news {
-            retry_with_backoff(
-                &news_label, 3,
-                || async { polygon.get_news(Some(symbol), news_limit).await.map_err(Into::into) },
-            ).await.unwrap_or_default()
+            retry_with_backoff(&news_label, 3, || async {
+                polygon
+                    .get_news(Some(symbol), news_limit)
+                    .await
+                    .map_err(Into::into)
+            })
+            .await
+            .unwrap_or_default()
         } else {
             Vec::new()
         }
@@ -428,7 +485,12 @@ async fn process_symbol(
     let (bars_result, financials, news) = tokio::join!(bars_fut, fin_fut, news_fut);
 
     let bars = bars_result?;
-    tracing::debug!("{}: {} bars fetched, {} news", symbol, bars.len(), news.len());
+    tracing::debug!(
+        "{}: {} bars fetched, {} news",
+        symbol,
+        bars.len(),
+        news.len()
+    );
 
     let mut count = 0u64;
 
@@ -453,7 +515,12 @@ async fn process_symbol(
     // Generate analysis features (existing behavior)
     if store_flags.features {
         if bars.len() < MIN_WINDOW + FORWARD_20D {
-            tracing::warn!("  {} only has {} bars, need {}", symbol, bars.len(), MIN_WINDOW + FORWARD_20D);
+            tracing::warn!(
+                "  {} only has {} bars, need {}",
+                symbol,
+                bars.len(),
+                MIN_WINDOW + FORWARD_20D
+            );
             return Ok(count);
         }
 
@@ -465,7 +532,15 @@ async fn process_symbol(
         let fund = if !financials.is_empty() {
             let price = bars.last().map(|b| b.close).unwrap_or(0.0);
             fund_engine
-                .analyze_with_consensus(symbol, &financials, Some(price), None, &empty_consensus, None, None)
+                .analyze_with_consensus(
+                    symbol,
+                    &financials,
+                    Some(price),
+                    None,
+                    &empty_consensus,
+                    None,
+                    None,
+                )
                 .ok()
         } else {
             None
@@ -489,7 +564,10 @@ async fn process_symbol(
         while t < max_t {
             let window = &bars[..t];
             let current_price = bars[t - 1].close;
-            let date = bars[t - 1].timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
+            let date = bars[t - 1]
+                .timestamp
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string();
 
             let fwd_5d_idx = (t + FORWARD_5D - 1).min(bars.len() - 1);
             let fwd_20d_idx = (t + FORWARD_20D - 1).min(bars.len() - 1);
@@ -663,15 +741,40 @@ fn build_features(
     }
 
     // Engine signals (4) — sentiment is 0 since we don't have historical news
-    f.insert("technical_score".into(), tech.as_ref().map(|r| r.signal.to_score() as f64).unwrap_or(0.0));
-    f.insert("fundamental_score".into(), fund.as_ref().map(|r| r.signal.to_score() as f64).unwrap_or(0.0));
-    f.insert("quant_score".into(), quant.as_ref().map(|r| r.signal.to_score() as f64).unwrap_or(0.0));
+    f.insert(
+        "technical_score".into(),
+        tech.as_ref()
+            .map(|r| r.signal.to_score() as f64)
+            .unwrap_or(0.0),
+    );
+    f.insert(
+        "fundamental_score".into(),
+        fund.as_ref()
+            .map(|r| r.signal.to_score() as f64)
+            .unwrap_or(0.0),
+    );
+    f.insert(
+        "quant_score".into(),
+        quant
+            .as_ref()
+            .map(|r| r.signal.to_score() as f64)
+            .unwrap_or(0.0),
+    );
     f.insert("sentiment_score".into(), 0.0);
 
     // Engine confidences (4)
-    f.insert("technical_confidence".into(), tech.as_ref().map(|r| r.confidence).unwrap_or(0.0));
-    f.insert("fundamental_confidence".into(), fund.as_ref().map(|r| r.confidence).unwrap_or(0.0));
-    f.insert("quant_confidence".into(), quant.as_ref().map(|r| r.confidence).unwrap_or(0.0));
+    f.insert(
+        "technical_confidence".into(),
+        tech.as_ref().map(|r| r.confidence).unwrap_or(0.0),
+    );
+    f.insert(
+        "fundamental_confidence".into(),
+        fund.as_ref().map(|r| r.confidence).unwrap_or(0.0),
+    );
+    f.insert(
+        "quant_confidence".into(),
+        quant.as_ref().map(|r| r.confidence).unwrap_or(0.0),
+    );
     f.insert("sentiment_confidence".into(), 0.0);
 
     // Technical metrics (4)
@@ -680,7 +783,16 @@ fn build_features(
     f.insert("adx".into(), metric(tech, "adx"));
     let sma20 = metric(tech, "sma_20");
     let sma50 = metric(tech, "sma_50");
-    f.insert("sma_20_vs_50".into(), if sma20 > sma50 { 1.0 } else if sma50 > sma20 { -1.0 } else { 0.0 });
+    f.insert(
+        "sma_20_vs_50".into(),
+        if sma20 > sma50 {
+            1.0
+        } else if sma50 > sma20 {
+            -1.0
+        } else {
+            0.0
+        },
+    );
 
     // Fundamental metrics (4)
     f.insert("pe_ratio".into(), metric(fund, "pe_ratio"));
@@ -701,10 +813,21 @@ fn build_features(
 
     // Market context (3)
     let vol = metric(quant, "volatility");
-    f.insert("market_regime_encoded".into(), if vol > 0.3 { 1.0 } else if vol < 0.1 { -1.0 } else { 0.0 });
+    f.insert(
+        "market_regime_encoded".into(),
+        if vol > 0.3 {
+            1.0
+        } else if vol < 0.1 {
+            -1.0
+        } else {
+            0.0
+        },
+    );
 
     let scores = [
-        f["technical_score"], f["fundamental_score"], f["quant_score"],
+        f["technical_score"],
+        f["fundamental_score"],
+        f["quant_score"],
     ];
     let active: Vec<f64> = scores.iter().copied().filter(|s| *s != 0.0).collect();
     let agreement = if active.len() >= 2 {

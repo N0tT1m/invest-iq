@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "investiq.fullname" . }}-api
+  labels:
+    {{- include "investiq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: {{ .Values.apiServer.service.type }}
+  ports:
+    - port: {{ .Values.apiServer.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "investiq.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+---
+{{- if .Values.frontend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "investiq.fullname" . }}-frontend
+  labels:
+    {{- include "investiq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  type: {{ .Values.frontend.service.type }}
+  ports:
+    - port: {{ .Values.frontend.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "investiq.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+{{- end }}
+---
+{{- if .Values.signalModels.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "investiq.fullname" . }}-signal-models
+  labels:
+    {{- include "investiq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: signal-models
+spec:
+  type: {{ .Values.signalModels.service.type }}
+  ports:
+    - port: {{ .Values.signalModels.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "investiq.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: signal-models
+{{- end }}
+---
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "investiq.fullname" . }}-redis
+  labels:
+    {{- include "investiq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.redis.service.port }}
+      targetPort: redis
+      protocol: TCP
+      name: redis
+  selector:
+    {{- include "investiq.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+{{- end }}

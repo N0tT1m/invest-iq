@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone)]
 pub struct BacktestEngine {
     initial_capital: f64,
-    position_size: f64, // Percentage of capital per trade (0.0 to 1.0)
-    commission_rate: f64, // Commission as percentage (e.g., 0.001 = 0.1%)
-    slippage_rate: f64,   // Slippage as percentage (e.g., 0.0005 = 0.05%)
-    stop_loss_pct: Option<f64>, // Stop loss percentage (e.g., 0.05 = 5%)
+    position_size: f64,           // Percentage of capital per trade (0.0 to 1.0)
+    commission_rate: f64,         // Commission as percentage (e.g., 0.001 = 0.1%)
+    slippage_rate: f64,           // Slippage as percentage (e.g., 0.0005 = 0.05%)
+    stop_loss_pct: Option<f64>,   // Stop loss percentage (e.g., 0.05 = 5%)
     take_profit_pct: Option<f64>, // Take profit percentage (e.g., 0.10 = 10%)
 }
 
@@ -156,7 +156,8 @@ impl BacktestEngine {
                     total_slippage += slippage;
 
                     let entry_cost = pos.shares * pos.entry_price;
-                    let profit_loss = exit_value - entry_cost - pos.entry_commission - pos.entry_slippage;
+                    let profit_loss =
+                        exit_value - entry_cost - pos.entry_commission - pos.entry_slippage;
                     let profit_loss_percent = (profit_loss / entry_cost) * 100.0;
                     let holding_period = (bar.timestamp - pos.entry_date).num_days();
 
@@ -208,7 +209,7 @@ impl BacktestEngine {
                             position = Some(Position {
                                 entry_date: signal.timestamp,
                                 entry_price: current_price,
-                                entry_signal: signal.signal.clone(),
+                                entry_signal: signal.signal,
                                 confidence: signal.confidence,
                                 shares,
                                 entry_commission: commission,
@@ -216,7 +217,9 @@ impl BacktestEngine {
                             });
                         }
                     }
-                    SignalStrength::StrongSell | SignalStrength::Sell | SignalStrength::WeakSell => {
+                    SignalStrength::StrongSell
+                    | SignalStrength::Sell
+                    | SignalStrength::WeakSell => {
                         // Close position if we have one
                         if let Some(pos) = position.take() {
                             let (exit_value, commission, slippage) =
@@ -227,7 +230,8 @@ impl BacktestEngine {
                             total_slippage += slippage;
 
                             let entry_cost = pos.shares * pos.entry_price;
-                            let profit_loss = exit_value - entry_cost - pos.entry_commission - pos.entry_slippage;
+                            let profit_loss =
+                                exit_value - entry_cost - pos.entry_commission - pos.entry_slippage;
                             let profit_loss_percent = (profit_loss / entry_cost) * 100.0;
                             let holding_period = (signal.timestamp - pos.entry_date).num_days();
 
@@ -300,12 +304,14 @@ impl BacktestEngine {
             0.0
         };
 
-        let total_wins: f64 = trades.iter()
+        let total_wins: f64 = trades
+            .iter()
             .filter(|t| t.profit_loss > 0.0)
             .map(|t| t.profit_loss)
             .sum();
 
-        let total_losses: f64 = trades.iter()
+        let total_losses: f64 = trades
+            .iter()
             .filter(|t| t.profit_loss < 0.0)
             .map(|t| t.profit_loss.abs())
             .sum();
@@ -322,18 +328,22 @@ impl BacktestEngine {
             0.0
         };
 
-        let largest_win = trades.iter()
+        let largest_win = trades
+            .iter()
             .map(|t| t.profit_loss)
             .fold(f64::MIN, f64::max);
 
-        let largest_loss = trades.iter()
+        let largest_loss = trades
+            .iter()
             .map(|t| t.profit_loss)
             .fold(f64::MAX, f64::min);
 
         let profit_factor = if total_losses > 0.0 {
             total_wins / total_losses
+        } else if total_wins > 0.0 {
+            f64::INFINITY
         } else {
-            if total_wins > 0.0 { f64::INFINITY } else { 0.0 }
+            0.0
         };
 
         // Calculate max drawdown
@@ -414,15 +424,18 @@ impl BacktestEngine {
         }
 
         // Calculate returns as percentage of initial capital per trade
-        let returns: Vec<f64> = trades.iter()
+        let returns: Vec<f64> = trades
+            .iter()
             .map(|t| (t.profit_loss / self.initial_capital) * 100.0)
             .collect();
 
         let mean_return = returns.iter().sum::<f64>() / returns.len() as f64;
 
-        let variance = returns.iter()
+        let variance = returns
+            .iter()
             .map(|r| (r - mean_return).powi(2))
-            .sum::<f64>() / returns.len() as f64;
+            .sum::<f64>()
+            / returns.len() as f64;
 
         let std_dev = variance.sqrt();
 
@@ -431,9 +444,11 @@ impl BacktestEngine {
         }
 
         // Calculate average holding period in days
-        let avg_holding_days: f64 = trades.iter()
+        let avg_holding_days: f64 = trades
+            .iter()
             .map(|t| t.holding_period_days as f64)
-            .sum::<f64>() / trades.len() as f64;
+            .sum::<f64>()
+            / trades.len() as f64;
 
         // Annualize the Sharpe ratio
         // Sharpe = (Mean Return - Risk Free Rate) / Std Dev

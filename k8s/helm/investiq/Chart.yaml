@@ -1,0 +1,13 @@
+apiVersion: v2
+name: investiq
+description: InvestIQ - AI-Powered Stock Analysis Platform
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - finance
+  - trading
+  - analysis
+  - machine-learning
+maintainers:
+  - name: InvestIQ Team

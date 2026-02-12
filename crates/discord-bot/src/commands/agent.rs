@@ -1,12 +1,12 @@
-use crate::embeds;
-use crate::Handler;
-use crate::respond_ephemeral;
 use super::{get_string_opt, resolve_subcommand};
+use crate::embeds;
+use crate::respond_ephemeral;
+use crate::Handler;
 
 use serenity::all::{
-    CommandDataOption, CommandInteraction, ComponentInteractionDataKind,
-    CreateActionRow, CreateButton, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse,
+    CommandDataOption, CommandInteraction, ComponentInteractionDataKind, CreateActionRow,
+    CreateButton, CreateInteractionResponse, CreateInteractionResponseMessage,
+    EditInteractionResponse,
 };
 use serenity::builder::CreateEmbed;
 use serenity::collector::ComponentInteractionCollector;
@@ -47,29 +47,47 @@ impl Handler {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<serde_json::Value>().await {
                     Ok(json) => {
-                        let trades = json.get("data")
+                        let trades = json
+                            .get("data")
                             .and_then(|d| d.as_array())
                             .cloned()
                             .unwrap_or_default();
-                        let pending: Vec<_> = trades.iter()
+                        let pending: Vec<_> = trades
+                            .iter()
                             .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("pending"))
                             .collect();
                         let embed = embeds::build_agent_pending_embed(&pending);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error parsing trades: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content(format!("Error parsing trades: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -88,24 +106,37 @@ impl Handler {
         // First fetch the trade details
         let detail_url = format!("{}/api/agent/trades", self.api_base);
         let trade_info = match self.api_get(&detail_url).await {
-            Ok(resp) if resp.status().is_success() => {
-                resp.json::<serde_json::Value>().await.ok()
-                    .and_then(|json| {
-                        json.get("data")
-                            .and_then(|d| d.as_array())
-                            .and_then(|arr| arr.iter().find(|t| {
-                                t.get("id").and_then(|i| i.as_i64()).map(|i| i.to_string()) == Some(id_str.clone())
-                            }))
-                            .cloned()
-                    })
-            }
+            Ok(resp) if resp.status().is_success() => resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|json| {
+                    json.get("data")
+                        .and_then(|d| d.as_array())
+                        .and_then(|arr| {
+                            arr.iter().find(|t| {
+                                t.get("id").and_then(|i| i.as_i64()).map(|i| i.to_string())
+                                    == Some(id_str.clone())
+                            })
+                        })
+                        .cloned()
+                }),
             _ => None,
         };
 
         let desc = if let Some(ref trade) = trade_info {
-            let sym = trade.get("symbol").and_then(|v| v.as_str()).unwrap_or("???");
-            let action = trade.get("action").and_then(|v| v.as_str()).unwrap_or("???");
-            let qty = trade.get("quantity").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let sym = trade
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
+            let action = trade
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
+            let qty = trade
+                .get("quantity")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             format!("**{}** {} x {:.1} shares", action.to_uppercase(), sym, qty)
         } else {
             format!("Trade #{}", id_str)
@@ -130,7 +161,7 @@ impl Handler {
                     CreateEmbed::new()
                         .title("Approve Agent Trade?")
                         .description(&desc)
-                        .color(Colour::from(0xFFD700))
+                        .color(Colour::from(0xFFD700)),
                 )
                 .components(components)
                 .ephemeral(true),
@@ -153,43 +184,70 @@ impl Handler {
                 let body = serde_json::json!({"action": "approve"});
                 match self.api_post(&review_url, &body).await {
                     Ok(resp) if resp.status().is_success() => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Trade Approved")
-                                    .description(desc)
-                                    .color(Colour::from(0x00FF00)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Trade Approved")
+                                            .description(desc)
+                                            .color(Colour::from(0x00FF00)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                     Ok(resp) => {
                         let body = resp.text().await.unwrap_or_default();
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Approval Failed")
-                                    .description(format!("API error: {}", &body[..body.len().min(200)]))
-                                    .color(Colour::from(0xFF0000)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Approval Failed")
+                                            .description(format!(
+                                                "API error: {}",
+                                                &body[..body.len().min(200)]
+                                            ))
+                                            .color(Colour::from(0xFF0000)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Approval Failed")
-                                    .description(format!("Error: {}", e))
-                                    .color(Colour::from(0xFF0000)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Approval Failed")
+                                            .description(format!("Error: {}", e))
+                                            .color(Colour::from(0xFF0000)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                 }
             }
             _ => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new()
-                        .embed(CreateEmbed::new()
-                            .title("Cancelled")
-                            .description("Trade approval cancelled.")
-                            .color(Colour::from(0x808080)))
-                        .components(vec![])).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .embed(
+                                CreateEmbed::new()
+                                    .title("Cancelled")
+                                    .description("Trade approval cancelled.")
+                                    .color(Colour::from(0x808080)),
+                            )
+                            .components(vec![]),
+                    )
+                    .await;
             }
         }
     }
@@ -211,21 +269,35 @@ impl Handler {
         let body = serde_json::json!({"action": "reject"});
         match self.api_post(&review_url, &body).await {
             Ok(resp) if resp.status().is_success() => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new()
-                        .embed(CreateEmbed::new()
-                            .title("Trade Rejected")
-                            .description(format!("Trade #{} has been rejected.", id_str))
-                            .color(Colour::from(0xFF0000)))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().embed(
+                            CreateEmbed::new()
+                                .title("Trade Rejected")
+                                .description(format!("Trade #{} has been rejected.", id_str))
+                                .color(Colour::from(0xFF0000)),
+                        ),
+                    )
+                    .await;
             }
             Ok(resp) => {
                 let body = resp.text().await.unwrap_or_default();
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", &body[..body.len().min(200)]))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", &body[..body.len().min(200)])),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -240,21 +312,36 @@ impl Handler {
                     Ok(json) => {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_agent_stats_embed(data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -267,30 +354,47 @@ impl Handler {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<serde_json::Value>().await {
                     Ok(json) => {
-                        let trades = json.get("data")
+                        let trades = json
+                            .get("data")
                             .and_then(|d| d.as_array())
                             .cloned()
                             .unwrap_or_default();
-                        let executed: Vec<_> = trades.iter()
+                        let executed: Vec<_> = trades
+                            .iter()
                             .filter(|t| t.get("status").and_then(|s| s.as_str()) != Some("pending"))
                             .take(10)
                             .collect();
                         let embed = embeds::build_agent_history_embed(&executed);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -305,21 +409,36 @@ impl Handler {
                     Ok(json) => {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_agent_regimes_embed(data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }

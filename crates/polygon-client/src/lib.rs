@@ -1,4 +1,6 @@
-use analysis_core::{Bar, Financials, NewsArticle, AnalysisError, ConsensusRating, AnalystRating};
+pub mod websocket;
+
+use analysis_core::{AnalysisError, AnalystRating, Bar, ConsensusRating, Financials, NewsArticle};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -50,7 +52,10 @@ impl RateLimiter {
             let wait_until = ts.front().unwrap().checked_add(self.window).unwrap();
             let sleep_dur = wait_until.duration_since(now) + std::time::Duration::from_millis(50);
             drop(ts);
-            tracing::debug!("Rate limiter: waiting {:.1}s for Polygon API slot", sleep_dur.as_secs_f64());
+            tracing::debug!(
+                "Rate limiter: waiting {:.1}s for Polygon API slot",
+                sleep_dur.as_secs_f64()
+            );
             tokio::time::sleep(sleep_dur).await;
         }
     }
@@ -120,18 +125,30 @@ impl PolygonClient {
     }
 
     /// Send a request with concurrency limiting, rate limiting, and automatic 429 retry.
-    async fn send_request(&self, builder: reqwest::RequestBuilder) -> Result<reqwest::Response, AnalysisError> {
-        let request = builder.build().map_err(|e| AnalysisError::ApiError(e.to_string()))?;
+    async fn send_request(
+        &self,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, AnalysisError> {
+        let request = builder
+            .build()
+            .map_err(|e| AnalysisError::ApiError(e.to_string()))?;
 
         // Acquire concurrency permit (limits in-flight requests)
-        let _permit = self.concurrency_limit.acquire().await
+        let _permit = self
+            .concurrency_limit
+            .acquire()
+            .await
             .map_err(|_| AnalysisError::ApiError("Concurrency semaphore closed".to_string()))?;
 
         for attempt in 0..3u32 {
             self.rate_limiter.acquire().await;
-            let req_clone = request.try_clone()
+            let req_clone = request
+                .try_clone()
                 .ok_or_else(|| AnalysisError::ApiError("Cannot clone request".to_string()))?;
-            let response = self.client.execute(req_clone).await
+            let response = self
+                .client
+                .execute(req_clone)
+                .await
                 .map_err(|e| AnalysisError::ApiError(e.to_string()))?;
 
             if response.status().as_u16() != 429 {
@@ -139,11 +156,17 @@ impl PolygonClient {
             }
 
             let wait_secs = 2u64;
-            tracing::warn!("Polygon 429 rate limited, waiting {}s before retry {}/3", wait_secs, attempt + 1);
+            tracing::warn!(
+                "Polygon 429 rate limited, waiting {}s before retry {}/3",
+                wait_secs,
+                attempt + 1
+            );
             tokio::time::sleep(Duration::from_secs(wait_secs)).await;
         }
 
-        Err(AnalysisError::ApiError("Rate limited by Polygon after 3 retries".to_string()))
+        Err(AnalysisError::ApiError(
+            "Rate limited by Polygon after 3 retries".to_string(),
+        ))
     }
 
     /// Get aggregates (bars) for a symbol
@@ -165,13 +188,13 @@ impl PolygonClient {
             to.format("%Y-%m-%d")
         );
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("apiKey", &self.api_key),
                 ("adjusted", &"true".to_string()),
                 ("limit", &"50000".to_string()),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         if !response.status().is_success() {
             return Err(AnalysisError::ApiError(format!(
@@ -190,8 +213,7 @@ impl PolygonClient {
             .results
             .into_iter()
             .map(|r| Bar {
-                timestamp: DateTime::from_timestamp_millis(r.t)
-                    .unwrap_or_else(|| Utc::now()),
+                timestamp: DateTime::from_timestamp_millis(r.t).unwrap_or_else(Utc::now),
                 open: r.o,
                 high: r.h,
                 low: r.l,
@@ -206,14 +228,14 @@ impl PolygonClient {
     pub async fn get_financials(&self, symbol: &str) -> Result<Vec<Financials>, AnalysisError> {
         let url = format!("{}/vX/reference/financials", BASE_URL);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("ticker", symbol),
                 ("timeframe", "quarterly"),
                 ("apiKey", &self.api_key),
                 ("limit", "10"),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         if !response.status().is_success() {
             if response.status().as_u16() == 403 || response.status().as_u16() == 401 {
@@ -243,17 +265,50 @@ impl PolygonClient {
                     symbol: symbol.to_string(),
                     fiscal_period: r.fiscal_period,
                     fiscal_year: r.fiscal_year.parse().unwrap_or(0),
-                    revenue: income.get("revenues").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    gross_profit: income.get("gross_profit").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    operating_income: income.get("operating_income_loss").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    net_income: income.get("net_income_loss").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    eps: income.get("basic_earnings_per_share").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    total_assets: balance.get("assets").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    total_liabilities: balance.get("liabilities").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    shareholders_equity: balance.get("equity").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    cash_flow_operating: cash_flow.get("net_cash_flow_from_operating_activities").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    cash_flow_investing: cash_flow.get("net_cash_flow_from_investing_activities").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
-                    cash_flow_financing: cash_flow.get("net_cash_flow_from_financing_activities").and_then(|v| v.get("value")).and_then(|v| v.as_f64()),
+                    revenue: income
+                        .get("revenues")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    gross_profit: income
+                        .get("gross_profit")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    operating_income: income
+                        .get("operating_income_loss")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    net_income: income
+                        .get("net_income_loss")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    eps: income
+                        .get("basic_earnings_per_share")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    total_assets: balance
+                        .get("assets")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    total_liabilities: balance
+                        .get("liabilities")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    shareholders_equity: balance
+                        .get("equity")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    cash_flow_operating: cash_flow
+                        .get("net_cash_flow_from_operating_activities")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    cash_flow_investing: cash_flow
+                        .get("net_cash_flow_from_investing_activities")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
+                    cash_flow_financing: cash_flow
+                        .get("net_cash_flow_from_financing_activities")
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_f64()),
                 }
             })
             .collect())
@@ -267,14 +322,17 @@ impl PolygonClient {
     ) -> Result<Vec<NewsArticle>, AnalysisError> {
         let url = format!("{}/v2/reference/news", BASE_URL);
 
-        let mut query = vec![("apiKey", self.api_key.clone()), ("limit", limit.to_string())];
+        let mut query = vec![
+            ("apiKey", self.api_key.clone()),
+            ("limit", limit.to_string()),
+        ];
         if let Some(sym) = symbol {
             query.push(("ticker", sym.to_string()));
         }
 
-        let response = self.send_request(
-            self.client.get(&url).query(&query)
-        ).await?;
+        let response = self
+            .send_request(self.client.get(&url).query(&query))
+            .await?;
 
         if !response.status().is_success() {
             return Err(AnalysisError::ApiError(format!(
@@ -311,9 +369,9 @@ impl PolygonClient {
     pub async fn get_ticker_details(&self, symbol: &str) -> Result<TickerDetails, AnalysisError> {
         let url = format!("{}/v3/reference/tickers/{}", BASE_URL, symbol);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[("apiKey", &self.api_key)])
-        ).await?;
+        let response = self
+            .send_request(self.client.get(&url).query(&[("apiKey", &self.api_key)]))
+            .await?;
 
         if !response.status().is_success() {
             return Err(AnalysisError::ApiError(format!(
@@ -332,17 +390,21 @@ impl PolygonClient {
     }
 
     /// Get dividend history for a symbol
-    pub async fn get_dividends(&self, symbol: &str, limit: u32) -> Result<Vec<DividendInfo>, AnalysisError> {
+    pub async fn get_dividends(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<DividendInfo>, AnalysisError> {
         let url = format!("{}/v3/reference/dividends", BASE_URL);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("ticker", symbol),
                 ("apiKey", &self.api_key as &str),
                 ("limit", &limit.to_string()),
                 ("order", "desc"),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         if !response.status().is_success() {
             if response.status().as_u16() == 403 || response.status().as_u16() == 401 {
@@ -364,12 +426,19 @@ impl PolygonClient {
     }
 
     /// Get options chain snapshot for an underlying symbol
-    pub async fn get_options_snapshot(&self, underlying: &str) -> Result<Vec<OptionsContractSnapshot>, AnalysisError> {
+    pub async fn get_options_snapshot(
+        &self,
+        underlying: &str,
+    ) -> Result<Vec<OptionsContractSnapshot>, AnalysisError> {
         let url = format!("{}/v3/snapshot/options/{}", BASE_URL, underlying);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[("apiKey", &self.api_key), ("limit", &"250".to_string())])
-        ).await?;
+        let response = self
+            .send_request(
+                self.client
+                    .get(&url)
+                    .query(&[("apiKey", &self.api_key), ("limit", &"250".to_string())]),
+            )
+            .await?;
 
         if !response.status().is_success() {
             if response.status().as_u16() == 403 || response.status().as_u16() == 401 {
@@ -391,16 +460,20 @@ impl PolygonClient {
     }
 
     /// Get insider transactions for a symbol
-    pub async fn get_insider_transactions(&self, symbol: &str, limit: u32) -> Result<Vec<InsiderTransaction>, AnalysisError> {
+    pub async fn get_insider_transactions(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<InsiderTransaction>, AnalysisError> {
         let url = format!("{}/vX/reference/insiders", BASE_URL);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("ticker", symbol),
                 ("apiKey", &self.api_key as &str),
                 ("limit", &limit.to_string()),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         if !response.status().is_success() {
             if response.status().as_u16() == 403 || response.status().as_u16() == 401 {
@@ -428,9 +501,9 @@ impl PolygonClient {
             BASE_URL, symbol
         );
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[("apiKey", &self.api_key)])
-        ).await?;
+        let response = self
+            .send_request(self.client.get(&url).query(&[("apiKey", &self.api_key)]))
+            .await?;
 
         if !response.status().is_success() {
             return Err(AnalysisError::ApiError(format!(
@@ -452,10 +525,7 @@ impl PolygonClient {
     /// Returns price, volume, and change data for the entire market.
     /// Uses a longer timeout since the response is very large (5,000+ tickers).
     pub async fn get_all_snapshots(&self) -> Result<Vec<AllSnapshotsTicker>, AnalysisError> {
-        let url = format!(
-            "{}/v2/snapshot/locale/us/markets/stocks/tickers",
-            BASE_URL
-        );
+        let url = format!("{}/v2/snapshot/locale/us/markets/stocks/tickers", BASE_URL);
 
         // Use a dedicated client with a longer timeout for this heavy endpoint
         let heavy_client = Client::builder()
@@ -477,8 +547,10 @@ impl PolygonClient {
                 tokio::time::sleep(backoff).await;
             }
 
-            let _permit = self.concurrency_limit.acquire().await
-                .map_err(|_| AnalysisError::ApiError("Concurrency semaphore closed".to_string()))?;
+            let _permit =
+                self.concurrency_limit.acquire().await.map_err(|_| {
+                    AnalysisError::ApiError("Concurrency semaphore closed".to_string())
+                })?;
             self.rate_limiter.acquire().await;
 
             let response = match heavy_client
@@ -512,26 +584,25 @@ impl PolygonClient {
                 }
             };
 
-            let snap_response: AllSnapshotsResponse =
-                match serde_json::from_str(&body) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::error!(
-                            "All snapshots JSON parse failed: {}. Body starts with: {}",
-                            e,
-                            &body[..body.len().min(500)]
-                        );
-                        last_err = Some(format!("All snapshots parse error: {}", e));
-                        continue;
-                    }
-                };
+            let snap_response: AllSnapshotsResponse = match serde_json::from_str(&body) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(
+                        "All snapshots JSON parse failed: {}. Body starts with: {}",
+                        e,
+                        &body[..body.len().min(500)]
+                    );
+                    last_err = Some(format!("All snapshots parse error: {}", e));
+                    continue;
+                }
+            };
 
             return Ok(snap_response.tickers.unwrap_or_default());
         }
 
-        Err(AnalysisError::ApiError(
-            last_err.unwrap_or_else(|| "All snapshots failed after retries".to_string()),
-        ))
+        Err(AnalysisError::ApiError(last_err.unwrap_or_else(|| {
+            "All snapshots failed after retries".to_string()
+        })))
     }
 
     /// Get SMA (Simple Moving Average) from Polygon technical indicators API
@@ -544,15 +615,15 @@ impl PolygonClient {
     ) -> Result<Vec<IndicatorValue>, AnalysisError> {
         let url = format!("{}/v1/indicators/sma/{}", BASE_URL, symbol);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("apiKey", self.api_key.as_str()),
                 ("window", &window.to_string()),
                 ("timespan", timespan),
                 ("limit", &limit.to_string()),
                 ("series_type", "close"),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         if !response.status().is_success() {
             return Err(AnalysisError::ApiError(format!(
@@ -580,15 +651,15 @@ impl PolygonClient {
     ) -> Result<Vec<IndicatorValue>, AnalysisError> {
         let url = format!("{}/v1/indicators/rsi/{}", BASE_URL, symbol);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("apiKey", self.api_key.as_str()),
                 ("window", &window.to_string()),
                 ("timespan", timespan),
                 ("limit", &limit.to_string()),
                 ("series_type", "close"),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         if !response.status().is_success() {
             return Err(AnalysisError::ApiError(format!(
@@ -615,14 +686,14 @@ impl PolygonClient {
     ) -> Result<Vec<MacdValue>, AnalysisError> {
         let url = format!("{}/v1/indicators/macd/{}", BASE_URL, symbol);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("apiKey", self.api_key.as_str()),
                 ("timespan", timespan),
                 ("limit", &limit.to_string()),
                 ("series_type", "close"),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         if !response.status().is_success() {
             return Err(AnalysisError::ApiError(format!(
@@ -642,16 +713,22 @@ impl PolygonClient {
 
     /// Get Benzinga consensus ratings for a ticker.
     /// Returns Ok(None) on 403/401 (subscription not available).
-    pub async fn get_consensus_ratings(&self, symbol: &str) -> Result<Option<ConsensusRating>, AnalysisError> {
+    pub async fn get_consensus_ratings(
+        &self,
+        symbol: &str,
+    ) -> Result<Option<ConsensusRating>, AnalysisError> {
         let url = format!("{}/benzinga/v1/consensus-ratings/{}", BASE_URL, symbol);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[("apiKey", &self.api_key)])
-        ).await?;
+        let response = self
+            .send_request(self.client.get(&url).query(&[("apiKey", &self.api_key)]))
+            .await?;
 
         let status = response.status().as_u16();
         if status == 403 || status == 401 {
-            tracing::info!("Benzinga consensus ratings not available (HTTP {}), skipping", status);
+            tracing::info!(
+                "Benzinga consensus ratings not available (HTTP {}), skipping",
+                status
+            );
             return Ok(None);
         }
 
@@ -679,21 +756,28 @@ impl PolygonClient {
 
     /// Get recent Benzinga analyst ratings for a ticker.
     /// Returns Ok(vec![]) on 403/401 (subscription not available).
-    pub async fn get_analyst_ratings(&self, symbol: &str, limit: u32) -> Result<Vec<AnalystRating>, AnalysisError> {
+    pub async fn get_analyst_ratings(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<AnalystRating>, AnalysisError> {
         let url = format!("{}/benzinga/v1/ratings", BASE_URL);
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("apiKey", self.api_key.as_str()),
                 ("ticker", symbol),
                 ("sort", "date.desc"),
                 ("limit", &limit.to_string()),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         let status = response.status().as_u16();
         if status == 403 || status == 401 {
-            tracing::info!("Benzinga analyst ratings not available (HTTP {}), skipping", status);
+            tracing::info!(
+                "Benzinga analyst ratings not available (HTTP {}), skipping",
+                status
+            );
             return Ok(Vec::new());
         }
 
@@ -707,30 +791,42 @@ impl PolygonClient {
             .await
             .map_err(|e| AnalysisError::ApiError(e.to_string()))?;
 
-        Ok(body.results.into_iter().map(|r| AnalystRating {
-            price_target: r.price_target,
-            rating: r.rating,
-            rating_action: r.rating_action,
-            analyst: r.analyst,
-            firm: r.firm,
-            date: r.date,
-        }).collect())
+        Ok(body
+            .results
+            .into_iter()
+            .map(|r| AnalystRating {
+                price_target: r.price_target,
+                rating: r.rating,
+                rating_action: r.rating_action,
+                analyst: r.analyst,
+                firm: r.firm,
+                date: r.date,
+            })
+            .collect())
     }
 
     /// Fetch news from Finnhub as a supplemental source.
     /// Requires FINNHUB_API_KEY env var. Returns empty vec if not configured.
-    pub async fn get_finnhub_news(&self, symbol: &str, days_back: u32) -> Result<Vec<NewsArticle>, AnalysisError> {
+    pub async fn get_finnhub_news(
+        &self,
+        symbol: &str,
+        days_back: u32,
+    ) -> Result<Vec<NewsArticle>, AnalysisError> {
         let api_key = match std::env::var("FINNHUB_API_KEY") {
             Ok(k) if !k.is_empty() => k,
             _ => return Ok(Vec::new()), // Silently skip if not configured
         };
 
         let now = chrono::Utc::now();
-        let from = (now - chrono::Duration::days(days_back as i64)).format("%Y-%m-%d").to_string();
+        let from = (now - chrono::Duration::days(days_back as i64))
+            .format("%Y-%m-%d")
+            .to_string();
         let to = now.format("%Y-%m-%d").to_string();
 
         let url = "https://finnhub.io/api/v1/company-news";
-        let response = self.client.get(url)
+        let response = self
+            .client
+            .get(url)
             .query(&[
                 ("symbol", symbol),
                 ("from", from.as_str()),
@@ -743,30 +839,32 @@ impl PolygonClient {
             .map_err(|e| AnalysisError::ApiError(format!("Finnhub request failed: {}", e)))?;
 
         if !response.status().is_success() {
-            tracing::warn!("Finnhub API returned status {}, skipping", response.status());
+            tracing::warn!(
+                "Finnhub API returned status {}, skipping",
+                response.status()
+            );
             return Ok(Vec::new()); // Don't fail on Finnhub errors
         }
 
-        let finnhub_articles: Vec<FinnhubArticle> = response
-            .json()
-            .await
-            .unwrap_or_default();
+        let finnhub_articles: Vec<FinnhubArticle> = response.json().await.unwrap_or_default();
 
         // Convert to our NewsArticle format
-        Ok(finnhub_articles.into_iter().take(20).map(|a| {
-            NewsArticle {
+        Ok(finnhub_articles
+            .into_iter()
+            .take(20)
+            .map(|a| NewsArticle {
                 id: a.id.to_string(),
                 title: a.headline,
                 author: Some(a.source),
                 published_utc: chrono::DateTime::from_timestamp(a.datetime, 0)
                     .map(|dt| dt.to_utc())
-                    .unwrap_or_else(|| Utc::now()),
+                    .unwrap_or_else(Utc::now),
                 article_url: a.url,
                 tickers: vec![symbol.to_string()],
                 description: Some(a.summary),
                 keywords: vec![a.category],
-            }
-        }).collect())
+            })
+            .collect())
     }
 
     /// Fetch general market news from Finnhub (not symbol-specific).
@@ -778,37 +876,45 @@ impl PolygonClient {
         };
 
         let url = "https://finnhub.io/api/v1/news";
-        let response = self.client.get(url)
-            .query(&[
-                ("category", "general"),
-                ("token", api_key.as_str()),
-            ])
+        let response = self
+            .client
+            .get(url)
+            .query(&[("category", "general"), ("token", api_key.as_str())])
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
             .map_err(|e| AnalysisError::ApiError(format!("Finnhub general news failed: {}", e)))?;
 
         if !response.status().is_success() {
-            tracing::warn!("Finnhub general news returned status {}, skipping", response.status());
+            tracing::warn!(
+                "Finnhub general news returned status {}, skipping",
+                response.status()
+            );
             return Ok(Vec::new());
         }
 
         let articles: Vec<FinnhubArticle> = response.json().await.unwrap_or_default();
 
-        Ok(articles.into_iter().take(20).map(|a| {
-            NewsArticle {
+        Ok(articles
+            .into_iter()
+            .take(20)
+            .map(|a| NewsArticle {
                 id: a.id.to_string(),
                 title: a.headline,
                 author: Some(a.source),
                 published_utc: chrono::DateTime::from_timestamp(a.datetime, 0)
                     .map(|dt| dt.to_utc())
-                    .unwrap_or_else(|| Utc::now()),
+                    .unwrap_or_else(Utc::now),
                 article_url: a.url,
-                tickers: if a.related.is_empty() { vec![] } else { vec![a.related] },
+                tickers: if a.related.is_empty() {
+                    vec![]
+                } else {
+                    vec![a.related]
+                },
                 description: Some(a.summary),
                 keywords: vec![a.category],
-            }
-        }).collect())
+            })
+            .collect())
     }
 
     /// List active US common stock tickers from Polygon reference API.
@@ -819,7 +925,9 @@ impl PolygonClient {
         let page_limit = 1000;
 
         loop {
-            let mut builder = self.client.get(&format!("{}/v3/reference/tickers", BASE_URL))
+            let mut builder = self
+                .client
+                .get(format!("{}/v3/reference/tickers", BASE_URL))
                 .query(&[
                     ("apiKey", self.api_key.as_str()),
                     ("market", "stocks"),
@@ -876,12 +984,16 @@ impl PolygonClient {
 
     /// Search for tickers by name or symbol text.
     /// Uses Polygon's `/v3/reference/tickers?search=...` parameter.
-    pub async fn search_tickers(&self, query: &str, limit: usize) -> Result<Vec<TickerSearchResult>, AnalysisError> {
+    pub async fn search_tickers(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<TickerSearchResult>, AnalysisError> {
         let url = format!("{}/v3/reference/tickers", BASE_URL);
         let limit_str = limit.min(100).to_string();
 
-        let response = self.send_request(
-            self.client.get(&url).query(&[
+        let response = self
+            .send_request(self.client.get(&url).query(&[
                 ("apiKey", self.api_key.as_str()),
                 ("search", query),
                 ("market", "stocks"),
@@ -889,8 +1001,8 @@ impl PolygonClient {
                 ("limit", limit_str.as_str()),
                 ("order", "asc"),
                 ("sort", "ticker"),
-            ])
-        ).await?;
+            ]))
+            .await?;
 
         if !response.status().is_success() {
             return Err(AnalysisError::ApiError(format!(

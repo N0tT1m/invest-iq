@@ -1,17 +1,16 @@
+use analysis_core::{SignalStrength, Timeframe};
 use axum::{
     extract::{Path, Query, State},
     routing::{delete, get, post},
     Json, Router,
 };
 use backtest_engine::{
-    BacktestConfig, BacktestEngine, BacktestResult, BacktestTrade, HistoricalBar,
+    run_monte_carlo, BacktestConfig, BacktestEngine, BacktestResult, BacktestTrade, HistoricalBar,
     MonteCarloResult, Signal, WalkForwardFoldData, WalkForwardResult, WalkForwardRunner,
-    run_monte_carlo,
 };
-use analysis_core::{SignalStrength, Timeframe};
 use chrono::NaiveDate;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -19,7 +18,7 @@ use alpha_decay::{AlphaDecayMonitor, PerformanceSnapshot};
 
 use crate::{combine_pit_signals, get_cached_etf_bars, ApiResponse, AppError, AppState};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RunBacktestRequest {
     pub strategy_name: String,
     pub symbols: Vec<String>,
@@ -38,18 +37,21 @@ pub struct RunBacktestRequest {
     pub rebalance_interval_days: Option<i32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct BacktestSummary {
+    #[schema(value_type = Object)]
     pub backtest: BacktestResult,
     pub trades_count: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct MonteCarloQuery {
     #[serde(default = "default_simulations")]
     pub simulations: i32,
 }
-fn default_simulations() -> i32 { 1000 }
+fn default_simulations() -> i32 {
+    1000
+}
 
 pub fn backtest_routes() -> Router<AppState> {
     Router::new()
@@ -58,8 +60,14 @@ pub fn backtest_routes() -> Router<AppState> {
         .route("/api/backtest/results/:id", get(get_backtest))
         .route("/api/backtest/results/:id", delete(delete_backtest))
         .route("/api/backtest/results/:id/trades", get(get_backtest_trades))
-        .route("/api/backtest/results/:id/monte-carlo", get(get_monte_carlo))
-        .route("/api/backtest/strategy/:name", get(get_backtests_by_strategy))
+        .route(
+            "/api/backtest/results/:id/monte-carlo",
+            get(get_monte_carlo),
+        )
+        .route(
+            "/api/backtest/strategy/:name",
+            get(get_backtests_by_strategy),
+        )
         .route("/api/backtest/walk-forward", post(run_walk_forward))
 }
 
@@ -102,36 +110,50 @@ async fn fetch_bars_and_signals(
     for symbol in symbols {
         let symbol = symbol.to_uppercase();
 
-        let bars = state.orchestrator
+        let bars = state
+            .orchestrator
             .get_bars(&symbol, Timeframe::Day1, days)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to fetch bars for {}: {}", symbol, e))?;
 
         if bars.len() < 50 {
-            tracing::warn!("Insufficient bars for {}: {} (need >= 50)", symbol, bars.len());
+            tracing::warn!(
+                "Insufficient bars for {}: {} (need >= 50)",
+                symbol,
+                bars.len()
+            );
             continue;
         }
 
-        let hist_bars: Vec<HistoricalBar> = bars.iter().map(|bar| HistoricalBar {
-            date: bar.timestamp.format("%Y-%m-%d").to_string(),
-            open: Decimal::from_f64(bar.open).unwrap_or_default(),
-            high: Decimal::from_f64(bar.high).unwrap_or_default(),
-            low: Decimal::from_f64(bar.low).unwrap_or_default(),
-            close: Decimal::from_f64(bar.close).unwrap_or_default(),
-            volume: bar.volume,
-        }).collect();
+        let hist_bars: Vec<HistoricalBar> = bars
+            .iter()
+            .map(|bar| HistoricalBar {
+                date: bar.timestamp.format("%Y-%m-%d").to_string(),
+                open: Decimal::from_f64(bar.open).unwrap_or_default(),
+                high: Decimal::from_f64(bar.high).unwrap_or_default(),
+                low: Decimal::from_f64(bar.low).unwrap_or_default(),
+                close: Decimal::from_f64(bar.close).unwrap_or_default(),
+                volume: bar.volume,
+            })
+            .collect();
 
         for i in (50..bars.len()).step_by(sample_interval) {
             let bar_slice = &bars[..i];
             let bar = &bars[i];
 
             let tech_result = tech_engine.analyze_enhanced(&symbol, bar_slice, None).ok();
-            let quant_result = quant_engine.analyze_with_benchmark_and_rate(
-                &symbol,
-                bar_slice,
-                if spy_bars.len() >= 30 { Some(&spy_bars) } else { None },
-                None,
-            ).ok();
+            let quant_result = quant_engine
+                .analyze_with_benchmark_and_rate(
+                    &symbol,
+                    bar_slice,
+                    if spy_bars.len() >= 30 {
+                        Some(&spy_bars)
+                    } else {
+                        None
+                    },
+                    None,
+                )
+                .ok();
 
             let (signal, confidence) = combine_pit_signals(&tech_result, &quant_result);
             let action = signal_to_action(&signal);
@@ -143,8 +165,11 @@ async fn fetch_bars_and_signals(
                     signal_type: signal_to_display(&signal).to_string(),
                     confidence,
                     price: Decimal::from_f64(bar.close).unwrap_or_default(),
-                    reason: format!("{:?} signal at {:.0}% confidence (point-in-time)",
-                        signal, confidence * 100.0),
+                    reason: format!(
+                        "{:?} signal at {:.0}% confidence (point-in-time)",
+                        signal,
+                        confidence * 100.0
+                    ),
                     order_type: None,
                     limit_price: None,
                     limit_expiry_bars: None,
@@ -160,25 +185,44 @@ async fn fetch_bars_and_signals(
 
 /// Helper: convert cached ETF bars to HistoricalBar format for benchmark.
 fn etf_bars_to_historical(bars: &[analysis_core::Bar]) -> Vec<HistoricalBar> {
-    bars.iter().map(|b| HistoricalBar {
-        date: b.timestamp.format("%Y-%m-%d").to_string(),
-        open: Decimal::from_f64(b.open).unwrap_or_default(),
-        high: Decimal::from_f64(b.high).unwrap_or_default(),
-        low: Decimal::from_f64(b.low).unwrap_or_default(),
-        close: Decimal::from_f64(b.close).unwrap_or_default(),
-        volume: b.volume,
-    }).collect()
+    bars.iter()
+        .map(|b| HistoricalBar {
+            date: b.timestamp.format("%Y-%m-%d").to_string(),
+            open: Decimal::from_f64(b.open).unwrap_or_default(),
+            high: Decimal::from_f64(b.high).unwrap_or_default(),
+            low: Decimal::from_f64(b.low).unwrap_or_default(),
+            close: Decimal::from_f64(b.close).unwrap_or_default(),
+            volume: b.volume,
+        })
+        .collect()
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/backtest/run",
+    tag = "Backtest",
+    request_body = RunBacktestRequest,
+    responses(
+        (status = 200, description = "Backtest completed successfully", body = BacktestSummary),
+        (status = 500, description = "Backtest engine error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 /// Run a backtest
-async fn run_backtest(
+pub(crate) async fn run_backtest(
     State(state): State<AppState>,
     Json(req): Json<RunBacktestRequest>,
 ) -> Result<Json<ApiResponse<BacktestSummary>>, AppError> {
-    let backtest_db = state.backtest_db.as_ref()
+    let backtest_db = state
+        .backtest_db
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Backtest database not configured"))?;
 
-    tracing::info!("Running backtest: {} for {:?}", req.strategy_name, req.symbols);
+    tracing::info!(
+        "Running backtest: {} for {:?}",
+        req.strategy_name,
+        req.symbols
+    );
 
     let start = NaiveDate::parse_from_str(&req.start_date, "%Y-%m-%d")
         .map_err(|e| anyhow::anyhow!("Invalid start_date format (use YYYY-MM-DD): {}", e))?;
@@ -190,13 +234,22 @@ async fn run_backtest(
         return Err(anyhow::anyhow!("Backtest period must be at least 30 days").into());
     }
 
-    let sample_interval: usize = if days > 180 { 5 } else if days > 90 { 3 } else { 1 };
+    let sample_interval: usize = if days > 180 {
+        5
+    } else if days > 90 {
+        3
+    } else {
+        1
+    };
 
     let (historical_data, signals) =
         fetch_bars_and_signals(&state, &req.symbols, days, sample_interval).await?;
 
     if historical_data.is_empty() {
-        return Err(anyhow::anyhow!("No historical data available for any of the requested symbols").into());
+        return Err(anyhow::anyhow!(
+            "No historical data available for any of the requested symbols"
+        )
+        .into());
     }
 
     // Fetch SPY bars for benchmark comparison
@@ -239,7 +292,8 @@ async fn run_backtest(
     };
 
     let mut engine = BacktestEngine::new(config);
-    let result = engine.run(historical_data, signals)
+    let result = engine
+        .run(historical_data, signals)
         .map_err(|e| anyhow::anyhow!("Backtest engine error: {}", e))?;
 
     let backtest_id = backtest_db.save_backtest(&result).await?;
@@ -254,7 +308,11 @@ async fn run_backtest(
         trades_count,
     };
 
-    tracing::info!("Backtest complete. ID: {}, trades: {}", backtest_id, trades_count);
+    tracing::info!(
+        "Backtest complete. ID: {}, trades: {}",
+        backtest_id,
+        trades_count
+    );
 
     // Auto-record a strategy health snapshot for alpha decay monitoring
     if let Some(pm) = state.portfolio_manager.as_ref() {
@@ -280,15 +338,30 @@ async fn run_backtest(
     Ok(Json(ApiResponse::success(summary)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/backtest/walk-forward",
+    tag = "Backtest",
+    request_body = RunBacktestRequest,
+    responses(
+        (status = 200, description = "Walk-forward validation completed"),
+        (status = 500, description = "Walk-forward validation error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 /// Run walk-forward validation
-async fn run_walk_forward(
+pub(crate) async fn run_walk_forward(
     State(state): State<AppState>,
     Json(req): Json<RunBacktestRequest>,
 ) -> Result<Json<ApiResponse<WalkForwardResult>>, AppError> {
     let num_folds = 5i32; // default 5 folds
 
-    tracing::info!("Running walk-forward validation: {} for {:?} ({} folds)",
-        req.strategy_name, req.symbols, num_folds);
+    tracing::info!(
+        "Running walk-forward validation: {} for {:?} ({} folds)",
+        req.strategy_name,
+        req.symbols,
+        num_folds
+    );
 
     let start = NaiveDate::parse_from_str(&req.start_date, "%Y-%m-%d")
         .map_err(|e| anyhow::anyhow!("Invalid start_date: {}", e))?;
@@ -330,11 +403,13 @@ async fn run_walk_forward(
         let mut test_data: HashMap<String, Vec<HistoricalBar>> = HashMap::new();
 
         for (sym, bars) in &all_data {
-            let train: Vec<HistoricalBar> = bars.iter()
+            let train: Vec<HistoricalBar> = bars
+                .iter()
                 .filter(|b| b.date >= train_start_str && b.date < train_end_str)
                 .cloned()
                 .collect();
-            let test: Vec<HistoricalBar> = bars.iter()
+            let test: Vec<HistoricalBar> = bars
+                .iter()
                 .filter(|b| b.date >= test_start_str && b.date < test_end_str)
                 .cloned()
                 .collect();
@@ -346,11 +421,13 @@ async fn run_walk_forward(
             }
         }
 
-        let train_signals: Vec<Signal> = all_signals.iter()
+        let train_signals: Vec<Signal> = all_signals
+            .iter()
             .filter(|s| s.date >= train_start_str && s.date < train_end_str)
             .cloned()
             .collect();
-        let test_signals: Vec<Signal> = all_signals.iter()
+        let test_signals: Vec<Signal> = all_signals
+            .iter()
             .filter(|s| s.date >= test_start_str && s.date < test_end_str)
             .cloned()
             .collect();
@@ -403,22 +480,43 @@ async fn run_walk_forward(
     let result = WalkForwardRunner::run(&config, folds)
         .map_err(|e| anyhow::anyhow!("Walk-forward error: {}", e))?;
 
-    tracing::info!("Walk-forward complete: {} folds, overfitting ratio: {:.2}",
-        result.folds.len(), result.overfitting_ratio);
+    tracing::info!(
+        "Walk-forward complete: {} folds, overfitting ratio: {:.2}",
+        result.folds.len(),
+        result.overfitting_ratio
+    );
 
     Ok(Json(ApiResponse::success(result)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/backtest/results/{id}/monte-carlo",
+    tag = "Backtest",
+    params(
+        ("id" = i64, Path, description = "Backtest result ID"),
+        ("simulations" = Option<i32>, Query, description = "Number of Monte Carlo simulations (100-10000, default 1000)"),
+    ),
+    responses(
+        (status = 200, description = "Monte Carlo simulation results"),
+        (status = 500, description = "Simulation error or backtest not found"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 /// Run Monte Carlo simulation on a completed backtest
-async fn get_monte_carlo(
+pub(crate) async fn get_monte_carlo(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Query(query): Query<MonteCarloQuery>,
 ) -> Result<Json<ApiResponse<MonteCarloResult>>, AppError> {
-    let backtest_db = state.backtest_db.as_ref()
+    let backtest_db = state
+        .backtest_db
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Backtest database not configured"))?;
 
-    let result = backtest_db.get_backtest(id).await?
+    let result = backtest_db
+        .get_backtest(id)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Backtest not found"))?;
 
     let trades = backtest_db.get_backtest_trades(id).await?;
@@ -427,12 +525,17 @@ async fn get_monte_carlo(
         return Err(anyhow::anyhow!("No trades in backtest — cannot run Monte Carlo").into());
     }
 
-    let simulations = query.simulations.min(10000).max(100);
+    let simulations = query.simulations.clamp(100, 10000);
 
     tracing::info!(
         "Running Monte Carlo ({} sims) on backtest {} with {} trades. Trade P&L%: {:?}",
-        simulations, id, trades.len(),
-        trades.iter().map(|t| t.profit_loss_percent).collect::<Vec<_>>()
+        simulations,
+        id,
+        trades.len(),
+        trades
+            .iter()
+            .map(|t| t.profit_loss_percent)
+            .collect::<Vec<_>>()
     );
 
     let mc_result = run_monte_carlo(&trades, result.initial_capital, simulations);
@@ -446,11 +549,23 @@ async fn get_monte_carlo(
     Ok(Json(ApiResponse::success(mc_result)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/backtest/results",
+    tag = "Backtest",
+    responses(
+        (status = 200, description = "List of all backtest results"),
+        (status = 500, description = "Database error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 /// Get all backtest results
-async fn get_all_backtests(
+pub(crate) async fn get_all_backtests(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<BacktestResult>>>, AppError> {
-    let backtest_db = state.backtest_db.as_ref()
+    let backtest_db = state
+        .backtest_db
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Backtest database not configured"))?;
 
     let results = backtest_db.get_all_backtests().await?;
@@ -458,39 +573,90 @@ async fn get_all_backtests(
     Ok(Json(ApiResponse::success(results)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/backtest/results/{id}",
+    tag = "Backtest",
+    params(
+        ("id" = i64, Path, description = "Backtest result ID"),
+    ),
+    responses(
+        (status = 200, description = "Backtest result details"),
+        (status = 404, description = "Backtest not found"),
+        (status = 500, description = "Database error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 /// Get specific backtest result
-async fn get_backtest(
+pub(crate) async fn get_backtest(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<BacktestResult>>, AppError> {
-    let backtest_db = state.backtest_db.as_ref()
+    let backtest_db = state
+        .backtest_db
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Backtest database not configured"))?;
 
-    let result = backtest_db.get_backtest(id).await?
+    let result = backtest_db
+        .get_backtest(id)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Backtest not found"))?;
 
     Ok(Json(ApiResponse::success(result)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/backtest/results/{id}",
+    tag = "Backtest",
+    params(
+        ("id" = i64, Path, description = "Backtest result ID"),
+    ),
+    responses(
+        (status = 200, description = "Backtest deleted successfully"),
+        (status = 500, description = "Database error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 /// Delete backtest result
-async fn delete_backtest(
+pub(crate) async fn delete_backtest(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
-    let backtest_db = state.backtest_db.as_ref()
+    let backtest_db = state
+        .backtest_db
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Backtest database not configured"))?;
 
     backtest_db.delete_backtest(id).await?;
 
-    Ok(Json(ApiResponse::success(format!("Backtest {} deleted", id))))
+    Ok(Json(ApiResponse::success(format!(
+        "Backtest {} deleted",
+        id
+    ))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/backtest/results/{id}/trades",
+    tag = "Backtest",
+    params(
+        ("id" = i64, Path, description = "Backtest result ID"),
+    ),
+    responses(
+        (status = 200, description = "List of trades from the backtest"),
+        (status = 500, description = "Database error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 /// Get trades for a specific backtest
-async fn get_backtest_trades(
+pub(crate) async fn get_backtest_trades(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<Vec<BacktestTrade>>>, AppError> {
-    let backtest_db = state.backtest_db.as_ref()
+    let backtest_db = state
+        .backtest_db
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Backtest database not configured"))?;
 
     let trades = backtest_db.get_backtest_trades(id).await?;
@@ -498,15 +664,32 @@ async fn get_backtest_trades(
     Ok(Json(ApiResponse::success(trades)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/backtest/strategy/{name}",
+    tag = "Backtest",
+    params(
+        ("name" = String, Path, description = "Strategy name to filter by"),
+    ),
+    responses(
+        (status = 200, description = "Backtest results for the given strategy"),
+        (status = 500, description = "Database error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 /// Get backtests by strategy name
-async fn get_backtests_by_strategy(
+pub(crate) async fn get_backtests_by_strategy(
     State(state): State<AppState>,
     Path(strategy_name): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<BacktestResult>>>, AppError> {
-    let backtest_db = state.backtest_db.as_ref()
+    let backtest_db = state
+        .backtest_db
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Backtest database not configured"))?;
 
-    let results = backtest_db.get_backtests_by_strategy(&strategy_name).await?;
+    let results = backtest_db
+        .get_backtests_by_strategy(&strategy_name)
+        .await?;
 
     Ok(Json(ApiResponse::success(results)))
 }

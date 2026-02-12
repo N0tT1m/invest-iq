@@ -1,11 +1,9 @@
-use crate::embeds;
-use crate::Handler;
-use crate::respond_ephemeral;
 use super::{get_string_opt, resolve_subcommand};
+use crate::embeds;
+use crate::respond_ephemeral;
+use crate::Handler;
 
-use serenity::all::{
-    CommandDataOption, CommandInteraction, EditInteractionResponse,
-};
+use serenity::all::{CommandDataOption, CommandInteraction, EditInteractionResponse};
 use serenity::prelude::*;
 
 impl Handler {
@@ -52,21 +50,36 @@ impl Handler {
                     Ok(json) => {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_news_embed(&symbol, data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -81,21 +94,36 @@ impl Handler {
                     Ok(json) => {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_sectors_embed(data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -110,21 +138,36 @@ impl Handler {
                     Ok(json) => {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_macro_embed(data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -139,21 +182,36 @@ impl Handler {
                     Ok(json) => {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_screen_embed(data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }

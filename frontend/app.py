@@ -39,7 +39,26 @@ from components.tax_dashboard import TaxDashboardComponent
 from components.agent_trades import AgentTradesComponent
 from components.agent_analytics import AgentAnalyticsComponent
 from components.symbol_search import SymbolSearchComponent
+from components.stock_screener import StockScreenerComponent
 from components.portfolio_analytics import PortfolioAnalyticsComponent
+from components.ml_trade_signal import MLTradeSignalComponent
+from components.ml_sentiment import MLSentimentComponent
+from components.ml_price_forecast import MLPriceForecastComponent
+from components.ml_strategy_weights import MLStrategyWeightsComponent
+from components.ml_calibration import MLCalibrationComponent
+
+# Initialize Sentry for error tracking (no-op if SENTRY_DSN not set)
+_sentry_dsn = os.environ.get('SENTRY_DSN', '')
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            environment=os.environ.get('SENTRY_ENVIRONMENT', 'development'),
+            traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.1')),
+        )
+    except Exception:
+        pass  # Sentry is optional — don't block startup
 
 # Initialize the Dash app with a modern theme
 app = dash.Dash(
@@ -176,6 +195,8 @@ app.layout = dbc.Container([
                 dbc.NavItem(dbc.NavLink("Dashboard", id="nav-dashboard", href="#", active=True,
                                          style={"color": "#fff", "fontWeight": "500"})),
                 dbc.NavItem(dbc.NavLink("Symbol Search", id="nav-search", href="#",
+                                         style={"color": "#aaa"})),
+                dbc.NavItem(dbc.NavLink("Screener", id="nav-screener", href="#",
                                          style={"color": "#aaa"})),
             ], className="ms-auto", navbar=True),
         ], fluid=True),
@@ -330,6 +351,7 @@ app.layout = dbc.Container([
     ], className="mb-4"),
 
     # Paper Trading + Portfolio + Backtesting (tabbed)
+    dcc.Store(id='ml-data-store', data={}),
     dcc.Store(id='paper-trade-symbol-store', data=''),
     dcc.Store(id='paper-trade-notification-store'),
     dcc.Store(id='live-trade-symbol-store', data=''),
@@ -557,6 +579,13 @@ app.layout = dbc.Container([
         ], md=6),
     ], className="mb-4"),
 
+    # ML Insights Row
+    dbc.Row([
+        dbc.Col([
+            dcc.Loading(html.Div(id='ml-insights-section'), type="circle")
+        ], md=12),
+    ], className="mb-4"),
+
     # Earnings & Dividend Row
     dbc.Row([
         dbc.Col([
@@ -642,6 +671,11 @@ app.layout = dbc.Container([
         SymbolSearchComponent.create_search_page_layout(),
     ]),
 
+    # Screener page (hidden by default)
+    html.Div(id="page-screener", style={"display": "none"}, children=[
+        StockScreenerComponent.create_panel(),
+    ]),
+
 ], fluid=True)
 
 
@@ -652,7 +686,7 @@ def _empty_results():
             "", "", "",
             create_empty_card("Technical"), create_empty_card("Fundamental"),
             create_empty_card("Quantitative"), create_empty_card("Sentiment"),
-            empty_fig, empty_fig, empty_fig)
+            empty_fig, empty_fig, empty_fig, {})
 
 
 def _error_results(error_msg):
@@ -667,7 +701,7 @@ def _error_results(error_msg):
         create_empty_card("Fundamental"),
         create_empty_card("Quantitative"),
         create_empty_card("Sentiment"),
-        empty_fig, empty_fig, empty_fig,
+        empty_fig, empty_fig, empty_fig, {},
     )
 
 
@@ -813,6 +847,7 @@ def sync_days_to_timeframe(timeframe):
         Output('mini-chart-daily', 'figure'),
         Output('mini-chart-weekly', 'figure'),
         Output('mini-chart-monthly', 'figure'),
+        Output('ml-data-store', 'data'),
     ],
     [
         Input('analyze-button', 'n_clicks'),
@@ -833,8 +868,8 @@ def update_analysis(analyze_clicks, refresh_clicks, symbol, timeframe, days):
         return _error_results("Invalid symbol format. Use 1-10 uppercase letters/digits.")
 
     try:
-        # Fetch analysis and bars in parallel
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        # Fetch analysis, bars, and ML data in parallel
+        with ThreadPoolExecutor(max_workers=7) as executor:
             f_analysis = executor.submit(
                 requests.get, f'{API_BASE_URL}/api/analyze/{symbol}',
                 params={'timeframe': timeframe, 'days': days},
@@ -845,8 +880,24 @@ def update_analysis(analyze_clicks, refresh_clicks, symbol, timeframe, days):
                 params={'timeframe': timeframe, 'days': days},
                 headers=get_headers(), timeout=30
             )
+            # ML fetches (best-effort, failures are silently ignored)
+            f_ml = {
+                'trade_signal': executor.submit(MLTradeSignalComponent.fetch_data, symbol),
+                'sentiment': executor.submit(MLSentimentComponent.fetch_data, symbol),
+                'price_forecast': executor.submit(MLPriceForecastComponent.fetch_data, symbol, 5, 90),
+                'calibration': executor.submit(MLCalibrationComponent.fetch_data, symbol),
+                'strategy_weights': executor.submit(MLStrategyWeightsComponent.fetch_data),
+            }
             analysis_response = f_analysis.result()
             bars_response = f_bars.result()
+
+            # Collect ML results (best effort – don't block main flow)
+            ml_data = {}
+            for key, future in f_ml.items():
+                try:
+                    ml_data[key] = future.result(timeout=10)
+                except Exception:
+                    ml_data[key] = None
 
         # Check if response is JSON
         try:
@@ -880,7 +931,7 @@ def update_analysis(analyze_clicks, refresh_clicks, symbol, timeframe, days):
             analysis['current_price'] = float(bars['close'].iloc[-1])
 
         # Create overall signal card
-        signal_card = create_signal_card(analysis)
+        signal_card = create_signal_card(analysis, ml_data)
 
         # Create charts
         if bars is not None and not bars.empty:
@@ -895,11 +946,11 @@ def update_analysis(analyze_clicks, refresh_clicks, symbol, timeframe, days):
         # Build risk radar (uses analysis data already fetched, no API call)
         risk_radar = build_risk_radar_section(analysis, symbol)
 
-        # Create analysis cards (no API calls)
-        tech_card = create_technical_card(analysis.get('technical'))
-        fund_card = create_fundamental_card(analysis.get('fundamental'))
-        quant_card = create_quant_card(analysis.get('quantitative'))
-        sent_card = create_sentiment_card(analysis.get('sentiment'))
+        # Create analysis cards with ML enhancements
+        tech_card = create_technical_card(analysis.get('technical'), ml_data)
+        fund_card = create_fundamental_card(analysis.get('fundamental'), ml_data)
+        quant_card = create_quant_card(analysis.get('quantitative'), ml_data)
+        sent_card = create_sentiment_card(analysis.get('sentiment'), ml_data)
 
         # Fetch confidence, sentiment velocity, and daily bars in parallel
         # Daily bars (365d) are resampled to weekly/monthly locally to avoid
@@ -925,14 +976,101 @@ def update_analysis(analyze_clicks, refresh_clicks, symbol, timeframe, days):
         return ("", signal_card, main_chart, rsi_chart, macd_chart,
                 risk_radar, confidence, sentiment_velocity,
                 tech_card, fund_card, quant_card, sent_card,
-                mini_daily, mini_weekly, mini_monthly)
+                mini_daily, mini_weekly, mini_monthly, ml_data)
 
     except Exception as e:
         _logger.exception("Analysis failed for %s: %s", symbol, e)
         return _error_results("Analysis failed. Please try again later.")
 
 
-def create_signal_card(analysis):
+# ---------------------------------------------------------------------------
+# ML data helpers – extract specific enhancements from the ml_data dict
+# ---------------------------------------------------------------------------
+
+def get_calibrated_confidence(ml_data, engine_name):
+    """Return (calibrated_pct, tier) for an engine, or None if unavailable."""
+    if not ml_data:
+        return None
+    cal = ml_data.get('calibration')
+    if not cal or cal.get('_unavailable'):
+        return None
+    engines = cal.get('engines', {})
+    eng = engines.get(engine_name)
+    if not eng:
+        return None
+    calibrated = eng.get('calibrated')
+    tier = eng.get('tier', 'unknown')
+    if calibrated is None:
+        return None
+    return (calibrated * 100, tier)
+
+
+def get_ml_trade_signal(ml_data):
+    """Return (direction, confidence_pct, recommendation) or None."""
+    if not ml_data:
+        return None
+    ts = ml_data.get('trade_signal')
+    if not ts or ts.get('_unavailable'):
+        return None
+    prob = ts.get('probability')
+    rec = ts.get('recommendation')
+    exp_ret = ts.get('expected_return', 0)
+    if prob is None:
+        return None
+    direction = 'UP' if exp_ret > 0 else ('DOWN' if exp_ret < 0 else 'NEUTRAL')
+    return (direction, prob * 100, rec or 'N/A')
+
+
+def get_finbert_sentiment(ml_data):
+    """Return (score, overall_sentiment) or None."""
+    if not ml_data:
+        return None
+    sent = ml_data.get('sentiment')
+    if not sent or sent.get('_unavailable'):
+        return None
+    score = sent.get('score')
+    overall = sent.get('overall_sentiment')
+    if score is None:
+        return None
+    return (score, overall or 'neutral')
+
+
+def get_strategy_weight(ml_data, engine_name):
+    """Return weight as percentage, or None."""
+    if not ml_data:
+        return None
+    sw = ml_data.get('strategy_weights')
+    if not sw or sw.get('_unavailable'):
+        return None
+    weights = sw.get('weights', {})
+    w = weights.get(engine_name)
+    if w is None:
+        return None
+    return w * 100
+
+
+def _ml_badge(text, color="primary"):
+    """Small ML badge for card headers."""
+    return dbc.Badge(text, color=color, pill=True, className="ms-2",
+                     style={"fontSize": "0.65rem", "verticalAlign": "middle"})
+
+
+def _calibrated_bar(calibrated_pct, tier):
+    """Thin calibrated confidence bar with tier coloring."""
+    tier_colors = {
+        'high': 'success', 'moderate': 'info',
+        'low': 'warning', 'very_low': 'danger',
+    }
+    color = tier_colors.get(tier, 'secondary')
+    return html.Div([
+        html.Small(f"ML Calibrated: {calibrated_pct:.0f}% ({tier})",
+                   className="text-muted", style={"fontSize": "0.75rem"}),
+        dbc.Progress(value=calibrated_pct, color=color,
+                     style={'height': '8px'}, className="mb-2"),
+    ])
+
+
+def create_signal_card(analysis, ml_data=None):
     """Create overall signal summary card"""
     signal = analysis['overall_signal']
     confidence = analysis['overall_confidence'] * 100
@@ -985,6 +1123,21 @@ def create_signal_card(analysis):
         agreement_text = ""
         agreement_color = "text-muted"
 
+    # ML trade signal badge (if available)
+    ml_signal_el = None
+    ml_ts = get_ml_trade_signal(ml_data)
+    if ml_ts:
+        direction, ml_conf, ml_rec = ml_ts
+        dir_colors = {'UP': 'success', 'DOWN': 'danger', 'NEUTRAL': 'info'}
+        ml_signal_el = html.Div([
+            dbc.Badge(f"ML: {direction} ({ml_conf:.0f}%)",
+                      color=dir_colors.get(direction, 'secondary'),
+                      pill=True, className="me-1",
+                      style={"fontSize": "0.7rem"}),
+            dbc.Badge(f"{ml_rec}", color="light", text_color="dark",
+                      pill=True, style={"fontSize": "0.65rem"}),
+        ], className="text-center mt-1")
+
     return dbc.Card([
         dbc.CardBody([
             dbc.Row([
@@ -996,6 +1149,7 @@ def create_signal_card(analysis):
                     html.H2(f"{emoji} {signal}", className="text-center mb-1"),
                     html.P(analysis['recommendation'], className="text-center text-muted mb-0 small"),
                     html.P(agreement_text, className=f"text-center {agreement_color} mb-0 small") if agreement_text else None,
+                    ml_signal_el,
                 ], md=4),
                 dbc.Col([
                     html.Div([
@@ -1318,7 +1472,7 @@ def _trend_icon(trend):
     return f"{trend}"
 
 
-def create_technical_card(tech_data):
+def create_technical_card(tech_data, ml_data=None):
     """Create technical analysis card"""
     if not tech_data:
         return create_empty_card("Technical Analysis")
@@ -1342,17 +1496,33 @@ def create_technical_card(tech_data):
             rsi_class = "text-success"
             rsi_text += " (Oversold)"
 
+    # ML enhancements
+    header_badges = []
+    ml_section = []
+    weight = get_strategy_weight(ml_data, 'technical')
+    if weight is not None:
+        header_badges.append(_ml_badge(f"Weight: {weight:.1f}%", "info"))
+    cal = get_calibrated_confidence(ml_data, 'technical')
+    if cal:
+        ml_section.append(_calibrated_bar(*cal))
+    if header_badges:
+        header_badges.insert(0, _ml_badge("ML", "primary"))
+
     return dbc.Card([
         dbc.CardHeader([
-            html.H5("Technical Analysis", className="mb-0")
+            html.Div([
+                html.H5("Technical Analysis", className="mb-0 d-inline"),
+                *header_badges,
+            ])
         ]),
         dbc.CardBody([
             html.H6(f"Signal: {tech_data['signal']}", className="mb-2"),
             dbc.Progress(
                 value=tech_data['confidence'] * 100,
                 label=f"{tech_data['confidence']*100:.0f}% Confidence",
-                className="mb-3"
+                className="mb-1"
             ),
+            *ml_section,
             html.Hr(),
             html.P(tech_data['reason'], className="small"),
             html.Hr(),
@@ -1391,7 +1561,7 @@ def _format_large_number(value):
         return str(value)
 
 
-def create_fundamental_card(fund_data):
+def create_fundamental_card(fund_data, ml_data=None):
     """Create fundamental analysis card"""
     if not fund_data:
         return create_empty_card("Fundamental Analysis")
@@ -1459,17 +1629,33 @@ def create_fundamental_card(fund_data):
             html.Ul(analyst_items),
         ]
 
+    # ML enhancements
+    header_badges = []
+    ml_section = []
+    weight = get_strategy_weight(ml_data, 'fundamental')
+    if weight is not None:
+        header_badges.append(_ml_badge(f"Weight: {weight:.1f}%", "info"))
+    cal = get_calibrated_confidence(ml_data, 'fundamental')
+    if cal:
+        ml_section.append(_calibrated_bar(*cal))
+    if header_badges:
+        header_badges.insert(0, _ml_badge("ML", "primary"))
+
     return dbc.Card([
         dbc.CardHeader([
-            html.H5("Fundamental Analysis", className="mb-0")
+            html.Div([
+                html.H5("Fundamental Analysis", className="mb-0 d-inline"),
+                *header_badges,
+            ])
         ]),
         dbc.CardBody([
             html.H6(f"Signal: {fund_data['signal']}", className="mb-2"),
             dbc.Progress(
                 value=fund_data['confidence'] * 100,
                 label=f"{fund_data['confidence']*100:.0f}% Confidence",
-                className="mb-3"
+                className="mb-1"
             ),
+            *ml_section,
             html.Hr(),
             html.P(fund_data['reason'], className="small"),
             html.Hr(),
@@ -1480,7 +1666,7 @@ def create_fundamental_card(fund_data):
     ], className="h-100")
 
 
-def create_quant_card(quant_data):
+def create_quant_card(quant_data, ml_data=None):
     """Create quantitative analysis card"""
     if not quant_data:
         return create_empty_card("Quantitative Analysis")
@@ -1509,17 +1695,33 @@ def create_quant_card(quant_data):
             html.Span(f"{recent_return:+.2f}%", className=ret_class),
         ]))
 
+    # ML enhancements
+    header_badges = []
+    ml_section = []
+    weight = get_strategy_weight(ml_data, 'quantitative')
+    if weight is not None:
+        header_badges.append(_ml_badge(f"Weight: {weight:.1f}%", "info"))
+    cal = get_calibrated_confidence(ml_data, 'quantitative')
+    if cal:
+        ml_section.append(_calibrated_bar(*cal))
+    if header_badges:
+        header_badges.insert(0, _ml_badge("ML", "primary"))
+
     return dbc.Card([
         dbc.CardHeader([
-            html.H5("Quantitative Analysis", className="mb-0")
+            html.Div([
+                html.H5("Quantitative Analysis", className="mb-0 d-inline"),
+                *header_badges,
+            ])
         ]),
         dbc.CardBody([
             html.H6(f"Signal: {quant_data['signal']}", className="mb-2"),
             dbc.Progress(
                 value=quant_data['confidence'] * 100,
                 label=f"{quant_data['confidence']*100:.0f}% Confidence",
-                className="mb-3"
+                className="mb-1"
             ),
+            *ml_section,
             html.Hr(),
             html.P(quant_data['reason'], className="small"),
             html.Hr(),
@@ -1529,7 +1731,7 @@ def create_quant_card(quant_data):
     ], className="h-100")
 
 
-def create_sentiment_card(sent_data):
+def create_sentiment_card(sent_data, ml_data=None):
     """Create sentiment analysis card"""
     if not sent_data:
         return create_empty_card("Sentiment Analysis")
@@ -1548,17 +1750,42 @@ def create_sentiment_card(sent_data):
     else:
         bar_color = "danger"
 
+    # ML enhancements
+    header_badges = []
+    ml_section = []
+    finbert_el = None
+    weight = get_strategy_weight(ml_data, 'sentiment')
+    if weight is not None:
+        header_badges.append(_ml_badge(f"Weight: {weight:.1f}%", "info"))
+    cal = get_calibrated_confidence(ml_data, 'sentiment')
+    if cal:
+        ml_section.append(_calibrated_bar(*cal))
+    fb = get_finbert_sentiment(ml_data)
+    if fb:
+        fb_score, fb_label = fb
+        fb_color = "text-success" if fb_score > 0 else ("text-danger" if fb_score < 0 else "text-warning")
+        finbert_el = html.P([
+            html.Strong("FinBERT: "),
+            html.Span(f"{fb_score:+.2f} ({fb_label})", className=fb_color),
+        ], className="small mb-0")
+    if header_badges:
+        header_badges.insert(0, _ml_badge("ML", "primary"))
+
     return dbc.Card([
         dbc.CardHeader([
-            html.H5("Sentiment Analysis", className="mb-0")
+            html.Div([
+                html.H5("Sentiment Analysis", className="mb-0 d-inline"),
+                *header_badges,
+            ])
         ]),
         dbc.CardBody([
             html.H6(f"Signal: {sent_data['signal']}", className="mb-2"),
             dbc.Progress(
                 value=sent_data['confidence'] * 100,
                 label=f"{sent_data['confidence']*100:.0f}% Confidence",
-                className="mb-3"
+                className="mb-1"
             ),
+            *ml_section,
             html.Hr(),
             html.P(sent_data['reason'], className="small"),
             html.Hr(),
@@ -1572,6 +1799,7 @@ def create_sentiment_card(sent_data):
                 ], className="d-flex justify-content-between mb-1"),
                 dbc.Progress(value=bar_value, color=bar_color, style={'height': '12px'}),
             ], className="mb-3"),
+            finbert_el,
             html.Hr(),
             html.H6("News Breakdown:", className="mt-3"),
             dbc.Row([
@@ -3032,28 +3260,36 @@ def _kill_port(port):
 @app.callback(
     [Output('page-dashboard', 'style'),
      Output('page-search', 'style'),
+     Output('page-screener', 'style'),
      Output('nav-dashboard', 'active'),
      Output('nav-search', 'active'),
+     Output('nav-screener', 'active'),
      Output('nav-dashboard', 'style'),
-     Output('nav-search', 'style')],
+     Output('nav-search', 'style'),
+     Output('nav-screener', 'style')],
     [Input('nav-dashboard', 'n_clicks'),
-     Input('nav-search', 'n_clicks')],
+     Input('nav-search', 'n_clicks'),
+     Input('nav-screener', 'n_clicks')],
     prevent_initial_call=True,
 )
-def switch_page(dash_clicks, search_clicks):
+def switch_page(dash_clicks, search_clicks, screener_clicks):
+    show = {"display": "block"}
+    hide = {"display": "none"}
+    active_style = {"color": "#fff", "fontWeight": "500"}
+    inactive_style = {"color": "#aaa"}
     ctx = dash.callback_context
     if not ctx.triggered:
-        return ({"display": "block"}, {"display": "none"},
-                True, False,
-                {"color": "#fff", "fontWeight": "500"}, {"color": "#aaa"})
+        return (show, hide, hide, True, False, False,
+                active_style, inactive_style, inactive_style)
     triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
     if triggered_id == "nav-search":
-        return ({"display": "none"}, {"display": "block"},
-                False, True,
-                {"color": "#aaa"}, {"color": "#fff", "fontWeight": "500"})
-    return ({"display": "block"}, {"display": "none"},
-            True, False,
-            {"color": "#fff", "fontWeight": "500"}, {"color": "#aaa"})
+        return (hide, show, hide, False, True, False,
+                inactive_style, active_style, inactive_style)
+    if triggered_id == "nav-screener":
+        return (hide, hide, show, False, False, True,
+                inactive_style, inactive_style, active_style)
+    return (show, hide, hide, True, False, False,
+            active_style, inactive_style, inactive_style)
 
 
 # ============================================================================
@@ -3230,6 +3466,111 @@ def update_analytics_tab(active_tab, analyze_clicks, refresh_clicks):
         ])
     except Exception as e:
         return html.Div(f"Error loading analytics: {e}", style={"color": "#EF553B"})
+
+
+# ============================================================================
+# ML INSIGHTS CALLBACK
+# ============================================================================
+
+@app.callback(
+    Output('ml-insights-section', 'children'),
+    Input('ml-data-store', 'data'),
+    State('symbol-input', 'value'),
+    prevent_initial_call=True
+)
+def update_ml_insights(ml_data, symbol):
+    if not ml_data or not symbol:
+        return html.Div("Enter a symbol to see ML insights", className="text-muted p-3")
+
+    symbol = symbol.strip().upper()
+
+    try:
+        # Read pre-fetched ML data from the store (populated by main analysis callback)
+        trade_data = ml_data.get('trade_signal')
+        sentiment_data = ml_data.get('sentiment')
+        forecast_data = ml_data.get('price_forecast')
+        weights_data = ml_data.get('strategy_weights')
+        calibration_data = ml_data.get('calibration')
+
+        return html.Div([
+            # Header
+            dbc.Row([
+                dbc.Col(html.H5(
+                    f"ML Insights for {symbol}",
+                    className="text-center mb-3",
+                    style={"color": "#ab63fa"},
+                )),
+            ]),
+            # Row 1: Trade Signal + Sentiment
+            dbc.Row([
+                dbc.Col(MLTradeSignalComponent.create_panel(trade_data, symbol), md=6),
+                dbc.Col(MLSentimentComponent.create_panel(sentiment_data, symbol), md=6),
+            ], className="mb-3"),
+            # Row 2: Price Forecast + Calibration
+            dbc.Row([
+                dbc.Col(MLPriceForecastComponent.create_panel(forecast_data, symbol), md=6),
+                dbc.Col(MLCalibrationComponent.create_panel(calibration_data, symbol), md=6),
+            ], className="mb-3"),
+            # Row 3: Strategy Weights (full width)
+            dbc.Row([
+                dbc.Col(MLStrategyWeightsComponent.create_panel(weights_data), md=12),
+            ]),
+        ])
+    except Exception as e:
+        return html.Div(f"Error loading ML insights: {e}", style={"color": "#EF553B"})
+
+
+# ============================================================================
+# SCREENER CALLBACKS
+# ============================================================================
+
+@app.callback(
+    Output('screener-results', 'children'),
+    Input('screener-scan-btn', 'n_clicks'),
+    [dash.dependencies.State('screener-preset', 'value'),
+     dash.dependencies.State('screener-universe', 'value'),
+     dash.dependencies.State('screener-mode', 'value'),
+     dash.dependencies.State('screener-sort', 'value'),
+     dash.dependencies.State('screener-f1-field', 'value'),
+     dash.dependencies.State('screener-f1-op', 'value'),
+     dash.dependencies.State('screener-f1-val', 'value'),
+     dash.dependencies.State('screener-f2-field', 'value'),
+     dash.dependencies.State('screener-f2-op', 'value'),
+     dash.dependencies.State('screener-f2-val', 'value'),
+     dash.dependencies.State('screener-f3-field', 'value'),
+     dash.dependencies.State('screener-f3-op', 'value'),
+     dash.dependencies.State('screener-f3-val', 'value')],
+    prevent_initial_call=True,
+)
+def run_screener(n_clicks, preset, universe, mode, sort_by,
+                 f1_field, f1_op, f1_val, f2_field, f2_op, f2_val,
+                 f3_field, f3_op, f3_val):
+    if not n_clicks:
+        return dash.no_update
+
+    # Build filters — preset overrides custom filters
+    if preset and preset != "custom":
+        presets = StockScreenerComponent.fetch_presets()
+        filters = []
+        for p in presets:
+            if p.get("id") == preset:
+                filters = p.get("filters", [])
+                break
+    else:
+        filters = StockScreenerComponent.build_filters_from_inputs(
+            [f1_field, f2_field, f3_field],
+            [f1_op, f2_op, f3_op],
+            [f1_val, f2_val, f3_val],
+        )
+
+    result = StockScreenerComponent.run_scan(
+        filters=filters,
+        universe=universe,
+        mode=mode,
+        sort_by=sort_by,
+        limit=30,
+    )
+    return StockScreenerComponent.create_results(result)
 
 
 if __name__ == '__main__':

@@ -98,8 +98,8 @@ impl ChangeDetector {
         // Calculate baseline mean and std from initial window
         let baseline: &[f64] = &values[..self.window_size];
         let mean = baseline.iter().sum::<f64>() / baseline.len() as f64;
-        let variance = baseline.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
-            / (baseline.len() - 1) as f64;
+        let variance =
+            baseline.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (baseline.len() - 1) as f64;
         let std = variance.sqrt().max(0.001); // Avoid division by zero
 
         // Standardize values
@@ -119,7 +119,7 @@ impl ChangeDetector {
 
             // Check for change points
             if upper[i] > self.threshold {
-                let date = dates.map(|d| d.get(i).copied()).flatten();
+                let date = dates.and_then(|d| d.get(i).copied());
                 change_points.push(ChangePoint {
                     index: i,
                     date,
@@ -132,7 +132,7 @@ impl ChangeDetector {
             }
 
             if lower[i] > self.threshold {
-                let date = dates.map(|d| d.get(i).copied()).flatten();
+                let date = dates.and_then(|d| d.get(i).copied());
                 change_points.push(ChangePoint {
                     index: i,
                     date,
@@ -177,10 +177,10 @@ impl ChangeDetector {
 
         // Look at recent values (last 10%)
         let recent_start = (n as f64 * 0.9) as usize;
-        let recent_upper_avg: f64 = upper[recent_start..].iter().sum::<f64>()
-            / (n - recent_start) as f64;
-        let recent_lower_avg: f64 = lower[recent_start..].iter().sum::<f64>()
-            / (n - recent_start) as f64;
+        let recent_upper_avg: f64 =
+            upper[recent_start..].iter().sum::<f64>() / (n - recent_start) as f64;
+        let recent_lower_avg: f64 =
+            lower[recent_start..].iter().sum::<f64>() / (n - recent_start) as f64;
 
         // Check for recent change points (last 20%)
         let recent_threshold = (n as f64 * 0.8) as usize;
@@ -218,8 +218,8 @@ impl ChangeDetector {
 
         // Calculate baseline statistics
         let mean = values.iter().sum::<f64>() / values.len() as f64;
-        let variance = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
-            / (values.len() - 1) as f64;
+        let variance =
+            values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
         let std = variance.sqrt().max(0.001);
 
         // Calculate EWMA and control limits
@@ -238,7 +238,8 @@ impl ChangeDetector {
             }
 
             // Control limits widen with i, then stabilize
-            let limit_factor = (lambda / (2.0 - lambda) * (1.0 - (1.0 - lambda).powi(2 * (i + 1) as i32))).sqrt();
+            let limit_factor =
+                (lambda / (2.0 - lambda) * (1.0 - (1.0 - lambda).powi(2 * (i + 1) as i32))).sqrt();
             let limit = l * std * limit_factor;
 
             ucl.push(mean + limit);
@@ -345,10 +346,7 @@ mod tests {
         let result = detector.cusum_analysis(&values, None);
 
         // Should detect at least one change point
-        assert!(
-            !result.change_points.is_empty()
-                || result.current_state == ChangeState::Degrading
-        );
+        assert!(!result.change_points.is_empty() || result.current_state == ChangeState::Degrading);
     }
 
     #[test]

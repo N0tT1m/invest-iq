@@ -1,6 +1,6 @@
 /// Pure mathematical utilities for portfolio analytics.
-/// Stateless functions — no DB, no async, no external dependencies.
-
+/// Stateless functions -- no DB, no async, no external dependencies.
+///
 /// Compute daily returns from a value series.
 pub fn daily_returns(values: &[f64]) -> Vec<f64> {
     if values.len() < 2 {
@@ -212,7 +212,7 @@ pub fn monthly_returns(dates: &[String], values: &[f64]) -> Vec<(i32, u32, f64)>
 }
 
 fn parse_ym(date_str: &str) -> (i32, u32) {
-    let parts: Vec<&str> = date_str.split(|c| c == '-' || c == 'T' || c == ' ').collect();
+    let parts: Vec<&str> = date_str.split(['-', 'T', ' ']).collect();
     let year = parts.first().and_then(|s| s.parse().ok()).unwrap_or(2000);
     let month = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
     (year, month)
@@ -238,7 +238,9 @@ mod tests {
 
     #[test]
     fn test_sharpe_ratio() {
-        let returns = vec![0.01, 0.02, -0.01, 0.015, 0.005, -0.005, 0.01, 0.02, -0.01, 0.015];
+        let returns = vec![
+            0.01, 0.02, -0.01, 0.015, 0.005, -0.005, 0.01, 0.02, -0.01, 0.015,
+        ];
         let sharpe = sharpe_ratio(&returns, 0.02);
         assert!(sharpe.is_some());
     }

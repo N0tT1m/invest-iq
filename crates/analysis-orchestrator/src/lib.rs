@@ -1,20 +1,22 @@
 use analysis_core::{
     adaptive, AnalysisError, AnalysisResult, AnalystConsensusData, Bar, Financials, NewsArticle,
-    SignalStrength, Timeframe, UnifiedAnalysis, SentimentAnalyzer,
+    SentimentAnalyzer, SignalStrength, Timeframe, UnifiedAnalysis,
 };
-use serde_json::json;
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
-use polygon_client::{PolygonClient, TickerDetails};
 use fundamental_analysis::FundamentalAnalysisEngine;
+use ml_client::SignalModelsClient;
+use polygon_client::{PolygonClient, TickerDetails};
 use quant_analysis::QuantAnalysisEngine;
 use sentiment_analysis::SentimentAnalysisEngine;
-use technical_analysis::TechnicalAnalysisEngine;
-use ml_client::SignalModelsClient;
+use serde_json::json;
 use std::collections::HashMap;
+use technical_analysis::TechnicalAnalysisEngine;
 
 pub mod screener;
-pub use screener::{StockScreener, StockSuggestion, ScreenerResult, StockUniverse, ScreenerFilters};
+pub use screener::{
+    ScreenerFilters, ScreenerResult, StockScreener, StockSuggestion, StockUniverse,
+};
 
 /// Internal cache entry with timestamp
 struct CacheEntry<T> {
@@ -109,19 +111,24 @@ impl AnalysisOrchestrator {
 
         // Full-period volatility
         let full_mean = returns.iter().sum::<f64>() / returns.len() as f64;
-        let full_var = returns.iter().map(|r| (r - full_mean).powi(2)).sum::<f64>() / returns.len() as f64;
+        let full_var =
+            returns.iter().map(|r| (r - full_mean).powi(2)).sum::<f64>() / returns.len() as f64;
         let full_vol = full_var.sqrt();
 
         // Recent 10-day volatility
         let recent = &returns[returns.len() - 10..];
         let recent_mean = recent.iter().sum::<f64>() / recent.len() as f64;
-        let recent_var = recent.iter().map(|r| (r - recent_mean).powi(2)).sum::<f64>() / recent.len() as f64;
+        let recent_var = recent
+            .iter()
+            .map(|r| (r - recent_mean).powi(2))
+            .sum::<f64>()
+            / recent.len() as f64;
         let recent_vol = recent_var.sqrt();
 
         // Adaptive volatility regime detection using rolling vol ratios
         let mut vol_ratios: Vec<f64> = Vec::new();
         for i in 10..returns.len() {
-            let window = &returns[i-10..i];
+            let window = &returns[i - 10..i];
             let w_mean = window.iter().sum::<f64>() / 10.0;
             let w_var = window.iter().map(|r| (r - w_mean).powi(2)).sum::<f64>() / 10.0;
             let w_vol = w_var.sqrt();
@@ -129,7 +136,11 @@ impl AnalysisOrchestrator {
                 vol_ratios.push(w_vol / full_vol);
             }
         }
-        let current_ratio = if full_vol > 0.0 { recent_vol / full_vol } else { 1.0 };
+        let current_ratio = if full_vol > 0.0 {
+            recent_vol / full_vol
+        } else {
+            1.0
+        };
         let vol_pct = adaptive::percentile_rank(current_ratio, &vol_ratios);
         let vol_regime = if vol_pct > 0.85 {
             "high_vol"
@@ -141,7 +152,9 @@ impl AnalysisOrchestrator {
 
         // Adaptive trend detection using momentum and SMA distance percentiles
         let closes: Vec<f64> = spy_bars.iter().map(|b| b.close).collect();
-        let sma_50: f64 = closes[closes.len().saturating_sub(50)..].iter().sum::<f64>()
+        let sma_50: f64 = closes[closes.len().saturating_sub(50)..]
+            .iter()
+            .sum::<f64>()
             / closes.len().min(50) as f64;
         let current_price = closes.last().copied().unwrap_or(0.0);
 
@@ -155,14 +168,22 @@ impl AnalysisOrchestrator {
         }
         let momentum_20 = if closes.len() >= 20 {
             let p20 = closes[closes.len() - 20];
-            if p20 > 0.0 { (current_price - p20) / p20 } else { 0.0 }
+            if p20 > 0.0 {
+                (current_price - p20) / p20
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
         let momentum_pct = adaptive::percentile_rank(momentum_20, &momentums);
 
         // Rolling SMA-50 distance distribution
-        let sma_dist = if sma_50 > 0.0 { (current_price - sma_50) / sma_50 } else { 0.0 };
+        let sma_dist = if sma_50 > 0.0 {
+            (current_price - sma_50) / sma_50
+        } else {
+            0.0
+        };
         let mut sma_dists: Vec<f64> = Vec::new();
         for i in 50..closes.len() {
             let sma = closes[i.saturating_sub(50)..i].iter().sum::<f64>() / 50.min(i) as f64;
@@ -187,16 +208,16 @@ impl AnalysisOrchestrator {
     /// Returns (technical, fundamental, quant, sentiment) as percentages.
     fn regime_default_weights(&self, regime: &str) -> (i32, i32, i32, i32) {
         match regime {
-            "high_vol_bear" => (15, 30, 35, 20),   // Lean on risk/quant in volatile downtrends
-            "high_vol_bull" => (25, 25, 30, 20),    // Quant risk still important in volatile uptrends
+            "high_vol_bear" => (15, 30, 35, 20), // Lean on risk/quant in volatile downtrends
+            "high_vol_bull" => (25, 25, 30, 20), // Quant risk still important in volatile uptrends
             "high_vol_sideways" => (15, 30, 35, 20),
-            "low_vol_bull" => (30, 30, 15, 25),     // Technical momentum + sentiment in calm uptrends
-            "low_vol_bear" => (20, 40, 20, 20),     // Fundamental value focus in slow decline
+            "low_vol_bull" => (30, 30, 15, 25), // Technical momentum + sentiment in calm uptrends
+            "low_vol_bear" => (20, 40, 20, 20), // Fundamental value focus in slow decline
             "low_vol_sideways" => (25, 35, 20, 20),
-            "normal_bull" => (25, 35, 15, 25),      // Balanced with slight fundamental tilt
-            "normal_bear" => (20, 35, 25, 20),      // More quant risk-awareness
-            "normal_sideways" => (20, 40, 15, 25),  // Standard balanced
-            _ => (20, 40, 15, 25),                  // Fallback
+            "normal_bull" => (25, 35, 15, 25), // Balanced with slight fundamental tilt
+            "normal_bear" => (20, 35, 25, 20), // More quant risk-awareness
+            "normal_sideways" => (20, 40, 15, 25), // Standard balanced
+            _ => (20, 40, 15, 25),             // Fallback
         }
     }
 
@@ -213,17 +234,25 @@ impl AnalysisOrchestrator {
         let mut total_confidence = 0.0;
         let mut count = 0;
 
-        for result in [technical, fundamental, quantitative, sentiment] {
-            if let Some(r) = result {
-                let score = r.signal.to_score();
-                if score >= 20 { bullish += 1; }
-                else if score <= -20 { bearish += 1; }
-                total_confidence += r.confidence;
-                count += 1;
+        for result in [technical, fundamental, quantitative, sentiment]
+            .into_iter()
+            .flatten()
+        {
+            let score = result.signal.to_score();
+            if score >= 20 {
+                bullish += 1;
+            } else if score <= -20 {
+                bearish += 1;
             }
+            total_confidence += result.confidence;
+            count += 1;
         }
 
-        let avg_confidence = if count > 0 { total_confidence / count as f64 } else { 0.0 };
+        let avg_confidence = if count > 0 {
+            total_confidence / count as f64
+        } else {
+            0.0
+        };
         let agreement = bullish.max(bearish);
 
         if agreement >= 3 && avg_confidence > 0.65 {
@@ -257,42 +286,73 @@ impl AnalysisOrchestrator {
             short_weight += 40;
         }
         if short_weight > 0 {
-            let short_signal = SignalStrength::from_score((short_score as f64 / short_weight as f64) as i32);
-            horizons.insert("short_term".to_string(), json!({
-                "signal": short_signal.to_label(),
-                "horizon": "days to weeks",
-                "drivers": ["technical", "sentiment"],
-            }));
+            let short_signal =
+                SignalStrength::from_score((short_score as f64 / short_weight as f64) as i32);
+            horizons.insert(
+                "short_term".to_string(),
+                json!({
+                    "signal": short_signal.to_label(),
+                    "horizon": "days to weeks",
+                    "drivers": ["technical", "sentiment"],
+                }),
+            );
         }
 
         // Medium-term: quant (weeks to months)
         if let Some(quant) = quantitative {
-            horizons.insert("medium_term".to_string(), json!({
-                "signal": quant.signal.to_label(),
-                "horizon": "weeks to months",
-                "drivers": ["quantitative"],
-            }));
+            horizons.insert(
+                "medium_term".to_string(),
+                json!({
+                    "signal": quant.signal.to_label(),
+                    "horizon": "weeks to months",
+                    "drivers": ["quantitative"],
+                }),
+            );
         }
 
         // Long-term: fundamental (months to quarters)
         if let Some(fund) = fundamental {
-            horizons.insert("long_term".to_string(), json!({
-                "signal": fund.signal.to_label(),
-                "horizon": "months to quarters",
-                "drivers": ["fundamental"],
-            }));
+            horizons.insert(
+                "long_term".to_string(),
+                json!({
+                    "signal": fund.signal.to_label(),
+                    "horizon": "months to quarters",
+                    "drivers": ["fundamental"],
+                }),
+            );
         }
 
         serde_json::Value::Object(horizons)
     }
 
     /// Perform comprehensive analysis on a symbol
-    pub async fn analyze(&self, symbol: &str, timeframe: Timeframe, days_back: i64) -> Result<UnifiedAnalysis, AnalysisError> {
-        tracing::info!("Starting comprehensive analysis for {} (timeframe: {:?}, days: {})", symbol, timeframe, days_back);
+    pub async fn analyze(
+        &self,
+        symbol: &str,
+        timeframe: Timeframe,
+        days_back: i64,
+    ) -> Result<UnifiedAnalysis, AnalysisError> {
+        tracing::info!(
+            "Starting comprehensive analysis for {} (timeframe: {:?}, days: {})",
+            symbol,
+            timeframe,
+            days_back
+        );
 
         // Fire all API calls concurrently — Starter plan supports ~100 req/sec.
         // Cached responses (SPY/TLT bars, repeat symbols) return instantly.
-        let (bars_result, financials_result, news_result, ticker_details, spy_bars_result, tlt_bars_result, snapshot_result) = tokio::join!(
+        let (
+            bars_result,
+            financials_result,
+            news_result,
+            ticker_details,
+            spy_bars_result,
+            tlt_bars_result,
+            snapshot_result,
+            iwm_bars_result,
+            iwd_bars_result,
+            iwf_bars_result,
+        ) = tokio::join!(
             self.get_bars(symbol, timeframe, days_back),
             self.get_financials(symbol),
             self.get_news(symbol, 50),
@@ -300,6 +360,9 @@ impl AnalysisOrchestrator {
             self.get_bars("SPY", Timeframe::Day1, 365),
             self.get_bars("TLT", Timeframe::Day1, 90),
             self.polygon_client.get_snapshot(symbol),
+            self.get_bars("IWM", Timeframe::Day1, 365),
+            self.get_bars("IWD", Timeframe::Day1, 365),
+            self.get_bars("IWF", Timeframe::Day1, 365),
         );
 
         // Use snapshot last trade price as primary current_price, fall back to last bar close
@@ -320,34 +383,53 @@ impl AnalysisOrchestrator {
 
         let current_price = snapshot_price.or(bar_price);
         if let Some(price) = current_price {
-            tracing::info!("Current price for {}: {} (source: {})", symbol, price,
-                if snapshot_price.is_some() { "snapshot" } else { "bar close" });
+            tracing::info!(
+                "Current price for {}: {} (source: {})",
+                symbol,
+                price,
+                if snapshot_price.is_some() {
+                    "snapshot"
+                } else {
+                    "bar close"
+                }
+            );
         } else {
-            tracing::warn!("No current price found for {} - bars_result error: {:?}", symbol, bars_result.as_ref().err());
+            tracing::warn!(
+                "No current price found for {} - bars_result error: {:?}",
+                symbol,
+                bars_result.as_ref().err()
+            );
         }
 
         let spy_bars_ok = spy_bars_result.ok();
+        let iwm_bars_ok = iwm_bars_result.ok();
+        let iwd_bars_ok = iwd_bars_result.ok();
+        let iwf_bars_ok = iwf_bars_result.ok();
 
         // Extract shares outstanding from ticker details for DCF model
         let shares_outstanding = ticker_details.as_ref().ok().and_then(|d| {
-            d.weighted_shares_outstanding.or(d.share_class_shares_outstanding)
+            d.weighted_shares_outstanding
+                .or(d.share_class_shares_outstanding)
         });
 
         // Derive dynamic risk-free rate from TLT price
-        let dynamic_risk_free_rate = tlt_bars_result.ok()
-            .and_then(|tlt_bars| {
-                if tlt_bars.len() >= 2 {
-                    let first = tlt_bars.first().unwrap();
-                    let last = tlt_bars.last().unwrap();
-                    let tlt_return = (last.close - first.close) / first.close;
-                    // TLT inversely tracks yields: if TLT fell, rates rose
-                    let rate = (0.045 - tlt_return * 0.10).max(0.01).min(0.08);
-                    tracing::info!("Dynamic risk-free rate from TLT: {:.3} (TLT return: {:.3})", rate, tlt_return);
-                    Some(rate)
-                } else {
-                    None
-                }
-            });
+        let dynamic_risk_free_rate = tlt_bars_result.ok().and_then(|tlt_bars| {
+            if tlt_bars.len() >= 2 {
+                let first = tlt_bars.first().unwrap();
+                let last = tlt_bars.last().unwrap();
+                let tlt_return = (last.close - first.close) / first.close;
+                // TLT inversely tracks yields: if TLT fell, rates rose
+                let rate = (0.045 - tlt_return * 0.10).clamp(0.01, 0.08);
+                tracing::info!(
+                    "Dynamic risk-free rate from TLT: {:.3} (TLT return: {:.3})",
+                    rate,
+                    tlt_return
+                );
+                Some(rate)
+            } else {
+                None
+            }
+        });
 
         // Run all independent analysis engines concurrently.
         // Technical & quant are CPU-bound but fast (sub-ms on a few hundred bars).
@@ -357,8 +439,15 @@ impl AnalysisOrchestrator {
             async {
                 if let Ok(bars) = &bars_result {
                     if bars.len() >= 50 {
-                        tracing::info!("Running enhanced technical analysis with {} bars", bars.len());
-                        match self.technical_analyzer.analyze_enhanced(symbol, bars, spy_bars_ok.as_deref()) {
+                        tracing::info!(
+                            "Running enhanced technical analysis with {} bars",
+                            bars.len()
+                        );
+                        match self.technical_analyzer.analyze_enhanced(
+                            symbol,
+                            bars,
+                            spy_bars_ok.as_deref(),
+                        ) {
                             Ok(result) => return Some(result),
                             Err(e) => tracing::warn!("Technical analysis failed: {:?}", e),
                         }
@@ -370,8 +459,14 @@ impl AnalysisOrchestrator {
                 if let Ok(bars) = &bars_result {
                     if bars.len() >= 30 {
                         tracing::info!("Running enhanced quantitative analysis");
-                        match self.quant_analyzer.analyze_with_benchmark_and_rate(
-                            symbol, bars, spy_bars_ok.as_deref(), dynamic_risk_free_rate,
+                        match self.quant_analyzer.analyze_with_factors(
+                            symbol,
+                            bars,
+                            spy_bars_ok.as_deref(),
+                            iwm_bars_ok.as_deref(),
+                            iwd_bars_ok.as_deref(),
+                            iwf_bars_ok.as_deref(),
+                            dynamic_risk_free_rate,
                         ) {
                             Ok(result) => return Some(result),
                             Err(e) => tracing::warn!("Quant analysis failed: {:?}", e),
@@ -397,9 +492,18 @@ impl AnalysisOrchestrator {
         if let Ok(financials_vec) = &financials_result {
             if !financials_vec.is_empty() {
                 tracing::info!("Running enhanced fundamental analysis with consensus data");
-                let sic_desc = ticker_details.as_ref().ok().and_then(|d| d.sic_description.as_deref());
+                let sic_desc = ticker_details
+                    .as_ref()
+                    .ok()
+                    .and_then(|d| d.sic_description.as_deref());
                 match self.fundamental_analyzer.analyze_with_consensus(
-                    symbol, financials_vec, current_price, shares_outstanding, &consensus_data, dynamic_risk_free_rate, sic_desc,
+                    symbol,
+                    financials_vec,
+                    current_price,
+                    shares_outstanding,
+                    &consensus_data,
+                    dynamic_risk_free_rate,
+                    sic_desc,
                 ) {
                     Ok(result) => fundamental_result = Some(result),
                     Err(e) => tracing::warn!("Fundamental analysis failed: {:?}", e),
@@ -408,28 +512,32 @@ impl AnalysisOrchestrator {
         }
 
         // Detect market regime from SPY bars (needed for regime-conditional weights)
-        let market_regime = spy_bars_ok.as_deref()
+        let market_regime = spy_bars_ok
+            .as_deref()
             .map(|spy_bars| self.detect_market_regime(spy_bars));
 
         // Combine results (now async — may fetch dynamic weights from ML service)
-        let mut overall = self.combine_results(
-            symbol,
-            &technical_result,
-            &fundamental_result,
-            &quant_result,
-            &sentiment_result,
-            market_regime.as_deref(),
-        ).await;
+        let mut overall = self
+            .combine_results(
+                symbol,
+                &technical_result,
+                &fundamental_result,
+                &quant_result,
+                &sentiment_result,
+                market_regime.as_deref(),
+            )
+            .await;
         overall.current_price = current_price;
         overall.name = ticker_details.ok().map(|d| d.name);
         overall.market_regime = market_regime;
 
         // Compute supplementary signals from options, insiders, dividends, snapshot
-        let (supplementary, confidence_adj) = self.compute_supplementary_signals(
-            symbol, current_price, bars_result.as_ref().ok(),
-        ).await;
+        let (supplementary, confidence_adj) = self
+            .compute_supplementary_signals(symbol, current_price, bars_result.as_ref().ok())
+            .await;
         overall.supplementary_signals = Some(supplementary);
-        overall.overall_confidence = (overall.overall_confidence + confidence_adj).clamp(0.05, 0.98);
+        overall.overall_confidence =
+            (overall.overall_confidence + confidence_adj).clamp(0.05, 0.98);
 
         // Log analysis features for future model training (fire-and-forget)
         self.log_analysis_features(
@@ -441,6 +549,7 @@ impl AnalysisOrchestrator {
             &overall.overall_signal,
             overall.overall_confidence,
             overall.market_regime.as_deref(),
+            overall.conviction_tier.as_deref(),
         );
 
         Ok(overall)
@@ -458,7 +567,9 @@ impl AnalysisOrchestrator {
         market_regime: Option<&str>,
     ) -> UnifiedAnalysis {
         // Try to get dynamic weights from signal models service
-        let dynamic_weights = self.try_get_dynamic_weights(technical, fundamental, quantitative, sentiment).await;
+        let dynamic_weights = self
+            .try_get_dynamic_weights(technical, fundamental, quantitative, sentiment)
+            .await;
 
         // Priority: ML weights > regime-conditional > hardcoded
         let (w_tech, w_fund, w_quant, w_sent) = match &dynamic_weights {
@@ -513,10 +624,18 @@ impl AnalysisOrchestrator {
 
         // Penalize confidence when engines conflict (e.g., one says Buy, another says Sell)
         let mut scores: Vec<i32> = Vec::new();
-        if let Some(tech) = technical { scores.push(tech.signal.to_score()); }
-        if let Some(fund) = fundamental { scores.push(fund.signal.to_score()); }
-        if let Some(quant) = quantitative { scores.push(quant.signal.to_score()); }
-        if let Some(sent) = sentiment { scores.push(sent.signal.to_score()); }
+        if let Some(tech) = technical {
+            scores.push(tech.signal.to_score());
+        }
+        if let Some(fund) = fundamental {
+            scores.push(fund.signal.to_score());
+        }
+        if let Some(quant) = quantitative {
+            scores.push(quant.signal.to_score());
+        }
+        if let Some(sent) = sentiment {
+            scores.push(sent.signal.to_score());
+        }
 
         let conflict_penalty = if scores.len() >= 2 {
             let has_bullish = scores.iter().any(|&s| s >= 30);
@@ -540,8 +659,10 @@ impl AnalysisOrchestrator {
         };
 
         // Compute conviction tier and time horizon signals
-        let conviction_tier = self.compute_conviction(technical, fundamental, quantitative, sentiment);
-        let time_horizon_signals = self.build_time_horizon_signals(technical, fundamental, quantitative, sentiment);
+        let conviction_tier =
+            self.compute_conviction(technical, fundamental, quantitative, sentiment);
+        let time_horizon_signals =
+            self.build_time_horizon_signals(technical, fundamental, quantitative, sentiment);
 
         // Enhanced recommendation with conviction
         let recommendation = format!(
@@ -587,7 +708,10 @@ impl AnalysisOrchestrator {
             features.insert("technical_confidence".to_string(), tech.confidence);
         }
         if let Some(fund) = fundamental {
-            features.insert("fundamental_score".to_string(), fund.signal.to_score() as f64);
+            features.insert(
+                "fundamental_score".to_string(),
+                fund.signal.to_score() as f64,
+            );
             features.insert("fundamental_confidence".to_string(), fund.confidence);
         }
         if let Some(quant) = quantitative {
@@ -601,7 +725,10 @@ impl AnalysisOrchestrator {
 
         match client.get_optimal_weights(&features).await {
             Ok(engine_weights) => {
-                tracing::info!("Using dynamic weights from signal models: {:?}", engine_weights.weights);
+                tracing::info!(
+                    "Using dynamic weights from signal models: {:?}",
+                    engine_weights.weights
+                );
                 Some(engine_weights.weights)
             }
             Err(e) => {
@@ -612,6 +739,7 @@ impl AnalysisOrchestrator {
     }
 
     /// Extract feature vector from analysis results and log to DB (fire-and-forget).
+    #[allow(clippy::too_many_arguments)]
     fn log_analysis_features(
         &self,
         symbol: &str,
@@ -622,6 +750,7 @@ impl AnalysisOrchestrator {
         overall_signal: &SignalStrength,
         overall_confidence: f64,
         market_regime: Option<&str>,
+        conviction_tier: Option<&str>,
     ) {
         let pool = match &self.db_pool {
             Some(p) => p.clone(),
@@ -644,7 +773,10 @@ impl AnalysisOrchestrator {
             }
         }
         if let Some(fund) = fundamental {
-            features.insert("fundamental_score".to_string(), fund.signal.to_score() as f64);
+            features.insert(
+                "fundamental_score".to_string(),
+                fund.signal.to_score() as f64,
+            );
             features.insert("fundamental_confidence".to_string(), fund.confidence);
             if let Some(metrics) = fund.metrics.as_object() {
                 for key in &["pe_ratio", "debt_to_equity", "revenue_growth", "roic"] {
@@ -690,7 +822,16 @@ impl AnalysisOrchestrator {
         let symbol_owned = symbol.to_string();
         let analysis_date = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
-        let features_json = match serde_json::to_string(&features) {
+        // Build JSON with numeric features + string metadata for analytics
+        let mut features_value = serde_json::to_value(&features).unwrap_or_default();
+        if let Some(obj) = features_value.as_object_mut() {
+            obj.insert("market_regime".to_string(), serde_json::json!(regime));
+            obj.insert(
+                "conviction_tier".to_string(),
+                serde_json::json!(conviction_tier.unwrap_or("UNKNOWN")),
+            );
+        }
+        let features_json = match serde_json::to_string(&features_value) {
             Ok(j) => j,
             Err(_) => return,
         };
@@ -744,33 +885,51 @@ impl AnalysisOrchestrator {
                 let mut ivs: Vec<f64> = Vec::new();
 
                 for opt in options {
-                    let contract_type = opt.details.as_ref()
+                    let contract_type = opt
+                        .details
+                        .as_ref()
                         .and_then(|d| d.contract_type.as_deref())
                         .unwrap_or("");
                     let oi = opt.open_interest.unwrap_or(0);
                     let iv = opt.implied_volatility.unwrap_or(0.0);
 
-                    if iv > 0.0 { ivs.push(iv); }
+                    if iv > 0.0 {
+                        ivs.push(iv);
+                    }
 
                     if contract_type.eq_ignore_ascii_case("call") {
                         call_oi += oi;
-                        if iv > 0.0 { call_iv_sum += iv; call_iv_count += 1; }
+                        if iv > 0.0 {
+                            call_iv_sum += iv;
+                            call_iv_count += 1;
+                        }
                     } else if contract_type.eq_ignore_ascii_case("put") {
                         put_oi += oi;
-                        if iv > 0.0 { put_iv_sum += iv; put_iv_count += 1; }
+                        if iv > 0.0 {
+                            put_iv_sum += iv;
+                            put_iv_count += 1;
+                        }
                     }
                 }
 
                 // Adaptive Put/Call ratio thresholds using per-strike distribution
-                let pc_ratio = if call_oi > 0 { put_oi as f64 / call_oi as f64 } else { 1.0 };
+                let pc_ratio = if call_oi > 0 {
+                    put_oi as f64 / call_oi as f64
+                } else {
+                    1.0
+                };
                 let mut per_strike_pc_ratios: Vec<f64> = Vec::new();
-                let mut strike_call_oi: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-                let mut strike_put_oi: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+                let mut strike_call_oi: std::collections::HashMap<i64, i64> =
+                    std::collections::HashMap::new();
+                let mut strike_put_oi: std::collections::HashMap<i64, i64> =
+                    std::collections::HashMap::new();
                 for opt in options {
                     if let Some(strike) = opt.details.as_ref().and_then(|d| d.strike_price) {
                         let key = (strike * 100.0) as i64;
                         let oi = opt.open_interest.unwrap_or(0);
-                        let contract_type = opt.details.as_ref()
+                        let contract_type = opt
+                            .details
+                            .as_ref()
                             .and_then(|d| d.contract_type.as_deref())
                             .unwrap_or("");
                         if contract_type.eq_ignore_ascii_case("call") {
@@ -812,13 +971,29 @@ impl AnalysisOrchestrator {
                 score_adj += pc_adj;
 
                 // Adaptive IV Skew using z-score relative to observed IV distribution
-                let avg_call_iv = if call_iv_count > 0 { call_iv_sum / call_iv_count as f64 } else { 0.0 };
-                let avg_put_iv = if put_iv_count > 0 { put_iv_sum / put_iv_count as f64 } else { 0.0 };
-                let iv_skew = if avg_call_iv > 0.0 { avg_put_iv / avg_call_iv } else { 1.0 };
+                let avg_call_iv = if call_iv_count > 0 {
+                    call_iv_sum / call_iv_count as f64
+                } else {
+                    0.0
+                };
+                let avg_put_iv = if put_iv_count > 0 {
+                    put_iv_sum / put_iv_count as f64
+                } else {
+                    0.0
+                };
+                let iv_skew = if avg_call_iv > 0.0 {
+                    avg_put_iv / avg_call_iv
+                } else {
+                    1.0
+                };
                 let skew_z = adaptive::z_score_of(iv_skew, &ivs);
-                let skew_signal = if skew_z > 1.5 { "heavy_put_demand" }
-                    else if skew_z < -1.5 { "heavy_call_demand" }
-                    else { "balanced" };
+                let skew_signal = if skew_z > 1.5 {
+                    "heavy_put_demand"
+                } else if skew_z < -1.5 {
+                    "heavy_call_demand"
+                } else {
+                    "balanced"
+                };
 
                 // IV Percentile (where is current median IV vs all observed IVs)
                 let iv_percentile = if !ivs.is_empty() {
@@ -827,38 +1002,56 @@ impl AnalysisOrchestrator {
                     // Rough percentile using current median
                     let below = ivs.iter().filter(|&&v| v <= median_iv).count();
                     (below as f64 / ivs.len() as f64) * 100.0
-                } else { 50.0 };
+                } else {
+                    50.0
+                };
 
-                if iv_percentile > 80.0 { score_adj -= 0.02; } // High IV = mean-reversion pressure
-                else if iv_percentile < 20.0 { score_adj += 0.02; } // Low IV = expansion likely
+                if iv_percentile > 80.0 {
+                    score_adj -= 0.02;
+                }
+                // High IV = mean-reversion pressure
+                else if iv_percentile < 20.0 {
+                    score_adj += 0.02;
+                } // Low IV = expansion likely
 
                 // Max Pain (strike with most total OI)
-                let mut strike_oi: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+                let mut strike_oi: std::collections::HashMap<i64, i64> =
+                    std::collections::HashMap::new();
                 for opt in options {
                     if let Some(strike) = opt.details.as_ref().and_then(|d| d.strike_price) {
                         let key = (strike * 100.0) as i64; // penny resolution
                         *strike_oi.entry(key).or_insert(0) += opt.open_interest.unwrap_or(0);
                     }
                 }
-                let max_pain = strike_oi.into_iter()
+                let max_pain = strike_oi
+                    .into_iter()
                     .max_by_key(|(_, oi)| *oi)
                     .map(|(k, _)| k as f64 / 100.0);
                 let max_pain_convergence = if let (Some(mp), Some(p)) = (max_pain, current_price) {
-                    if p > 0.0 { ((mp - p) / p * 100.0).abs() } else { 100.0 }
-                } else { 100.0 };
+                    if p > 0.0 {
+                        ((mp - p) / p * 100.0).abs()
+                    } else {
+                        100.0
+                    }
+                } else {
+                    100.0
+                };
 
-                signals.insert("options".to_string(), json!({
-                    "put_call_ratio": pc_ratio,
-                    "put_call_signal": pc_signal,
-                    "iv_skew": iv_skew,
-                    "iv_skew_signal": skew_signal,
-                    "iv_percentile": iv_percentile,
-                    "max_pain": max_pain,
-                    "max_pain_distance_pct": max_pain_convergence,
-                    "call_open_interest": call_oi,
-                    "put_open_interest": put_oi,
-                    "total_contracts": options.len(),
-                }));
+                signals.insert(
+                    "options".to_string(),
+                    json!({
+                        "put_call_ratio": pc_ratio,
+                        "put_call_signal": pc_signal,
+                        "iv_skew": iv_skew,
+                        "iv_skew_signal": skew_signal,
+                        "iv_percentile": iv_percentile,
+                        "max_pain": max_pain,
+                        "max_pain_distance_pct": max_pain_convergence,
+                        "call_open_interest": call_oi,
+                        "put_open_interest": put_oi,
+                        "total_contracts": options.len(),
+                    }),
+                );
             }
         }
 
@@ -872,13 +1065,19 @@ impl AnalysisOrchestrator {
                 let mut executive_buys = 0u32;
 
                 for txn in insiders {
-                    let is_buy = txn.transaction_type.as_deref()
+                    let is_buy = txn
+                        .transaction_type
+                        .as_deref()
                         .map(|t| {
                             let tl = t.to_lowercase();
-                            tl.contains("buy") || tl.contains("purchase") || tl.contains("acquisition")
+                            tl.contains("buy")
+                                || tl.contains("purchase")
+                                || tl.contains("acquisition")
                         })
                         .unwrap_or(false);
-                    let is_sell = txn.transaction_type.as_deref()
+                    let is_sell = txn
+                        .transaction_type
+                        .as_deref()
                         .map(|t| {
                             let tl = t.to_lowercase();
                             tl.contains("sell") || tl.contains("sale") || tl.contains("disposition")
@@ -886,18 +1085,25 @@ impl AnalysisOrchestrator {
                         .unwrap_or(false);
 
                     let value = txn.total_value.unwrap_or(0.0).abs();
-                    let is_executive = txn.title.as_deref()
+                    let is_executive = txn
+                        .title
+                        .as_deref()
                         .map(|t| {
                             let tl = t.to_lowercase();
-                            tl.contains("ceo") || tl.contains("cfo") || tl.contains("coo")
-                                || tl.contains("president") || tl.contains("chief")
+                            tl.contains("ceo")
+                                || tl.contains("cfo")
+                                || tl.contains("coo")
+                                || tl.contains("president")
+                                || tl.contains("chief")
                         })
                         .unwrap_or(false);
 
                     if is_buy {
                         buy_value += value;
                         buy_count += 1;
-                        if is_executive { executive_buys += 1; }
+                        if is_executive {
+                            executive_buys += 1;
+                        }
                     } else if is_sell {
                         sell_value += value;
                         sell_count += 1;
@@ -905,58 +1111,71 @@ impl AnalysisOrchestrator {
                 }
 
                 // Adaptive insider thresholds based on typical daily traded value
-                let typical_daily_value = bars.map(|b| {
-                    let recent = &b[b.len().saturating_sub(20)..];
-                    let avg_vol = recent.iter().map(|bar| bar.volume).sum::<f64>() / recent.len() as f64;
-                    let avg_price = recent.iter().map(|bar| bar.close).sum::<f64>() / recent.len() as f64;
-                    avg_vol * avg_price
-                }).unwrap_or(10_000_000.0);
+                let typical_daily_value = bars
+                    .map(|b| {
+                        let recent = &b[b.len().saturating_sub(20)..];
+                        let avg_vol =
+                            recent.iter().map(|bar| bar.volume).sum::<f64>() / recent.len() as f64;
+                        let avg_price =
+                            recent.iter().map(|bar| bar.close).sum::<f64>() / recent.len() as f64;
+                        avg_vol * avg_price
+                    })
+                    .unwrap_or(10_000_000.0);
 
-                let significant_buy_threshold = typical_daily_value * 0.001;  // 0.1% of daily value
+                let significant_buy_threshold = typical_daily_value * 0.001; // 0.1% of daily value
                 let significant_sell_threshold = typical_daily_value * 0.005; // 0.5% of daily value
 
                 let net_value = buy_value - sell_value;
-                let insider_signal = if net_value > significant_buy_threshold && buy_count > sell_count {
+                let insider_signal = if net_value > significant_buy_threshold
+                    && buy_count > sell_count
+                {
                     score_adj += 0.04;
                     "bullish"
                 } else if net_value < -significant_sell_threshold && sell_count > buy_count * 2 {
                     score_adj -= 0.03;
                     "bearish"
-                } else { "neutral" };
+                } else {
+                    "neutral"
+                };
 
                 if executive_buys >= 2 {
                     score_adj += 0.03; // Multiple C-suite buys is very bullish
                 }
 
-                signals.insert("insiders".to_string(), json!({
-                    "buy_count": buy_count,
-                    "sell_count": sell_count,
-                    "buy_value": buy_value,
-                    "sell_value": sell_value,
-                    "net_value": net_value,
-                    "executive_buys": executive_buys,
-                    "signal": insider_signal,
-                }));
+                signals.insert(
+                    "insiders".to_string(),
+                    json!({
+                        "buy_count": buy_count,
+                        "sell_count": sell_count,
+                        "buy_value": buy_value,
+                        "sell_value": sell_value,
+                        "net_value": net_value,
+                        "executive_buys": executive_buys,
+                        "signal": insider_signal,
+                    }),
+                );
             }
         }
 
         // --- Dividend Health Signals (adaptive thresholds) ---
         if let Ok(dividends) = &dividends_result {
             if dividends.len() >= 2 {
-                let amounts: Vec<f64> = dividends.iter()
-                    .filter_map(|d| d.cash_amount)
-                    .collect();
+                let amounts: Vec<f64> = dividends.iter().filter_map(|d| d.cash_amount).collect();
 
                 if amounts.len() >= 2 {
                     let latest = amounts[0];
                     let prev = amounts[1];
-                    let div_change = if prev > 0.0 { (latest - prev) / prev * 100.0 } else { 0.0 };
+                    let div_change = if prev > 0.0 {
+                        (latest - prev) / prev * 100.0
+                    } else {
+                        0.0
+                    };
 
                     // Compute all consecutive dividend changes for z-score
                     let mut div_changes: Vec<f64> = Vec::new();
                     for i in 1..amounts.len() {
                         if amounts[i] > 0.0 {
-                            div_changes.push((amounts[i-1] - amounts[i]) / amounts[i] * 100.0);
+                            div_changes.push((amounts[i - 1] - amounts[i]) / amounts[i] * 100.0);
                         }
                     }
 
@@ -981,7 +1200,9 @@ impl AnalysisOrchestrator {
                     } else if div_change > 10.0 {
                         score_adj += 0.02;
                         "significant_increase"
-                    } else { "stable" };
+                    } else {
+                        "stable"
+                    };
 
                     // Annualized yield (if we have price)
                     let annual_div = if let Some(freq) = dividends[0].frequency {
@@ -994,21 +1215,27 @@ impl AnalysisOrchestrator {
                         .map(|p| annual_div / p * 100.0);
 
                     // Special dividend detection
-                    let has_special = dividends.iter().any(|d|
-                        d.dividend_type.as_deref()
+                    let has_special = dividends.iter().any(|d| {
+                        d.dividend_type
+                            .as_deref()
                             .map(|t| t.to_lowercase().contains("special"))
                             .unwrap_or(false)
-                    );
-                    if has_special { score_adj += 0.02; }
+                    });
+                    if has_special {
+                        score_adj += 0.02;
+                    }
 
-                    signals.insert("dividends".to_string(), json!({
-                        "latest_amount": latest,
-                        "change_pct": div_change,
-                        "signal": div_signal,
-                        "annual_yield_pct": div_yield,
-                        "has_special_dividend": has_special,
-                        "payment_count": amounts.len(),
-                    }));
+                    signals.insert(
+                        "dividends".to_string(),
+                        json!({
+                            "latest_amount": latest,
+                            "change_pct": div_change,
+                            "signal": div_signal,
+                            "annual_yield_pct": div_yield,
+                            "has_special_dividend": has_special,
+                            "payment_count": amounts.len(),
+                        }),
+                    );
                 }
             }
         }
@@ -1025,10 +1252,12 @@ impl AnalysisOrchestrator {
                     let mut historical_gaps: Vec<f64> = Vec::new();
                     if let Some(bars) = bars {
                         for i in 1..bars.len() {
-                            let prev_bar_close = bars[i-1].close;
+                            let prev_bar_close = bars[i - 1].close;
                             let curr_bar_open = bars[i].open;
                             if prev_bar_close > 0.0 && curr_bar_open > 0.0 {
-                                historical_gaps.push((curr_bar_open - prev_bar_close) / prev_bar_close * 100.0);
+                                historical_gaps.push(
+                                    (curr_bar_open - prev_bar_close) / prev_bar_close * 100.0,
+                                );
                             }
                         }
                     }
@@ -1044,9 +1273,13 @@ impl AnalysisOrchestrator {
                         }
                     } else {
                         // Fallback to fixed thresholds
-                        if gap_pct > 2.0 { "gap_up" }
-                        else if gap_pct < -2.0 { "gap_down" }
-                        else { "flat" }
+                        if gap_pct > 2.0 {
+                            "gap_up"
+                        } else if gap_pct < -2.0 {
+                            "gap_down"
+                        } else {
+                            "flat"
+                        }
                     };
 
                     // Large gaps often fill — a gap up with weak follow-through is bearish
@@ -1060,13 +1293,16 @@ impl AnalysisOrchestrator {
 
                     let change_pct = snapshot.todays_change_perc.unwrap_or(0.0);
 
-                    signals.insert("intraday".to_string(), json!({
-                        "gap_pct": gap_pct,
-                        "gap_signal": gap_signal,
-                        "change_pct": change_pct,
-                        "today_open": today_open,
-                        "prev_close": prev_close,
-                    }));
+                    signals.insert(
+                        "intraday".to_string(),
+                        json!({
+                            "gap_pct": gap_pct,
+                            "gap_signal": gap_signal,
+                            "change_pct": change_pct,
+                            "today_open": today_open,
+                            "prev_close": prev_close,
+                        }),
+                    );
                 }
             }
         }
@@ -1078,7 +1314,12 @@ impl AnalysisOrchestrator {
             if insider_sig.get("signal").and_then(|s| s.as_str()) == Some("bullish") {
                 smart_money_score += 1.0;
             }
-            if insider_sig.get("executive_buys").and_then(|v| v.as_u64()).unwrap_or(0) >= 2 {
+            if insider_sig
+                .get("executive_buys")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                >= 2
+            {
                 smart_money_score += 1.0;
             }
         }
@@ -1098,16 +1339,21 @@ impl AnalysisOrchestrator {
                 // Compute historical volume ratios for adaptive threshold
                 let mut vol_ratios: Vec<f64> = Vec::new();
                 for i in 20..bars.len() {
-                    let recent_window = &bars[i-10..i];
-                    let prior_window = &bars[i-20..i-10];
-                    let recent_vol: f64 = recent_window.iter().map(|b| b.volume).sum::<f64>() / 10.0;
+                    let recent_window = &bars[i - 10..i];
+                    let prior_window = &bars[i - 20..i - 10];
+                    let recent_vol: f64 =
+                        recent_window.iter().map(|b| b.volume).sum::<f64>() / 10.0;
                     let prior_vol: f64 = prior_window.iter().map(|b| b.volume).sum::<f64>() / 10.0;
                     if prior_vol > 0.0 {
                         vol_ratios.push(recent_vol / prior_vol);
                     }
                 }
 
-                let current_vol_ratio = if prior_avg_vol > 0.0 { recent_avg_vol / prior_avg_vol } else { 1.0 };
+                let current_vol_ratio = if prior_avg_vol > 0.0 {
+                    recent_avg_vol / prior_avg_vol
+                } else {
+                    1.0
+                };
                 let vol_ratio_pct = adaptive::percentile_rank(current_vol_ratio, &vol_ratios);
 
                 if vol_ratio_pct < 0.20 {
@@ -1139,10 +1385,60 @@ impl AnalysisOrchestrator {
         let smart_money_adj = 0.02 * smart_money_z.abs().min(3.0) * smart_money_z.signum();
         score_adj += smart_money_adj;
 
-        signals.insert("smart_money".to_string(), json!({
-            "score": smart_money_score,
-            "signal": smart_money_signal,
-        }));
+        signals.insert(
+            "smart_money".to_string(),
+            json!({
+                "score": smart_money_score,
+                "signal": smart_money_signal,
+            }),
+        );
+
+        // --- Earnings Transcript NLP ---
+        let earnings_nlp_url = std::env::var("ML_EARNINGS_NLP_URL")
+            .unwrap_or_else(|_| "http://localhost:8005".to_string());
+        let earnings_client = ml_client::EarningsNlpClient::new(earnings_nlp_url);
+        match earnings_client.analyze_earnings(symbol).await {
+            Ok(nlp) if nlp.confidence > 0.0 && nlp.data_source != "none" => {
+                // Tone-based adjustment
+                match nlp.overall_tone.as_str() {
+                    "positive" => score_adj += 0.03 * nlp.confidence,
+                    "negative" => score_adj -= 0.03 * nlp.confidence,
+                    _ => {}
+                }
+                // Guidance-based adjustment
+                match nlp.guidance_sentiment.as_str() {
+                    "raised" => score_adj += 0.02,
+                    "lowered" => score_adj -= 0.02,
+                    _ => {}
+                }
+                signals.insert(
+                    "earnings_nlp".to_string(),
+                    json!({
+                        "overall_tone": nlp.overall_tone,
+                        "tone_score": nlp.tone_score,
+                        "confidence": nlp.confidence,
+                        "guidance_sentiment": nlp.guidance_sentiment,
+                        "guidance_keywords": nlp.guidance_keywords,
+                        "forward_looking_count": nlp.forward_looking_count,
+                        "risk_mentions": nlp.risk_mentions,
+                        "key_topics": nlp.key_topics,
+                        "data_source": nlp.data_source,
+                    }),
+                );
+                tracing::info!(
+                    "Earnings NLP for {}: tone={}, guidance={}",
+                    symbol,
+                    nlp.overall_tone,
+                    nlp.guidance_sentiment
+                );
+            }
+            Ok(_) => {
+                tracing::debug!("Earnings NLP for {}: no data available", symbol);
+            }
+            Err(e) => {
+                tracing::debug!("Earnings NLP unavailable for {}: {}", symbol, e);
+            }
+        }
 
         // --- Sector Rotation (adaptive thresholds) ---
         // Compare stock's recent performance vs sector ETF and SPY
@@ -1151,7 +1447,11 @@ impl AnalysisOrchestrator {
                 let stock_return_20d = {
                     let p0 = bars[bars.len() - 20].close;
                     let p1 = bars.last().unwrap().close;
-                    if p0 > 0.0 { (p1 - p0) / p0 * 100.0 } else { 0.0 }
+                    if p0 > 0.0 {
+                        (p1 - p0) / p0 * 100.0
+                    } else {
+                        0.0
+                    }
                 };
 
                 // Compare vs SPY with adaptive thresholds
@@ -1160,7 +1460,11 @@ impl AnalysisOrchestrator {
                         let spy_return_20d = {
                             let p0 = spy_bars[spy_bars.len() - 20].close;
                             let p1 = spy_bars.last().unwrap().close;
-                            if p0 > 0.0 { (p1 - p0) / p0 * 100.0 } else { 0.0 }
+                            if p0 > 0.0 {
+                                (p1 - p0) / p0 * 100.0
+                            } else {
+                                0.0
+                            }
                         };
                         let relative_perf = stock_return_20d - spy_return_20d;
 
@@ -1170,20 +1474,29 @@ impl AnalysisOrchestrator {
                             let stock_ret = {
                                 let p0 = bars[i - 20].close;
                                 let p1 = bars[i].close;
-                                if p0 > 0.0 { (p1 - p0) / p0 * 100.0 } else { 0.0 }
+                                if p0 > 0.0 {
+                                    (p1 - p0) / p0 * 100.0
+                                } else {
+                                    0.0
+                                }
                             };
                             if i < spy_bars.len() {
                                 let spy_ret = {
                                     let p0 = spy_bars[i - 20].close;
                                     let p1 = spy_bars[i].close;
-                                    if p0 > 0.0 { (p1 - p0) / p0 * 100.0 } else { 0.0 }
+                                    if p0 > 0.0 {
+                                        (p1 - p0) / p0 * 100.0
+                                    } else {
+                                        0.0
+                                    }
                                 };
                                 historical_rel_perf.push(stock_ret - spy_ret);
                             }
                         }
 
                         let rotation_signal = if !historical_rel_perf.is_empty() {
-                            let rel_perf_pct = adaptive::percentile_rank(relative_perf, &historical_rel_perf);
+                            let rel_perf_pct =
+                                adaptive::percentile_rank(relative_perf, &historical_rel_perf);
                             if rel_perf_pct > 0.80 {
                                 "outperforming"
                             } else if rel_perf_pct < 0.20 {
@@ -1193,17 +1506,24 @@ impl AnalysisOrchestrator {
                             }
                         } else {
                             // Fallback to fixed thresholds
-                            if relative_perf > 5.0 { "outperforming" }
-                            else if relative_perf < -5.0 { "underperforming" }
-                            else { "inline" }
+                            if relative_perf > 5.0 {
+                                "outperforming"
+                            } else if relative_perf < -5.0 {
+                                "underperforming"
+                            } else {
+                                "inline"
+                            }
                         };
 
-                        signals.insert("sector_rotation".to_string(), json!({
-                            "stock_return_20d": stock_return_20d,
-                            "spy_return_20d": spy_return_20d,
-                            "relative_performance": relative_perf,
-                            "signal": rotation_signal,
-                        }));
+                        signals.insert(
+                            "sector_rotation".to_string(),
+                            json!({
+                                "stock_return_20d": stock_return_20d,
+                                "spy_return_20d": spy_return_20d,
+                                "relative_performance": relative_perf,
+                                "signal": rotation_signal,
+                            }),
+                        );
                     }
                 }
             }
@@ -1279,7 +1599,9 @@ impl AnalysisOrchestrator {
                         let age = (Utc::now() - entry.cached_at).num_seconds();
                         if age < CACHE_TTL_SECS {
                             let cutoff = Utc::now() - Duration::days(days_back);
-                            let subset: Vec<Bar> = entry.data.iter()
+                            let subset: Vec<Bar> = entry
+                                .data
+                                .iter()
                                 .filter(|b| b.timestamp >= cutoff)
                                 .cloned()
                                 .collect();
@@ -1292,29 +1614,30 @@ impl AnalysisOrchestrator {
 
         let now = Utc::now();
         let start = now - Duration::days(days_back);
-        let bars = self.polygon_client
+        let bars = self
+            .polygon_client
             .get_aggregates(symbol, multiplier, span, start, now)
             .await?;
 
-        self.bars_cache.insert(cache_key.clone(), CacheEntry {
-            data: bars.clone(),
-            cached_at: Utc::now(),
-        });
+        self.bars_cache.insert(
+            cache_key.clone(),
+            CacheEntry {
+                data: bars.clone(),
+                cached_at: Utc::now(),
+            },
+        );
 
         // Update the secondary index
         self.bars_days_index
             .entry(prefix)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(days_back);
 
         Ok(bars)
     }
 
     /// Get ticker details (cached, 5-min TTL)
-    pub async fn get_ticker_details(
-        &self,
-        symbol: &str,
-    ) -> Result<TickerDetails, AnalysisError> {
+    pub async fn get_ticker_details(&self, symbol: &str) -> Result<TickerDetails, AnalysisError> {
         let cache_key = symbol.to_uppercase();
         if let Some(entry) = self.ticker_details_cache.get(&cache_key) {
             let age = (Utc::now() - entry.cached_at).num_seconds();
@@ -1325,19 +1648,19 @@ impl AnalysisOrchestrator {
 
         let details = self.polygon_client.get_ticker_details(symbol).await?;
 
-        self.ticker_details_cache.insert(cache_key, CacheEntry {
-            data: details.clone(),
-            cached_at: Utc::now(),
-        });
+        self.ticker_details_cache.insert(
+            cache_key,
+            CacheEntry {
+                data: details.clone(),
+                cached_at: Utc::now(),
+            },
+        );
 
         Ok(details)
     }
 
     /// Get company financials (cached, 5-min TTL)
-    pub async fn get_financials(
-        &self,
-        symbol: &str,
-    ) -> Result<Vec<Financials>, AnalysisError> {
+    pub async fn get_financials(&self, symbol: &str) -> Result<Vec<Financials>, AnalysisError> {
         let cache_key = symbol.to_uppercase();
         if let Some(entry) = self.financials_cache.get(&cache_key) {
             let age = (Utc::now() - entry.cached_at).num_seconds();
@@ -1348,10 +1671,13 @@ impl AnalysisOrchestrator {
 
         let financials = self.polygon_client.get_financials(symbol).await?;
 
-        self.financials_cache.insert(cache_key, CacheEntry {
-            data: financials.clone(),
-            cached_at: Utc::now(),
-        });
+        self.financials_cache.insert(
+            cache_key,
+            CacheEntry {
+                data: financials.clone(),
+                cached_at: Utc::now(),
+            },
+        );
 
         Ok(financials)
     }
@@ -1377,7 +1703,9 @@ impl AnalysisOrchestrator {
         &self,
         symbol: &str,
     ) -> Result<Vec<polygon_client::InsiderTransaction>, AnalysisError> {
-        self.polygon_client.get_insider_transactions(symbol, 50).await
+        self.polygon_client
+            .get_insider_transactions(symbol, 50)
+            .await
     }
 
     /// Get news articles for a symbol (cached, 5-min TTL)
@@ -1396,10 +1724,13 @@ impl AnalysisOrchestrator {
 
         let articles = self.polygon_client.get_news(Some(symbol), limit).await?;
 
-        self.news_cache.insert(cache_key, CacheEntry {
-            data: articles.clone(),
-            cached_at: Utc::now(),
-        });
+        self.news_cache.insert(
+            cache_key,
+            CacheEntry {
+                data: articles.clone(),
+                cached_at: Utc::now(),
+            },
+        );
 
         Ok(articles)
     }
@@ -1437,10 +1768,13 @@ impl AnalysisOrchestrator {
             recent_ratings,
         };
 
-        self.consensus_cache.insert(cache_key, CacheEntry {
-            data: data.clone(),
-            cached_at: Utc::now(),
-        });
+        self.consensus_cache.insert(
+            cache_key,
+            CacheEntry {
+                data: data.clone(),
+                cached_at: Utc::now(),
+            },
+        );
 
         data
     }

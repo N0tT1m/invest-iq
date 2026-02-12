@@ -193,17 +193,20 @@ impl UncertaintyEstimator {
             if !bucket.is_empty() {
                 let mid_conf = (i as f64 + 0.5) / n_buckets as f64;
                 let accuracy = bucket.iter().filter(|&&x| x).count() as f64 / bucket.len() as f64;
-                self.accuracy_by_confidence.push((mid_conf, accuracy, bucket.len()));
+                self.accuracy_by_confidence
+                    .push((mid_conf, accuracy, bucket.len()));
             }
         }
 
         // Update base model variance from calibration gap
         if !self.accuracy_by_confidence.is_empty() {
-            let total_gap: f64 = self.accuracy_by_confidence
+            let total_gap: f64 = self
+                .accuracy_by_confidence
                 .iter()
                 .map(|(conf, acc, _)| (conf - acc).powi(2))
                 .sum();
-            self.base_model_variance = (total_gap / self.accuracy_by_confidence.len() as f64).sqrt();
+            self.base_model_variance =
+                (total_gap / self.accuracy_by_confidence.len() as f64).sqrt();
         }
     }
 
@@ -331,7 +334,10 @@ impl UncertaintyEstimator {
                 name: "Market Volatility".to_string(),
                 contribution: vol_contribution * 0.15,
                 uncertainty_type: UncertaintyType::Aleatoric,
-                description: format!("Current volatility: {:.1}%", context.market_volatility * 100.0),
+                description: format!(
+                    "Current volatility: {:.1}%",
+                    context.market_volatility * 100.0
+                ),
             });
             aleatoric += vol_contribution * 0.15;
         }
@@ -366,7 +372,10 @@ impl UncertaintyEstimator {
         self.accuracy_by_confidence
             .iter()
             .min_by(|a, b| {
-                (a.0 - confidence).abs().partial_cmp(&(b.0 - confidence).abs()).unwrap()
+                (a.0 - confidence)
+                    .abs()
+                    .partial_cmp(&(b.0 - confidence).abs())
+                    .unwrap()
             })
             .copied()
     }
@@ -398,7 +407,11 @@ impl UncertaintyEstimator {
         } else if score >= 50.0 {
             ("C", "Moderate reliability - proceed with caution", true)
         } else if score >= 35.0 {
-            ("D", "Low reliability - consider waiting for better signal", false)
+            (
+                "D",
+                "Low reliability - consider waiting for better signal",
+                false,
+            )
         } else {
             ("F", "Unreliable - insufficient confidence to act", false)
         };
@@ -433,11 +446,20 @@ mod tests {
 
     #[test]
     fn test_uncertainty_level_classification() {
-        assert_eq!(UncertaintyLevel::from_score(0.05), UncertaintyLevel::VeryLow);
+        assert_eq!(
+            UncertaintyLevel::from_score(0.05),
+            UncertaintyLevel::VeryLow
+        );
         assert_eq!(UncertaintyLevel::from_score(0.15), UncertaintyLevel::Low);
-        assert_eq!(UncertaintyLevel::from_score(0.25), UncertaintyLevel::Moderate);
+        assert_eq!(
+            UncertaintyLevel::from_score(0.25),
+            UncertaintyLevel::Moderate
+        );
         assert_eq!(UncertaintyLevel::from_score(0.45), UncertaintyLevel::High);
-        assert_eq!(UncertaintyLevel::from_score(0.6), UncertaintyLevel::VeryHigh);
+        assert_eq!(
+            UncertaintyLevel::from_score(0.6),
+            UncertaintyLevel::VeryHigh
+        );
     }
 
     #[test]

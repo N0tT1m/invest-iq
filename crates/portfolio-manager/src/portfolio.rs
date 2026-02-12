@@ -1,8 +1,8 @@
-use crate::models::*;
 use crate::db::PortfolioDb;
+use crate::models::*;
 use anyhow::{anyhow, Result};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 
 pub struct PortfolioManager {
     db: PortfolioDb,
@@ -49,23 +49,19 @@ impl PortfolioManager {
 
     /// Get a position by symbol
     pub async fn get_position(&self, symbol: &str) -> Result<Option<Position>> {
-        let position = sqlx::query_as::<_, Position>(
-            "SELECT * FROM positions WHERE symbol = ?"
-        )
-        .bind(symbol)
-        .fetch_optional(self.db.pool())
-        .await?;
+        let position = sqlx::query_as::<_, Position>("SELECT * FROM positions WHERE symbol = ?")
+            .bind(symbol)
+            .fetch_optional(self.db.pool())
+            .await?;
 
         Ok(position)
     }
 
     /// Get all positions
     pub async fn get_all_positions(&self) -> Result<Vec<Position>> {
-        let positions = sqlx::query_as::<_, Position>(
-            "SELECT * FROM positions ORDER BY symbol"
-        )
-        .fetch_all(self.db.pool())
-        .await?;
+        let positions = sqlx::query_as::<_, Position>("SELECT * FROM positions ORDER BY symbol")
+            .fetch_all(self.db.pool())
+            .await?;
 
         Ok(positions)
     }
@@ -77,7 +73,7 @@ impl PortfolioManager {
             UPDATE positions
             SET shares = ?, entry_price = ?, entry_date = ?, notes = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(position.shares.to_f64().unwrap_or(0.0))
         .bind(position.entry_price.to_f64().unwrap_or(0.0))
@@ -93,7 +89,9 @@ impl PortfolioManager {
     /// Remove shares from a position (or delete if shares reach 0)
     pub async fn remove_shares(&self, symbol: &str, shares: Decimal) -> Result<()> {
         // Get current position
-        let position = self.get_position(symbol).await?
+        let position = self
+            .get_position(symbol)
+            .await?
             .ok_or_else(|| anyhow!("Position not found: {}", symbol))?;
 
         let new_shares = position.shares - shares;
@@ -143,7 +141,9 @@ impl PortfolioManager {
             let cost_basis = position.shares * position.entry_price;
             let unrealized_pnl = market_value - cost_basis;
             let unrealized_pnl_percent = if cost_basis > Decimal::ZERO {
-                ((unrealized_pnl / cost_basis) * Decimal::from(100)).to_f64().unwrap_or(0.0)
+                ((unrealized_pnl / cost_basis) * Decimal::from(100))
+                    .to_f64()
+                    .unwrap_or(0.0)
             } else {
                 0.0
             };
@@ -163,7 +163,9 @@ impl PortfolioManager {
 
         let total_pnl = total_value - total_cost;
         let total_pnl_percent = if total_cost > Decimal::ZERO {
-            ((total_pnl / total_cost) * Decimal::from(100)).to_f64().unwrap_or(0.0)
+            ((total_pnl / total_cost) * Decimal::from(100))
+                .to_f64()
+                .unwrap_or(0.0)
         } else {
             0.0
         };
@@ -202,7 +204,7 @@ impl PortfolioManager {
     pub async fn get_snapshots(&self, days: i64) -> Result<Vec<PortfolioSnapshot>> {
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
         let snapshots = sqlx::query_as::<_, PortfolioSnapshot>(
-            "SELECT * FROM portfolio_snapshots WHERE snapshot_date >= ? ORDER BY snapshot_date"
+            "SELECT * FROM portfolio_snapshots WHERE snapshot_date >= ? ORDER BY snapshot_date",
         )
         .bind(&cutoff)
         .fetch_all(self.db.pool())
@@ -226,11 +228,10 @@ impl PortfolioManager {
 
     /// Get watchlist
     pub async fn get_watchlist(&self) -> Result<Vec<WatchlistItem>> {
-        let items = sqlx::query_as::<_, WatchlistItem>(
-            "SELECT * FROM watchlist ORDER BY added_at DESC"
-        )
-        .fetch_all(self.db.pool())
-        .await?;
+        let items =
+            sqlx::query_as::<_, WatchlistItem>("SELECT * FROM watchlist ORDER BY added_at DESC")
+                .fetch_all(self.db.pool())
+                .await?;
 
         Ok(items)
     }
@@ -250,7 +251,7 @@ impl PortfolioManager {
     /// Get all target allocations
     pub async fn get_target_allocations(&self) -> Result<Vec<TargetAllocation>> {
         let targets = sqlx::query_as::<_, TargetAllocation>(
-            "SELECT * FROM target_allocations ORDER BY target_weight_percent DESC"
+            "SELECT * FROM target_allocations ORDER BY target_weight_percent DESC",
         )
         .fetch_all(self.db.pool())
         .await?;
@@ -340,14 +341,20 @@ mod tests {
         };
 
         manager.add_position(position).await.unwrap();
-        manager.remove_shares("AAPL", Decimal::from(5)).await.unwrap();
+        manager
+            .remove_shares("AAPL", Decimal::from(5))
+            .await
+            .unwrap();
 
         let retrieved = manager.get_position("AAPL").await.unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().shares, Decimal::from(5));
 
         // Remove all remaining shares
-        manager.remove_shares("AAPL", Decimal::from(5)).await.unwrap();
+        manager
+            .remove_shares("AAPL", Decimal::from(5))
+            .await
+            .unwrap();
         let retrieved = manager.get_position("AAPL").await.unwrap();
         assert!(retrieved.is_none());
     }

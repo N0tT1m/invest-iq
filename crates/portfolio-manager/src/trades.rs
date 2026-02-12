@@ -1,8 +1,8 @@
-use crate::models::*;
 use crate::db::PortfolioDb;
+use crate::models::*;
 use anyhow::Result;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 
 pub struct TradeLogger {
     db: PortfolioDb,
@@ -20,14 +20,20 @@ impl TradeLogger {
             INSERT INTO trades (symbol, action, shares, price, trade_date, commission, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             RETURNING id
-            "#
+            "#,
         )
         .bind(&trade.symbol)
         .bind(&trade.action)
         .bind(trade.shares.to_f64().unwrap_or(0.0))
         .bind(trade.price.to_f64().unwrap_or(0.0))
         .bind(&trade.trade_date)
-        .bind(trade.commission.unwrap_or(Decimal::ZERO).to_f64().unwrap_or(0.0))
+        .bind(
+            trade
+                .commission
+                .unwrap_or(Decimal::ZERO)
+                .to_f64()
+                .unwrap_or(0.0),
+        )
         .bind(&trade.notes)
         .fetch_one(self.db.pool())
         .await?;
@@ -38,7 +44,7 @@ impl TradeLogger {
     /// Get all trades for a symbol
     pub async fn get_trades_for_symbol(&self, symbol: &str) -> Result<Vec<Trade>> {
         let trades = sqlx::query_as::<_, Trade>(
-            "SELECT * FROM trades WHERE symbol = ? ORDER BY trade_date DESC"
+            "SELECT * FROM trades WHERE symbol = ? ORDER BY trade_date DESC",
         )
         .bind(symbol)
         .fetch_all(self.db.pool())
@@ -51,14 +57,14 @@ impl TradeLogger {
     pub async fn get_all_trades(&self, limit: Option<i64>) -> Result<Vec<Trade>> {
         let trades = if let Some(lim) = limit {
             sqlx::query_as::<_, Trade>(
-                "SELECT * FROM trades ORDER BY trade_date DESC, created_at DESC LIMIT ?"
+                "SELECT * FROM trades ORDER BY trade_date DESC, created_at DESC LIMIT ?",
             )
             .bind(lim)
             .fetch_all(self.db.pool())
             .await?
         } else {
             sqlx::query_as::<_, Trade>(
-                "SELECT * FROM trades ORDER BY trade_date DESC, created_at DESC"
+                "SELECT * FROM trades ORDER BY trade_date DESC, created_at DESC",
             )
             .fetch_all(self.db.pool())
             .await?
@@ -69,12 +75,10 @@ impl TradeLogger {
 
     /// Get trade by ID
     pub async fn get_trade(&self, id: i64) -> Result<Option<Trade>> {
-        let trade = sqlx::query_as::<_, Trade>(
-            "SELECT * FROM trades WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(self.db.pool())
-        .await?;
+        let trade = sqlx::query_as::<_, Trade>("SELECT * FROM trades WHERE id = ?")
+            .bind(id)
+            .fetch_optional(self.db.pool())
+            .await?;
 
         Ok(trade)
     }
@@ -115,7 +119,9 @@ impl TradeLogger {
     /// Get trades within date range (ascending order for lot matching)
     async fn get_trades_ascending(&self, days: Option<i64>) -> Result<Vec<Trade>> {
         let trades = if let Some(d) = days {
-            let cutoff = (chrono::Utc::now() - chrono::Duration::days(d)).format("%Y-%m-%d").to_string();
+            let cutoff = (chrono::Utc::now() - chrono::Duration::days(d))
+                .format("%Y-%m-%d")
+                .to_string();
             sqlx::query_as::<_, Trade>(
                 "SELECT * FROM trades WHERE trade_date >= ? ORDER BY trade_date ASC, created_at ASC"
             )
@@ -124,7 +130,7 @@ impl TradeLogger {
             .await?
         } else {
             sqlx::query_as::<_, Trade>(
-                "SELECT * FROM trades ORDER BY trade_date ASC, created_at ASC"
+                "SELECT * FROM trades ORDER BY trade_date ASC, created_at ASC",
             )
             .fetch_all(self.db.pool())
             .await?
@@ -159,18 +165,28 @@ impl TradeLogger {
 
                 match method {
                     CostBasisMethod::Fifo => {
-                        while remaining > Decimal::from_f64(0.0001).unwrap_or_default() && !entry.is_empty() {
+                        while remaining > Decimal::from_f64(0.0001).unwrap_or_default()
+                            && !entry.is_empty()
+                        {
                             let (buy_shares, buy_price, buy_date_str) = entry[0].clone();
                             let shares_to_sell = remaining.min(buy_shares);
                             total_cost += shares_to_sell * buy_price;
 
-                            let buy_date = chrono::NaiveDate::parse_from_str(&buy_date_str, "%Y-%m-%d")
-                                .unwrap_or(sell_date);
+                            let buy_date =
+                                chrono::NaiveDate::parse_from_str(&buy_date_str, "%Y-%m-%d")
+                                    .unwrap_or(sell_date);
                             let hold_days = (sell_date - buy_date).num_days();
-                            trade_pnl.push(((shares_to_sell * trade.price - shares_to_sell * buy_price).to_f64().unwrap_or(0.0), hold_days));
+                            trade_pnl.push((
+                                (shares_to_sell * trade.price - shares_to_sell * buy_price)
+                                    .to_f64()
+                                    .unwrap_or(0.0),
+                                hold_days,
+                            ));
 
                             remaining -= shares_to_sell;
-                            if shares_to_sell >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default() {
+                            if shares_to_sell
+                                >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default()
+                            {
                                 entry.remove(0);
                             } else {
                                 entry[0].0 -= shares_to_sell;
@@ -178,19 +194,29 @@ impl TradeLogger {
                         }
                     }
                     CostBasisMethod::Lifo => {
-                        while remaining > Decimal::from_f64(0.0001).unwrap_or_default() && !entry.is_empty() {
+                        while remaining > Decimal::from_f64(0.0001).unwrap_or_default()
+                            && !entry.is_empty()
+                        {
                             let last = entry.len() - 1;
                             let (buy_shares, buy_price, buy_date_str) = entry[last].clone();
                             let shares_to_sell = remaining.min(buy_shares);
                             total_cost += shares_to_sell * buy_price;
 
-                            let buy_date = chrono::NaiveDate::parse_from_str(&buy_date_str, "%Y-%m-%d")
-                                .unwrap_or(sell_date);
+                            let buy_date =
+                                chrono::NaiveDate::parse_from_str(&buy_date_str, "%Y-%m-%d")
+                                    .unwrap_or(sell_date);
                             let hold_days = (sell_date - buy_date).num_days();
-                            trade_pnl.push(((shares_to_sell * trade.price - shares_to_sell * buy_price).to_f64().unwrap_or(0.0), hold_days));
+                            trade_pnl.push((
+                                (shares_to_sell * trade.price - shares_to_sell * buy_price)
+                                    .to_f64()
+                                    .unwrap_or(0.0),
+                                hold_days,
+                            ));
 
                             remaining -= shares_to_sell;
-                            if shares_to_sell >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default() {
+                            if shares_to_sell
+                                >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default()
+                            {
                                 entry.remove(last);
                             } else {
                                 entry[last].0 -= shares_to_sell;
@@ -208,7 +234,9 @@ impl TradeLogger {
 
                         let shares_sold = remaining.min(total_shares);
                         total_cost = shares_sold * avg_price;
-                        let pnl = (shares_sold * trade.price - total_cost).to_f64().unwrap_or(0.0);
+                        let pnl = (shares_sold * trade.price - total_cost)
+                            .to_f64()
+                            .unwrap_or(0.0);
                         trade_pnl.push((pnl, 0)); // avg cost doesn't track individual holding days
 
                         // Reduce all lots proportionally
@@ -218,7 +246,7 @@ impl TradeLogger {
                             Decimal::ZERO
                         };
                         for lot in entry.iter_mut() {
-                            lot.0 = lot.0 * ratio;
+                            lot.0 *= ratio;
                         }
                         entry.retain(|l| l.0 > Decimal::from_f64(0.0001).unwrap_or_default());
                     }
@@ -243,17 +271,39 @@ impl TradeLogger {
 
         let distribution = HoldingDistribution {
             under_7d: holding_days.iter().filter(|&&d| d < 7).count(),
-            d7_to_30: holding_days.iter().filter(|&&d| d >= 7 && d < 30).count(),
-            d30_to_90: holding_days.iter().filter(|&&d| d >= 30 && d < 90).count(),
+            d7_to_30: holding_days
+                .iter()
+                .filter(|&&d| (7..30).contains(&d))
+                .count(),
+            d30_to_90: holding_days
+                .iter()
+                .filter(|&&d| (30..90).contains(&d))
+                .count(),
             over_90d: holding_days.iter().filter(|&&d| d >= 90).count(),
         };
 
         // Trade quality metrics
-        let wins: Vec<f64> = trade_pnl.iter().filter(|(p, _)| *p > 0.0).map(|(p, _)| *p).collect();
-        let losses: Vec<f64> = trade_pnl.iter().filter(|(p, _)| *p < 0.0).map(|(p, _)| p.abs()).collect();
+        let wins: Vec<f64> = trade_pnl
+            .iter()
+            .filter(|(p, _)| *p > 0.0)
+            .map(|(p, _)| *p)
+            .collect();
+        let losses: Vec<f64> = trade_pnl
+            .iter()
+            .filter(|(p, _)| *p < 0.0)
+            .map(|(p, _)| p.abs())
+            .collect();
 
-        let avg_win = if !wins.is_empty() { wins.iter().sum::<f64>() / wins.len() as f64 } else { 0.0 };
-        let avg_loss = if !losses.is_empty() { losses.iter().sum::<f64>() / losses.len() as f64 } else { 0.0 };
+        let avg_win = if !wins.is_empty() {
+            wins.iter().sum::<f64>() / wins.len() as f64
+        } else {
+            0.0
+        };
+        let avg_loss = if !losses.is_empty() {
+            losses.iter().sum::<f64>() / losses.len() as f64
+        } else {
+            0.0
+        };
         let total_win: f64 = wins.iter().sum();
         let total_loss: f64 = losses.iter().sum();
 
@@ -262,8 +312,16 @@ impl TradeLogger {
         } else {
             0.0
         };
-        let profit_factor = if total_loss > 0.0 { Some(total_win / total_loss) } else { None };
-        let payoff_ratio = if avg_loss > 0.0 { Some(avg_win / avg_loss) } else { None };
+        let profit_factor = if total_loss > 0.0 {
+            Some(total_win / total_loss)
+        } else {
+            None
+        };
+        let payoff_ratio = if avg_loss > 0.0 {
+            Some(avg_win / avg_loss)
+        } else {
+            None
+        };
 
         Ok(EnhancedPerformanceMetrics {
             base,
@@ -280,9 +338,11 @@ impl TradeLogger {
     /// Calculate performance metrics
     pub async fn get_performance_metrics(&self, days: Option<i64>) -> Result<PerformanceMetrics> {
         let trades = if let Some(d) = days {
-            let cutoff = (chrono::Utc::now() - chrono::Duration::days(d as i64)).format("%Y-%m-%d").to_string();
+            let cutoff = (chrono::Utc::now() - chrono::Duration::days(d))
+                .format("%Y-%m-%d")
+                .to_string();
             sqlx::query_as::<_, Trade>(
-                "SELECT * FROM trades WHERE trade_date >= ? ORDER BY trade_date DESC"
+                "SELECT * FROM trades WHERE trade_date >= ? ORDER BY trade_date DESC",
             )
             .bind(&cutoff)
             .fetch_all(self.db.pool())
@@ -293,10 +353,11 @@ impl TradeLogger {
 
         // Calculate P&L for each trade by matching buys with sells
         let mut trade_pnl: Vec<(Trade, Decimal)> = Vec::new();
-        let mut position_map: std::collections::HashMap<String, Vec<(Decimal, Decimal)>> = std::collections::HashMap::new();
+        let mut position_map: std::collections::HashMap<String, Vec<(Decimal, Decimal)>> =
+            std::collections::HashMap::new();
 
         for trade in trades.iter() {
-            let entry = position_map.entry(trade.symbol.clone()).or_insert_with(Vec::new);
+            let entry = position_map.entry(trade.symbol.clone()).or_default();
 
             if trade.action == "buy" {
                 // Add to position
@@ -307,14 +368,17 @@ impl TradeLogger {
                 let mut remaining_shares = trade.shares;
                 let mut total_cost = Decimal::ZERO;
 
-                while remaining_shares > Decimal::from_f64(0.0001).unwrap_or_default() && !entry.is_empty() {
+                while remaining_shares > Decimal::from_f64(0.0001).unwrap_or_default()
+                    && !entry.is_empty()
+                {
                     let (buy_shares, buy_price) = entry[0];
                     let shares_to_sell = remaining_shares.min(buy_shares);
 
                     total_cost += shares_to_sell * buy_price;
                     remaining_shares -= shares_to_sell;
 
-                    if shares_to_sell >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default() {
+                    if shares_to_sell >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default()
+                    {
                         entry.remove(0);
                     } else {
                         entry[0].0 -= shares_to_sell;
@@ -329,8 +393,14 @@ impl TradeLogger {
 
         // Calculate metrics
         let total_trades = trade_pnl.len();
-        let winning_trades = trade_pnl.iter().filter(|(_, pnl)| *pnl > Decimal::ZERO).count();
-        let losing_trades = trade_pnl.iter().filter(|(_, pnl)| *pnl < Decimal::ZERO).count();
+        let winning_trades = trade_pnl
+            .iter()
+            .filter(|(_, pnl)| *pnl > Decimal::ZERO)
+            .count();
+        let losing_trades = trade_pnl
+            .iter()
+            .filter(|(_, pnl)| *pnl < Decimal::ZERO)
+            .count();
         let win_rate = if total_trades > 0 {
             (winning_trades as f64 / total_trades as f64) * 100.0
         } else {
@@ -339,12 +409,14 @@ impl TradeLogger {
 
         let total_realized_pnl: Decimal = trade_pnl.iter().map(|(_, pnl)| pnl).sum();
 
-        let wins: Vec<Decimal> = trade_pnl.iter()
+        let wins: Vec<Decimal> = trade_pnl
+            .iter()
             .filter(|(_, pnl)| *pnl > Decimal::ZERO)
             .map(|(_, pnl)| *pnl)
             .collect();
 
-        let losses: Vec<Decimal> = trade_pnl.iter()
+        let losses: Vec<Decimal> = trade_pnl
+            .iter()
             .filter(|(_, pnl)| *pnl < Decimal::ZERO)
             .map(|(_, pnl)| *pnl)
             .collect();
@@ -420,30 +492,36 @@ mod tests {
         let logger = TradeLogger::new(db);
 
         // Buy trade
-        logger.log_trade(TradeInput {
-            symbol: "AAPL".to_string(),
-            action: "buy".to_string(),
-            shares: Decimal::from(10),
-            price: Decimal::from(100),
-            trade_date: "2025-01-01".to_string(),
-            commission: Some(Decimal::from(1)),
-            notes: None,
-            alert_id: None,
-            analysis_id: None,
-        }).await.unwrap();
+        logger
+            .log_trade(TradeInput {
+                symbol: "AAPL".to_string(),
+                action: "buy".to_string(),
+                shares: Decimal::from(10),
+                price: Decimal::from(100),
+                trade_date: "2025-01-01".to_string(),
+                commission: Some(Decimal::from(1)),
+                notes: None,
+                alert_id: None,
+                analysis_id: None,
+            })
+            .await
+            .unwrap();
 
         // Sell trade (profit)
-        logger.log_trade(TradeInput {
-            symbol: "AAPL".to_string(),
-            action: "sell".to_string(),
-            shares: Decimal::from(10),
-            price: Decimal::from(120),
-            trade_date: "2025-01-15".to_string(),
-            commission: Some(Decimal::from(1)),
-            notes: None,
-            alert_id: None,
-            analysis_id: None,
-        }).await.unwrap();
+        logger
+            .log_trade(TradeInput {
+                symbol: "AAPL".to_string(),
+                action: "sell".to_string(),
+                shares: Decimal::from(10),
+                price: Decimal::from(120),
+                trade_date: "2025-01-15".to_string(),
+                commission: Some(Decimal::from(1)),
+                notes: None,
+                alert_id: None,
+                analysis_id: None,
+            })
+            .await
+            .unwrap();
 
         let metrics = logger.get_performance_metrics(None).await.unwrap();
         assert_eq!(metrics.total_trades, 2);

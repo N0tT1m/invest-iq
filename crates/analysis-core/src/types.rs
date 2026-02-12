@@ -1,8 +1,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "openapi")]
+use utoipa::ToSchema;
+
 /// OHLCV bar data
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct Bar {
     pub timestamp: DateTime<Utc>,
     pub open: f64,
@@ -16,6 +20,7 @@ pub struct Bar {
 
 /// Quote data (bid/ask)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct Quote {
     pub timestamp: DateTime<Utc>,
     pub bid: f64,
@@ -26,6 +31,7 @@ pub struct Quote {
 
 /// Trade data
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct Trade {
     pub timestamp: DateTime<Utc>,
     pub price: f64,
@@ -97,6 +103,7 @@ pub struct NewsArticle {
 
 /// Signal strength
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub enum SignalStrength {
     StrongBuy,
     Buy,
@@ -149,6 +156,7 @@ impl SignalStrength {
 
 /// Analysis result from any analyzer
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct AnalysisResult {
     pub symbol: String,
     pub timestamp: DateTime<Utc>,
@@ -160,6 +168,7 @@ pub struct AnalysisResult {
 
 /// Combined analysis from all engines
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct UnifiedAnalysis {
     pub symbol: String,
     #[serde(default)]
@@ -188,6 +197,7 @@ pub struct UnifiedAnalysis {
 
 /// Timeframe for analysis
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub enum Timeframe {
     Minute1,
     Minute5,

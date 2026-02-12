@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct RiskParameters {
@@ -41,9 +41,15 @@ pub struct RiskParameters {
     pub updated_at: Option<String>,
 }
 
-fn default_daily_loss_limit() -> f64 { 5.0 }
-fn default_max_consecutive_losses() -> i32 { 3 }
-fn default_drawdown_limit() -> f64 { 10.0 }
+fn default_daily_loss_limit() -> f64 {
+    5.0
+}
+fn default_max_consecutive_losses() -> i32 {
+    3
+}
+fn default_drawdown_limit() -> f64 {
+    10.0
+}
 
 impl Default for RiskParameters {
     fn default() -> Self {
@@ -126,12 +132,12 @@ impl From<ActiveRiskPositionRow> for ActiveRiskPosition {
             shares: Decimal::from_f64(row.shares).unwrap_or_default(),
             entry_price: Decimal::from_f64(row.entry_price).unwrap_or_default(),
             entry_date: row.entry_date,
-            stop_loss_price: row.stop_loss_price.and_then(|v| Decimal::from_f64(v)),
-            take_profit_price: row.take_profit_price.and_then(|v| Decimal::from_f64(v)),
+            stop_loss_price: row.stop_loss_price.and_then(Decimal::from_f64),
+            take_profit_price: row.take_profit_price.and_then(Decimal::from_f64),
             trailing_stop_enabled: row.trailing_stop_enabled,
             trailing_stop_percent: row.trailing_stop_percent,
-            max_price_seen: row.max_price_seen.and_then(|v| Decimal::from_f64(v)),
-            risk_amount: row.risk_amount.and_then(|v| Decimal::from_f64(v)),
+            max_price_seen: row.max_price_seen.and_then(Decimal::from_f64),
+            risk_amount: row.risk_amount.and_then(Decimal::from_f64),
             position_size_percent: row.position_size_percent,
             status: row.status,
             created_at: row.created_at,

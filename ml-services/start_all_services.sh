@@ -49,12 +49,22 @@ echo $BAYESIAN_PID > .bayesian.pid
 echo $PRICE_PID > .price.pid
 echo $SIGNAL_PID > .signal_models.pid
 
+sleep 2
+
+echo "Starting Earnings NLP Service on port 8005..."
+python -m earnings_nlp.service &
+EARNINGS_PID=$!
+echo $EARNINGS_PID > .earnings_nlp.pid
+
+sleep 2
+
 echo ""
 echo "All ML services started!"
 echo "  - FinBERT Sentiment:       http://localhost:8001"
 echo "  - Bayesian Weights:        http://localhost:8002"
 echo "  - Price Predictor:         http://localhost:8003"
 echo "  - Signal Models:           http://localhost:8004"
+echo "  - Earnings NLP:            http://localhost:8005"
 echo ""
 echo "PIDs saved to .*.pid files"
 echo "To stop services, run: ./stop_all_services.sh"
@@ -64,3 +74,4 @@ curl -s http://localhost:8001/health | jq '.' || echo "Sentiment service not rea
 curl -s http://localhost:8002/health | jq '.' || echo "Bayesian service not ready yet"
 curl -s http://localhost:8003/health | jq '.' || echo "Price predictor service not ready yet"
 curl -s http://localhost:8004/health | jq '.' || echo "Signal models service not ready yet"
+curl -s http://localhost:8005/health | jq '.' || echo "Earnings NLP service not ready yet"

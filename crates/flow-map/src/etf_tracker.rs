@@ -164,7 +164,8 @@ impl SectorETFTracker {
 
     /// Update performance data
     pub fn update_performance(&mut self, symbol: &str, performance: ETFPerformance) {
-        self.performance_cache.insert(symbol.to_string(), performance);
+        self.performance_cache
+            .insert(symbol.to_string(), performance);
     }
 
     /// Get sector performance ranking

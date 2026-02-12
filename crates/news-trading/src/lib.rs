@@ -1,10 +1,10 @@
 use analysis_core::NewsArticle;
 use anyhow::Result;
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Duration, Utc};
+use log::warn;
 use polygon_client::PolygonClient;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use log::warn;
 
 /// News sentiment classification
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -70,7 +70,7 @@ pub struct NewsAnalysis {
     pub article: NewsArticle,
     pub sentiment: NewsSentiment,
     pub confidence: f64,
-    pub impact_score: f64,  // 0.0 to 1.0, higher = more impactful
+    pub impact_score: f64, // 0.0 to 1.0, higher = more impactful
     pub analyzed_at: DateTime<Utc>,
 }
 
@@ -136,7 +136,7 @@ impl NewsScanner {
             polygon_client: PolygonClient::new(polygon_api_key),
             sentiment_service_url: None,
             http_client: Client::new(),
-            scan_interval_seconds: 60,  // Check every minute
+            scan_interval_seconds: 60, // Check every minute
         }
     }
 
@@ -155,17 +155,23 @@ impl NewsScanner {
         let polygon_future = self.polygon_client.get_news(symbol, limit);
         let finnhub_future = async {
             if let Some(sym) = symbol {
-                self.polygon_client.get_finnhub_news(sym, 7).await.unwrap_or_default()
+                self.polygon_client
+                    .get_finnhub_news(sym, 7)
+                    .await
+                    .unwrap_or_default()
             } else {
                 // For general news, try Finnhub general news endpoint
-                self.polygon_client.get_finnhub_general_news().await.unwrap_or_default()
+                self.polygon_client
+                    .get_finnhub_general_news()
+                    .await
+                    .unwrap_or_default()
             }
         };
 
         let (polygon_result, finnhub_articles) = tokio::join!(polygon_future, finnhub_future);
 
-        let mut articles = polygon_result
-            .map_err(|e| anyhow::anyhow!("Failed to fetch news: {}", e))?;
+        let mut articles =
+            polygon_result.map_err(|e| anyhow::anyhow!("Failed to fetch news: {}", e))?;
 
         // Merge Finnhub articles, deduplicate by title similarity
         for fa in finnhub_articles {
@@ -198,7 +204,10 @@ impl NewsScanner {
             match self.query_finbert(url, article).await {
                 Ok(score) => score,
                 Err(e) => {
-                    warn!("FinBERT service failed: {}. Using keyword-based fallback.", e);
+                    warn!(
+                        "FinBERT service failed: {}. Using keyword-based fallback.",
+                        e
+                    );
                     self.keyword_based_sentiment(article)
                 }
             }
@@ -231,7 +240,8 @@ impl NewsScanner {
 
         // Filter by time window
         let cutoff = Utc::now() - Duration::hours(time_window_hours);
-        let recent_articles: Vec<_> = articles.into_iter()
+        let recent_articles: Vec<_> = articles
+            .into_iter()
             .filter(|a| a.published_utc >= cutoff)
             .collect();
 
@@ -256,11 +266,13 @@ impl NewsScanner {
         }
 
         // Calculate weighted average sentiment
-        let total_weight: f64 = analyzed_articles.iter()
+        let total_weight: f64 = analyzed_articles
+            .iter()
             .map(|a| a.impact_score * a.confidence)
             .sum();
 
-        let weighted_sentiment: f64 = analyzed_articles.iter()
+        let weighted_sentiment: f64 = analyzed_articles
+            .iter()
             .map(|a| a.sentiment.to_score() * a.impact_score * a.confidence)
             .sum();
 
@@ -284,10 +296,7 @@ impl NewsScanner {
     }
 
     /// Generate trading signal from news sentiment
-    pub fn generate_signal(
-        &self,
-        aggregated: AggregatedNewsSentiment,
-    ) -> NewsSignal {
+    pub fn generate_signal(&self, aggregated: AggregatedNewsSentiment) -> NewsSignal {
         let (signal_type, urgency, confidence, reasoning) = match aggregated.overall_sentiment {
             NewsSentiment::VeryPositive => {
                 if aggregated.article_count >= 3 {
@@ -295,60 +304,64 @@ impl NewsScanner {
                         NewsSignalType::StrongBuy,
                         Urgency::Immediate,
                         0.9,
-                        format!("Very positive news ({} articles, score: {:.2})",
-                            aggregated.article_count, aggregated.sentiment_score)
+                        format!(
+                            "Very positive news ({} articles, score: {:.2})",
+                            aggregated.article_count, aggregated.sentiment_score
+                        ),
                     )
                 } else {
                     (
                         NewsSignalType::Buy,
                         Urgency::High,
                         0.7,
-                        format!("Positive news (score: {:.2})", aggregated.sentiment_score)
+                        format!("Positive news (score: {:.2})", aggregated.sentiment_score),
                     )
                 }
             }
-            NewsSentiment::Positive => {
-                (
-                    NewsSignalType::Buy,
-                    Urgency::Medium,
-                    0.6,
-                    format!("Moderately positive news (score: {:.2})", aggregated.sentiment_score)
-                )
-            }
+            NewsSentiment::Positive => (
+                NewsSignalType::Buy,
+                Urgency::Medium,
+                0.6,
+                format!(
+                    "Moderately positive news (score: {:.2})",
+                    aggregated.sentiment_score
+                ),
+            ),
             NewsSentiment::VeryNegative => {
                 if aggregated.article_count >= 3 {
                     (
                         NewsSignalType::StrongSell,
                         Urgency::Immediate,
                         0.9,
-                        format!("Very negative news ({} articles, score: {:.2})",
-                            aggregated.article_count, aggregated.sentiment_score)
+                        format!(
+                            "Very negative news ({} articles, score: {:.2})",
+                            aggregated.article_count, aggregated.sentiment_score
+                        ),
                     )
                 } else {
                     (
                         NewsSignalType::Sell,
                         Urgency::High,
                         0.7,
-                        format!("Negative news (score: {:.2})", aggregated.sentiment_score)
+                        format!("Negative news (score: {:.2})", aggregated.sentiment_score),
                     )
                 }
             }
-            NewsSentiment::Negative => {
-                (
-                    NewsSignalType::Sell,
-                    Urgency::Medium,
-                    0.6,
-                    format!("Moderately negative news (score: {:.2})", aggregated.sentiment_score)
-                )
-            }
-            NewsSentiment::Neutral => {
-                (
-                    NewsSignalType::NoAction,
-                    Urgency::Low,
-                    0.5,
-                    "Neutral news sentiment".to_string()
-                )
-            }
+            NewsSentiment::Negative => (
+                NewsSignalType::Sell,
+                Urgency::Medium,
+                0.6,
+                format!(
+                    "Moderately negative news (score: {:.2})",
+                    aggregated.sentiment_score
+                ),
+            ),
+            NewsSentiment::Neutral => (
+                NewsSignalType::NoAction,
+                Urgency::Low,
+                0.5,
+                "Neutral news sentiment".to_string(),
+            ),
         };
 
         NewsSignal {
@@ -383,7 +396,8 @@ impl NewsScanner {
 
         let request = SentimentRequest { text };
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(format!("{}/analyze_sentiment", url))
             .json(&request)
             .timeout(std::time::Duration::from_secs(5))
@@ -398,28 +412,60 @@ impl NewsScanner {
     /// Keyword-based sentiment analysis (fallback)
     fn keyword_based_sentiment(&self, article: &NewsArticle) -> f64 {
         let positive_keywords = vec![
-            "surges", "rally", "gains", "profit", "growth", "beats",
-            "exceeds", "strong", "bullish", "upgrade", "optimistic",
-            "breakthrough", "success", "record", "high", "soars",
+            "surges",
+            "rally",
+            "gains",
+            "profit",
+            "growth",
+            "beats",
+            "exceeds",
+            "strong",
+            "bullish",
+            "upgrade",
+            "optimistic",
+            "breakthrough",
+            "success",
+            "record",
+            "high",
+            "soars",
         ];
 
         let negative_keywords = vec![
-            "falls", "plunges", "losses", "decline", "weak", "misses",
-            "cuts", "drops", "bearish", "downgrade", "pessimistic",
-            "failure", "concern", "warning", "low", "crashes",
+            "falls",
+            "plunges",
+            "losses",
+            "decline",
+            "weak",
+            "misses",
+            "cuts",
+            "drops",
+            "bearish",
+            "downgrade",
+            "pessimistic",
+            "failure",
+            "concern",
+            "warning",
+            "low",
+            "crashes",
         ];
 
         let text = format!(
             "{} {}",
             article.title.to_lowercase(),
-            article.description.as_ref().unwrap_or(&String::new()).to_lowercase()
+            article
+                .description
+                .as_ref()
+                .unwrap_or(&String::new())
+                .to_lowercase()
         );
 
-        let positive_count: i32 = positive_keywords.iter()
+        let positive_count: i32 = positive_keywords
+            .iter()
             .map(|kw| text.matches(kw).count() as i32)
             .sum();
 
-        let negative_count: i32 = negative_keywords.iter()
+        let negative_count: i32 = negative_keywords
+            .iter()
             .map(|kw| text.matches(kw).count() as i32)
             .sum();
 
@@ -448,7 +494,7 @@ impl NewsScanner {
 
         // Author reputation (simplified)
         if let Some(author) = &article.author {
-            let reputable_sources = vec!["Reuters", "Bloomberg", "CNBC", "WSJ", "Financial Times"];
+            let reputable_sources = ["Reuters", "Bloomberg", "CNBC", "WSJ", "Financial Times"];
             if reputable_sources.iter().any(|s| author.contains(s)) {
                 score += 0.2;
             }

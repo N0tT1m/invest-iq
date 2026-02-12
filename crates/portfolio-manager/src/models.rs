@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -156,17 +156,12 @@ pub struct ActionItem {
 // ============================================================
 
 /// Cost basis calculation method
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CostBasisMethod {
+    #[default]
     Fifo,
     Lifo,
     AverageCost,
-}
-
-impl Default for CostBasisMethod {
-    fn default() -> Self {
-        Self::Fifo
-    }
 }
 
 /// Portfolio-level risk metrics

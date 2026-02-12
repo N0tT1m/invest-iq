@@ -57,18 +57,12 @@ impl RotationType {
             RotationType::DefensiveToCyclical => {
                 "Risk-on move: investors seeking growth in financials, industrials, tech"
             }
-            RotationType::LargeToSmall => {
-                "Rotation from mega-caps to small/mid-cap stocks"
-            }
-            RotationType::SmallToLarge => {
-                "Flight to safety in large, established companies"
-            }
+            RotationType::LargeToSmall => "Rotation from mega-caps to small/mid-cap stocks",
+            RotationType::SmallToLarge => "Flight to safety in large, established companies",
             RotationType::DomesticToInternational => {
                 "Capital flowing from US markets to international"
             }
-            RotationType::InternationalToDomestic => {
-                "Capital flowing back to US markets"
-            }
+            RotationType::InternationalToDomestic => "Capital flowing back to US markets",
             RotationType::None => "No significant rotation pattern detected",
         }
     }
@@ -76,14 +70,18 @@ impl RotationType {
     pub fn is_risk_on(&self) -> bool {
         matches!(
             self,
-            RotationType::ValueToGrowth | RotationType::DefensiveToCyclical | RotationType::LargeToSmall
+            RotationType::ValueToGrowth
+                | RotationType::DefensiveToCyclical
+                | RotationType::LargeToSmall
         )
     }
 
     pub fn is_risk_off(&self) -> bool {
         matches!(
             self,
-            RotationType::GrowthToValue | RotationType::CyclicalToDefensive | RotationType::SmallToLarge
+            RotationType::GrowthToValue
+                | RotationType::CyclicalToDefensive
+                | RotationType::SmallToLarge
         )
     }
 }
@@ -204,9 +202,15 @@ impl RotationDetector {
         };
 
         let (gaining, losing) = if diff > 0.0 {
-            (&self.classification.growth_sectors, &self.classification.value_sectors)
+            (
+                &self.classification.growth_sectors,
+                &self.classification.value_sectors,
+            )
         } else {
-            (&self.classification.value_sectors, &self.classification.growth_sectors)
+            (
+                &self.classification.value_sectors,
+                &self.classification.growth_sectors,
+            )
         };
 
         Some(RotationPattern {
@@ -238,9 +242,15 @@ impl RotationDetector {
         };
 
         let (gaining, losing) = if diff > 0.0 {
-            (&self.classification.cyclical_sectors, &self.classification.defensive_sectors)
+            (
+                &self.classification.cyclical_sectors,
+                &self.classification.defensive_sectors,
+            )
         } else {
-            (&self.classification.defensive_sectors, &self.classification.cyclical_sectors)
+            (
+                &self.classification.defensive_sectors,
+                &self.classification.cyclical_sectors,
+            )
         };
 
         Some(RotationPattern {
@@ -270,8 +280,13 @@ impl RotationDetector {
     }
 
     /// Get the primary rotation pattern
-    pub fn primary_rotation<'a>(&self, patterns: &'a [RotationPattern]) -> Option<&'a RotationPattern> {
-        patterns.iter().max_by(|a, b| a.strength.partial_cmp(&b.strength).unwrap())
+    pub fn primary_rotation<'a>(
+        &self,
+        patterns: &'a [RotationPattern],
+    ) -> Option<&'a RotationPattern> {
+        patterns
+            .iter()
+            .max_by(|a, b| a.strength.partial_cmp(&b.strength).unwrap())
     }
 }
 

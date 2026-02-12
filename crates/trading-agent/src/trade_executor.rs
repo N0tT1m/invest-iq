@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
+use crate::config::AgentConfig;
+use crate::portfolio_guard::PortfolioGuard;
+use crate::types::{PositionAction, TradeExecution, TradeProposal, TradingSignal};
 use alpaca_broker::{AlpacaClient, MarketOrderRequest};
 use anyhow::Result;
 use chrono::Utc;
 use risk_manager::RiskManager;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
-use crate::config::AgentConfig;
-use crate::portfolio_guard::PortfolioGuard;
-use crate::types::{PositionAction, TradeExecution, TradeProposal, TradingSignal};
+use rust_decimal::Decimal;
 
 pub struct TradeExecutor {
     config: AgentConfig,
@@ -93,15 +93,14 @@ impl TradeExecutor {
 
         // 5b. Portfolio guard check (P4)
         let trade_amount = self.config.max_position_size.min(cash * 0.2); // rough estimate
-        self.portfolio_guard
-            .check_new_trade(
-                &signal.symbol,
-                &signal.action,
-                trade_amount,
-                &positions,
-                portfolio_value,
-                daily_pl,
-            )?;
+        self.portfolio_guard.check_new_trade(
+            &signal.symbol,
+            &signal.action,
+            trade_amount,
+            &positions,
+            portfolio_value,
+            daily_pl,
+        )?;
 
         // 6. Position sizing
         let sizing = self
@@ -191,7 +190,11 @@ impl TradeExecutor {
 
     /// Run risk checks + position sizing and return a proposal for manual review.
     /// Does NOT submit an order — the trade stays pending until the user approves.
-    pub async fn propose_signal(&self, signal: &TradingSignal, ml_reasoning: &str) -> Result<TradeProposal> {
+    pub async fn propose_signal(
+        &self,
+        signal: &TradingSignal,
+        ml_reasoning: &str,
+    ) -> Result<TradeProposal> {
         // 1. Fetch real account data
         let account = self.alpaca.get_account().await?;
         let portfolio_value: f64 = account.portfolio_value.parse().unwrap_or(0.0);
@@ -294,11 +297,10 @@ impl TradeExecutor {
 
     /// Get symbols that already have pending (unreviewed) trades.
     pub async fn get_pending_symbols(&self) -> Result<std::collections::HashSet<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT symbol FROM pending_trades WHERE status = 'pending'"
-        )
-        .fetch_all(&self.db_pool)
-        .await?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT DISTINCT symbol FROM pending_trades WHERE status = 'pending'")
+                .fetch_all(&self.db_pool)
+                .await?;
         Ok(rows.into_iter().map(|(s,)| s).collect())
     }
 
@@ -360,12 +362,7 @@ impl TradeExecutor {
                         .and_then(|q| q.parse::<f64>().ok())
                         .map(|q| q as i32)
                         .unwrap_or(requested_shares);
-                    tracing::info!(
-                        "Order {} filled: {} shares @ ${:.2}",
-                        order_id,
-                        qty,
-                        price
-                    );
+                    tracing::info!("Order {} filled: {} shares @ ${:.2}", order_id, qty, price);
                     return Ok((price, qty));
                 }
                 "partially_filled" => {
@@ -524,15 +521,14 @@ impl TradeExecutor {
         // Record trade outcome for circuit breaker tracking
         if let Err(e) = self
             .risk_manager
-            .record_trade_outcome(
-                &action.symbol,
-                Some(&order.id),
-                "sell",
-                action.pnl,
-            )
+            .record_trade_outcome(&action.symbol, Some(&order.id), "sell", action.pnl)
             .await
         {
-            tracing::warn!("Failed to record trade outcome for {}: {}", action.symbol, e);
+            tracing::warn!(
+                "Failed to record trade outcome for {}: {}",
+                action.symbol,
+                e
+            );
         }
 
         // Log the closure to pending_trades
@@ -576,7 +572,7 @@ impl TradeExecutor {
              VALUES (?, 'SELL', 0, 1.0, ?, ?, 'executed', ?, ?)",
         )
         .bind(&action.symbol)
-        .bind(&format!("{}: P/L ${:.2}", action.action_type, action.pnl))
+        .bind(format!("{}: P/L ${:.2}", action.action_type, action.pnl))
         .bind(&action.action_type)
         .bind(action.price)
         .bind(order_id)

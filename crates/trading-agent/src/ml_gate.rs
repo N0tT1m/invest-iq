@@ -49,7 +49,8 @@ impl MLTradeGate {
                 // 2. ML model not negative + orchestrator confident: P >= 0.45 AND signal.confidence >= 0.70
                 // 3. Strong consensus: avg_calibrated >= 0.65 AND P >= 0.40 (ML not bearish)
                 let ml_confident = prediction.probability > ml_threshold;
-                let orchestrator_override = prediction.probability >= 0.45 && signal.confidence >= 0.70;
+                let orchestrator_override =
+                    prediction.probability >= 0.45 && signal.confidence >= 0.70;
                 let consensus_override = avg_calibrated >= 0.65 && prediction.probability >= 0.40;
                 let approved = ml_confident || orchestrator_override || consensus_override;
 
@@ -82,7 +83,10 @@ impl MLTradeGate {
                 }
             }
             Err(e) => {
-                tracing::warn!("ML gate unavailable ({}), falling back to confidence threshold", e);
+                tracing::warn!(
+                    "ML gate unavailable ({}), falling back to confidence threshold",
+                    e
+                );
                 // Use the same regime thresholds as the ML model + small buffer
                 // (slightly stricter than ML since we lack the meta-model's nuance)
                 let fallback_threshold = match regime {
@@ -108,10 +112,7 @@ impl MLTradeGate {
     }
 
     /// Calibrate engine confidences via ML service (P6)
-    async fn calibrate_confidences(
-        &self,
-        analysis: &UnifiedAnalysis,
-    ) -> HashMap<String, f64> {
+    async fn calibrate_confidences(&self, analysis: &UnifiedAnalysis) -> HashMap<String, f64> {
         let mut engines = HashMap::new();
         if let Some(t) = &analysis.technical {
             engines.insert("technical".to_string(), t.confidence);
@@ -155,7 +156,11 @@ impl MLTradeGate {
             Ok(bars) if bars.len() >= 2 => {
                 let prev = bars[bars.len() - 2].close;
                 let curr = bars[bars.len() - 1].close;
-                if prev > 0.0 { (curr - prev) / prev } else { 0.0 }
+                if prev > 0.0 {
+                    (curr - prev) / prev
+                } else {
+                    0.0
+                }
             }
             Ok(_) => 0.0,
             Err(e) => {
@@ -230,25 +235,41 @@ impl MLTradeGate {
         features.insert(
             "technical_confidence".to_string(),
             *calibrated.get("technical").unwrap_or(
-                &analysis.technical.as_ref().map(|r| r.confidence).unwrap_or(0.0),
+                &analysis
+                    .technical
+                    .as_ref()
+                    .map(|r| r.confidence)
+                    .unwrap_or(0.0),
             ),
         );
         features.insert(
             "fundamental_confidence".to_string(),
             *calibrated.get("fundamental").unwrap_or(
-                &analysis.fundamental.as_ref().map(|r| r.confidence).unwrap_or(0.0),
+                &analysis
+                    .fundamental
+                    .as_ref()
+                    .map(|r| r.confidence)
+                    .unwrap_or(0.0),
             ),
         );
         features.insert(
             "quant_confidence".to_string(),
             *calibrated.get("quantitative").unwrap_or(
-                &analysis.quantitative.as_ref().map(|r| r.confidence).unwrap_or(0.0),
+                &analysis
+                    .quantitative
+                    .as_ref()
+                    .map(|r| r.confidence)
+                    .unwrap_or(0.0),
             ),
         );
         features.insert(
             "sentiment_confidence".to_string(),
             *calibrated.get("sentiment").unwrap_or(
-                &analysis.sentiment.as_ref().map(|r| r.confidence).unwrap_or(0.0),
+                &analysis
+                    .sentiment
+                    .as_ref()
+                    .map(|r| r.confidence)
+                    .unwrap_or(0.0),
             ),
         );
 
@@ -273,7 +294,13 @@ impl MLTradeGate {
         );
         let sma_20 = tech_metrics["sma_20"].as_f64().unwrap_or(0.0);
         let sma_50 = tech_metrics["sma_50"].as_f64().unwrap_or(0.0);
-        let sma_20_vs_50 = if sma_20 > sma_50 { 1.0 } else if sma_50 > sma_20 { -1.0 } else { 0.0 };
+        let sma_20_vs_50 = if sma_20 > sma_50 {
+            1.0
+        } else if sma_50 > sma_20 {
+            -1.0
+        } else {
+            0.0
+        };
         features.insert("sma_20_vs_50".to_string(), sma_20_vs_50);
 
         // Fundamental metrics
@@ -350,10 +377,17 @@ impl MLTradeGate {
 
         // Inter-engine agreement (std dev of scores — lower = more agreement)
         let active_scores: Vec<f64> = [tech_score, fund_score, quant_score, sent_score]
-            .iter().filter(|&&s| s != 0.0).copied().collect();
+            .iter()
+            .filter(|&&s| s != 0.0)
+            .copied()
+            .collect();
         let agreement = if active_scores.len() >= 2 {
             let mean = active_scores.iter().sum::<f64>() / active_scores.len() as f64;
-            let var = active_scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / active_scores.len() as f64;
+            let var = active_scores
+                .iter()
+                .map(|s| (s - mean).powi(2))
+                .sum::<f64>()
+                / active_scores.len() as f64;
             var.sqrt()
         } else {
             0.0

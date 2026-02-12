@@ -1,8 +1,8 @@
 use chrono::NaiveDate;
 use rayon::prelude::*;
 
-use crate::models::*;
 use crate::advanced_risk;
+use crate::models::*;
 
 /// Compute extended performance metrics from equity curve, trades, and benchmark returns.
 pub fn compute_extended_metrics(
@@ -66,9 +66,8 @@ pub fn compute_extended_metrics(
     let pain_index = advanced_risk::pain_index(equity_curve);
     let gain_to_pain_ratio = advanced_risk::gain_to_pain_ratio(total_return_percent, equity_curve);
     let burke_ratio = advanced_risk::burke_ratio(total_return_percent, equity_curve, 3);
-    let sterling_ratio = annualized_return_percent.and_then(|cagr| {
-        advanced_risk::sterling_ratio(cagr, equity_curve, 3)
-    });
+    let sterling_ratio = annualized_return_percent
+        .and_then(|cagr| advanced_risk::sterling_ratio(cagr, equity_curve, 3));
 
     ExtendedMetrics {
         treynor_ratio,
@@ -199,7 +198,8 @@ fn find_top_drawdowns(equity_curve: &[EquityPoint], top_n: usize) -> Vec<Drawdow
     // Find all drawdown periods
     let mut events: Vec<DrawdownEvent> = Vec::new();
     let mut peak_idx = 0usize;
-    let mut peak_val = rust_decimal::prelude::ToPrimitive::to_f64(&equity_curve[0].equity).unwrap_or(1.0);
+    let mut peak_val =
+        rust_decimal::prelude::ToPrimitive::to_f64(&equity_curve[0].equity).unwrap_or(1.0);
     let mut in_drawdown = false;
     let mut dd_start_idx = 0usize;
     let mut trough_idx = 0usize;
@@ -262,7 +262,11 @@ fn find_top_drawdowns(equity_curve: &[EquityPoint], top_n: usize) -> Vec<Drawdow
     }
 
     // Sort by magnitude, take top N
-    events.sort_by(|a, b| b.drawdown_percent.partial_cmp(&a.drawdown_percent).unwrap_or(std::cmp::Ordering::Equal));
+    events.sort_by(|a, b| {
+        b.drawdown_percent
+            .partial_cmp(&a.drawdown_percent)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     events.truncate(top_n);
     events
 }
@@ -273,7 +277,8 @@ fn compute_monthly_returns(equity_curve: &[EquityPoint]) -> Vec<MonthlyReturn> {
     }
 
     let mut monthly: Vec<MonthlyReturn> = Vec::new();
-    let mut month_start_equity = rust_decimal::prelude::ToPrimitive::to_f64(&equity_curve[0].equity).unwrap_or(1.0);
+    let mut month_start_equity =
+        rust_decimal::prelude::ToPrimitive::to_f64(&equity_curve[0].equity).unwrap_or(1.0);
     let mut prev_ym: Option<(i32, u32)> = None;
 
     for point in equity_curve {
@@ -283,7 +288,8 @@ fn compute_monthly_returns(equity_curve: &[EquityPoint]) -> Vec<MonthlyReturn> {
             match prev_ym {
                 Some(prev) if prev != ym => {
                     // Month changed — record the previous month
-                    let equity = rust_decimal::prelude::ToPrimitive::to_f64(&point.equity).unwrap_or(1.0);
+                    let equity =
+                        rust_decimal::prelude::ToPrimitive::to_f64(&point.equity).unwrap_or(1.0);
                     if month_start_equity > 0.0 {
                         monthly.push(MonthlyReturn {
                             year: prev.0,
@@ -336,11 +342,8 @@ fn compute_rolling_sharpe(
             let window_rets = &returns[i - window..i];
             let n = window_rets.len() as f64;
             let mean = window_rets.iter().sum::<f64>() / n;
-            let var = window_rets
-                .iter()
-                .map(|r| (r - mean).powi(2))
-                .sum::<f64>()
-                / (n - 1.0).max(1.0);
+            let var =
+                window_rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
             let std = var.sqrt();
 
             let sharpe = if std > 1e-10 {

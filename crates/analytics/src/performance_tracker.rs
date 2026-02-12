@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::models::{StrategyPerformance, PerformanceOverview};
+use crate::models::{PerformanceOverview, StrategyPerformance};
 
 pub struct PerformanceTracker {
     pool: sqlx::AnyPool,
@@ -21,7 +21,7 @@ impl PerformanceTracker {
     ) -> Result<()> {
         // Get existing performance or create new
         let existing: Option<StrategyPerformance> = sqlx::query_as(
-            "SELECT * FROM strategy_performance WHERE strategy_name = ? AND symbol = ?"
+            "SELECT * FROM strategy_performance WHERE strategy_name = ? AND symbol = ?",
         )
         .bind(strategy_name)
         .bind(symbol)
@@ -37,7 +37,8 @@ impl PerformanceTracker {
                     / perf.winning_trades as f64;
             } else {
                 perf.losing_trades += 1;
-                perf.avg_loss = ((perf.avg_loss * (perf.losing_trades - 1) as f64) + profit_loss.abs())
+                perf.avg_loss = ((perf.avg_loss * (perf.losing_trades - 1) as f64)
+                    + profit_loss.abs())
                     / perf.losing_trades as f64;
             }
 
@@ -59,7 +60,7 @@ impl PerformanceTracker {
                     total_profit_loss = ?, win_rate = ?, avg_win = ?, avg_loss = ?,
                     profit_factor = ?, last_updated = CURRENT_TIMESTAMP
                 WHERE strategy_name = ? AND symbol = ?
-                "#
+                "#,
             )
             .bind(perf.signals_taken)
             .bind(perf.winning_trades)
@@ -80,7 +81,11 @@ impl PerformanceTracker {
             let losing_trades = if is_win { 0 } else { 1 };
             let avg_win = if is_win { profit_loss } else { 0.0 };
             let avg_loss = if is_win { 0.0 } else { profit_loss.abs() };
-            let profit_factor = if avg_loss > 0.0 { avg_win / avg_loss } else { 0.0 };
+            let profit_factor = if avg_loss > 0.0 {
+                avg_win / avg_loss
+            } else {
+                0.0
+            };
 
             sqlx::query(
                 r#"
@@ -107,9 +112,12 @@ impl PerformanceTracker {
     }
 
     /// Get performance for a specific strategy
-    pub async fn get_strategy_performance(&self, strategy_name: &str) -> Result<Vec<StrategyPerformance>> {
+    pub async fn get_strategy_performance(
+        &self,
+        strategy_name: &str,
+    ) -> Result<Vec<StrategyPerformance>> {
         let performances: Vec<StrategyPerformance> = sqlx::query_as(
-            "SELECT * FROM strategy_performance WHERE strategy_name = ? ORDER BY win_rate DESC"
+            "SELECT * FROM strategy_performance WHERE strategy_name = ? ORDER BY win_rate DESC",
         )
         .bind(strategy_name)
         .fetch_all(&self.pool)
@@ -120,11 +128,10 @@ impl PerformanceTracker {
 
     /// Get all strategy performances
     pub async fn get_all_performances(&self) -> Result<Vec<StrategyPerformance>> {
-        let performances: Vec<StrategyPerformance> = sqlx::query_as(
-            "SELECT * FROM strategy_performance ORDER BY profit_factor DESC"
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let performances: Vec<StrategyPerformance> =
+            sqlx::query_as("SELECT * FROM strategy_performance ORDER BY profit_factor DESC")
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(performances)
     }
@@ -144,10 +151,12 @@ impl PerformanceTracker {
             0.0
         };
 
-        let total_wins: f64 = strategies.iter()
+        let total_wins: f64 = strategies
+            .iter()
             .map(|s| s.winning_trades as f64 * s.avg_win)
             .sum();
-        let total_losses: f64 = strategies.iter()
+        let total_losses: f64 = strategies
+            .iter()
             .map(|s| s.losing_trades as f64 * s.avg_loss)
             .sum();
 
@@ -157,11 +166,13 @@ impl PerformanceTracker {
             0.0
         };
 
-        let best_strategy = strategies.iter()
+        let best_strategy = strategies
+            .iter()
             .max_by(|a, b| a.profit_factor.partial_cmp(&b.profit_factor).unwrap())
             .cloned();
 
-        let worst_strategy = strategies.iter()
+        let worst_strategy = strategies
+            .iter()
             .min_by(|a, b| a.profit_factor.partial_cmp(&b.profit_factor).unwrap())
             .cloned();
 
@@ -180,7 +191,7 @@ impl PerformanceTracker {
     /// Get top performing strategies
     pub async fn get_top_strategies(&self, limit: i32) -> Result<Vec<StrategyPerformance>> {
         let strategies: Vec<StrategyPerformance> = sqlx::query_as(
-            "SELECT * FROM strategy_performance ORDER BY profit_factor DESC LIMIT ?"
+            "SELECT * FROM strategy_performance ORDER BY profit_factor DESC LIMIT ?",
         )
         .bind(limit)
         .fetch_all(&self.pool)

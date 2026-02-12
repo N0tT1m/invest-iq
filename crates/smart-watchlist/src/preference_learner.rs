@@ -157,7 +157,10 @@ impl PreferenceLearner {
             let weight = action.preference_weight();
 
             // Apply time decay
-            let created_at = row.created_at.parse::<DateTime<Utc>>().unwrap_or_else(|_| Utc::now());
+            let created_at = row
+                .created_at
+                .parse::<DateTime<Utc>>()
+                .unwrap_or_else(|_| Utc::now());
             let duration = Utc::now().signed_duration_since(created_at);
             let age_days = duration.num_days().max(0) as u32;
             let decay = self.decay_factor.powi(age_days as i32);
@@ -245,7 +248,9 @@ mod tests {
 
     #[test]
     fn test_interaction_weights() {
-        assert!(InteractionType::Trade.preference_weight() > InteractionType::Click.preference_weight());
+        assert!(
+            InteractionType::Trade.preference_weight() > InteractionType::Click.preference_weight()
+        );
         assert!(InteractionType::Dismiss.preference_weight() < 0.0);
     }
 

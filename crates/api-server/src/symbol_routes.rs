@@ -11,14 +11,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ApiResponse, AppError, AppState};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct SearchQuery {
     pub q: String,
     #[serde(default)]
     pub limit: Option<usize>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SymbolSearchResult {
     pub ticker: String,
     pub name: String,
@@ -27,7 +27,7 @@ pub struct SymbolSearchResult {
     pub currency: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SymbolDetail {
     pub ticker: String,
     pub name: String,
@@ -47,18 +47,27 @@ pub fn symbol_routes() -> Router<AppState> {
         .route("/api/symbols/:symbol", get(get_symbol_detail))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/symbols/search",
+    params(SearchQuery),
+    responses((status = 200, description = "Matching ticker symbols")),
+    tag = "Screener"
+)]
 async fn search_symbols(
     State(state): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<ApiResponse<Vec<SymbolSearchResult>>>, AppError> {
     let q = query.q.trim();
-    if q.is_empty() || q.len() < 1 {
+    if q.is_empty() {
         return Ok(Json(ApiResponse::success(Vec::new())));
     }
 
     let limit = query.limit.unwrap_or(20).min(50);
 
-    let results = state.orchestrator.polygon_client
+    let results = state
+        .orchestrator
+        .polygon_client
         .search_tickers(q, limit)
         .await
         .map_err(|e| anyhow::anyhow!("Search failed: {}", e))?;
@@ -77,6 +86,13 @@ async fn search_symbols(
     Ok(Json(ApiResponse::success(symbols)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/symbols/{symbol}",
+    params(("symbol" = String, Path, description = "Stock ticker symbol")),
+    responses((status = 200, description = "Detailed symbol information with current price")),
+    tag = "Screener"
+)]
 async fn get_symbol_detail(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
@@ -85,19 +101,22 @@ async fn get_symbol_detail(
 
     // Fetch ticker details and snapshot in parallel
     let (details_result, snapshot_result) = tokio::join!(
-        state.orchestrator.polygon_client.get_ticker_details(&symbol),
+        state
+            .orchestrator
+            .polygon_client
+            .get_ticker_details(&symbol),
         state.orchestrator.polygon_client.get_snapshot(&symbol),
     );
 
-    let details = details_result
-        .map_err(|e| anyhow::anyhow!("Failed to get ticker details: {}", e))?;
+    let details =
+        details_result.map_err(|e| anyhow::anyhow!("Failed to get ticker details: {}", e))?;
 
     let (current_price, change_percent) = match snapshot_result {
         Ok(snap) => {
             let price = snap.day.as_ref().and_then(|d| d.c);
             let change = snap.todays_change_perc;
             (price, change)
-        },
+        }
         Err(_) => (None, None),
     };
 

@@ -133,11 +133,9 @@ impl PortfolioGuard {
 fn symbol_to_sector(symbol: &str) -> &'static str {
     match symbol {
         // Technology
-        "AAPL" | "MSFT" | "GOOGL" | "GOOG" | "META" | "NVDA" | "AMD" | "INTC" | "CRM"
-        | "ORCL" | "ADBE" | "CSCO" | "AVGO" | "TXN" | "QCOM" | "NOW" | "IBM" | "AMAT"
-        | "MU" | "LRCX" | "KLAC" | "SNPS" | "CDNS" | "MRVL" | "PANW" | "FTNT" | "CRWD" => {
-            "Technology"
-        }
+        "AAPL" | "MSFT" | "GOOGL" | "GOOG" | "META" | "NVDA" | "AMD" | "INTC" | "CRM" | "ORCL"
+        | "ADBE" | "CSCO" | "AVGO" | "TXN" | "QCOM" | "NOW" | "IBM" | "AMAT" | "MU" | "LRCX"
+        | "KLAC" | "SNPS" | "CDNS" | "MRVL" | "PANW" | "FTNT" | "CRWD" => "Technology",
         // Consumer Discretionary
         "AMZN" | "TSLA" | "HD" | "NKE" | "SBUX" | "TGT" | "LOW" | "MCD" | "BKNG" | "CMG"
         | "ABNB" | "LULU" | "ROST" | "TJX" | "ORLY" | "AZO" | "DPZ" => "Consumer Discretionary",
@@ -149,24 +147,20 @@ fn symbol_to_sector(symbol: &str) -> &'static str {
         "JPM" | "BAC" | "WFC" | "GS" | "MS" | "C" | "BLK" | "SCHW" | "AXP" | "V" | "MA"
         | "BRK.B" | "COF" | "USB" | "PNC" | "TFC" => "Financials",
         // Healthcare
-        "JNJ" | "UNH" | "PFE" | "ABBV" | "MRK" | "LLY" | "TMO" | "ABT" | "DHR" | "BMY"
-        | "AMGN" | "GILD" | "ISRG" | "MDT" | "SYK" | "CI" | "HUM" | "MRNA" | "BIIB" => {
-            "Healthcare"
-        }
+        "JNJ" | "UNH" | "PFE" | "ABBV" | "MRK" | "LLY" | "TMO" | "ABT" | "DHR" | "BMY" | "AMGN"
+        | "GILD" | "ISRG" | "MDT" | "SYK" | "CI" | "HUM" | "MRNA" | "BIIB" => "Healthcare",
         // Consumer Staples
         "PG" | "KO" | "PEP" | "WMT" | "COST" | "PM" | "MO" | "CL" | "KHC" | "MDLZ" | "STZ"
         | "KMB" => "Consumer Staples",
         // Energy
-        "XOM" | "CVX" | "COP" | "SLB" | "EOG" | "MPC" | "PSX" | "VLO" | "OXY" | "HAL" => {
-            "Energy"
-        }
+        "XOM" | "CVX" | "COP" | "SLB" | "EOG" | "MPC" | "PSX" | "VLO" | "OXY" | "HAL" => "Energy",
         // Industrials
         "BA" | "CAT" | "HON" | "UPS" | "RTX" | "GE" | "LMT" | "DE" | "MMM" | "UNP" | "FDX"
         | "WM" | "ETN" | "ITW" | "EMR" => "Industrials",
         // ETFs — treat as their own sector to avoid concentration issues
-        "SPY" | "QQQ" | "DIA" | "IWM" | "VTI" | "VOO" | "XLF" | "XLK" | "XLE" | "XLV"
-        | "XLI" | "XLU" | "XLP" | "XLY" | "XLB" | "XLRE" | "XLC" | "GLD" | "TLT" | "HYG"
-        | "LQD" | "IEF" | "SHY" | "EEM" | "EFA" | "ARKK" => "ETFs",
+        "SPY" | "QQQ" | "DIA" | "IWM" | "VTI" | "VOO" | "XLF" | "XLK" | "XLE" | "XLV" | "XLI"
+        | "XLU" | "XLP" | "XLY" | "XLB" | "XLRE" | "XLC" | "GLD" | "TLT" | "HYG" | "LQD"
+        | "IEF" | "SHY" | "EEM" | "EFA" | "ARKK" => "ETFs",
         // Default
         _ => "Other",
     }

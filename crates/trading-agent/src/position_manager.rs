@@ -3,8 +3,8 @@ use std::sync::Arc;
 use alpaca_broker::AlpacaClient;
 use anyhow::Result;
 use risk_manager::RiskManager;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 
 use crate::types::PositionAction;
 

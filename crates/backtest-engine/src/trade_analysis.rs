@@ -91,7 +91,7 @@ pub fn compute_expectancy(trades: &[BacktestTrade]) -> Option<ExpectancyAnalysis
     let kelly_fraction = if avg_loss > 0.0 {
         let b = avg_win / avg_loss;
         let kelly = (win_rate * b - loss_rate) / b;
-        kelly.max(0.0).min(1.0) // Clamp to [0, 1]
+        kelly.clamp(0.0, 1.0) // Clamp to [0, 1]
     } else if win_rate > 0.0 {
         1.0 // No losses → full Kelly
     } else {
@@ -101,11 +101,7 @@ pub fn compute_expectancy(trades: &[BacktestTrade]) -> Option<ExpectancyAnalysis
     // System Quality Number (Van Tharp): SQN = sqrt(n) * E[R] / std(R)
     let returns: Vec<f64> = trades.iter().map(|t| t.profit_loss_percent).collect();
     let mean_ret = returns.iter().sum::<f64>() / n;
-    let var = returns
-        .iter()
-        .map(|r| (r - mean_ret).powi(2))
-        .sum::<f64>()
-        / (n - 1.0).max(1.0);
+    let var = returns.iter().map(|r| (r - mean_ret).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
     let std_dev = var.sqrt();
 
     let sqn = if std_dev > 1e-10 {
@@ -211,10 +207,7 @@ pub fn analyze_streaks(trades: &[BacktestTrade]) -> Option<StreakDistribution> {
 
     // Average streak lengths
     let total_win_streaks: i32 = win_streaks.values().sum();
-    let weighted_win_sum: i32 = win_streaks
-        .iter()
-        .map(|(len, count)| len * count)
-        .sum();
+    let weighted_win_sum: i32 = win_streaks.iter().map(|(len, count)| len * count).sum();
     let avg_win_streak = if total_win_streaks > 0 {
         weighted_win_sum as f64 / total_win_streaks as f64
     } else {
@@ -222,10 +215,7 @@ pub fn analyze_streaks(trades: &[BacktestTrade]) -> Option<StreakDistribution> {
     };
 
     let total_loss_streaks: i32 = loss_streaks.values().sum();
-    let weighted_loss_sum: i32 = loss_streaks
-        .iter()
-        .map(|(len, count)| len * count)
-        .sum();
+    let weighted_loss_sum: i32 = loss_streaks.iter().map(|(len, count)| len * count).sum();
     let avg_loss_streak = if total_loss_streaks > 0 {
         weighted_loss_sum as f64 / total_loss_streaks as f64
     } else {
@@ -313,7 +303,11 @@ pub fn analyze_payoff_by_holding_period(trades: &[BacktestTrade]) -> Vec<RegimeP
         let loss_count = losers.len() as f64;
         let n = num_trades as f64;
 
-        let win_rate = if n > 0.0 { (win_count / n) * 100.0 } else { 0.0 };
+        let win_rate = if n > 0.0 {
+            (win_count / n) * 100.0
+        } else {
+            0.0
+        };
 
         let avg_win = if !winners.is_empty() {
             winners
@@ -449,7 +443,12 @@ mod tests {
     use super::*;
     use rust_decimal::Decimal;
 
-    fn mock_trade(profit_loss: f64, holding_days: i64, entry_date: &str, exit_date: &str) -> BacktestTrade {
+    fn mock_trade(
+        profit_loss: f64,
+        holding_days: i64,
+        entry_date: &str,
+        exit_date: &str,
+    ) -> BacktestTrade {
         BacktestTrade {
             id: None,
             backtest_id: None,
@@ -474,11 +473,11 @@ mod tests {
     #[test]
     fn test_expectancy_basic() {
         let trades = vec![
-            mock_trade(100.0, 1, "2024-01-01", "2024-01-02"),  // Win
-            mock_trade(-50.0, 1, "2024-01-03", "2024-01-04"),  // Loss
-            mock_trade(150.0, 1, "2024-01-05", "2024-01-06"),  // Win
-            mock_trade(-75.0, 1, "2024-01-07", "2024-01-08"),  // Loss
-            mock_trade(200.0, 1, "2024-01-09", "2024-01-10"),  // Win
+            mock_trade(100.0, 1, "2024-01-01", "2024-01-02"), // Win
+            mock_trade(-50.0, 1, "2024-01-03", "2024-01-04"), // Loss
+            mock_trade(150.0, 1, "2024-01-05", "2024-01-06"), // Win
+            mock_trade(-75.0, 1, "2024-01-07", "2024-01-08"), // Loss
+            mock_trade(200.0, 1, "2024-01-09", "2024-01-10"), // Win
         ];
 
         let exp = compute_expectancy(&trades).unwrap();
@@ -494,12 +493,12 @@ mod tests {
     #[test]
     fn test_streak_analysis() {
         let trades = vec![
-            mock_trade(100.0, 1, "2024-01-01", "2024-01-02"),  // W
-            mock_trade(50.0, 1, "2024-01-03", "2024-01-04"),   // W (streak 2)
-            mock_trade(-30.0, 1, "2024-01-05", "2024-01-06"),  // L
-            mock_trade(-40.0, 1, "2024-01-07", "2024-01-08"),  // L
-            mock_trade(-20.0, 1, "2024-01-09", "2024-01-10"),  // L (streak 3)
-            mock_trade(60.0, 1, "2024-01-11", "2024-01-12"),   // W
+            mock_trade(100.0, 1, "2024-01-01", "2024-01-02"), // W
+            mock_trade(50.0, 1, "2024-01-03", "2024-01-04"),  // W (streak 2)
+            mock_trade(-30.0, 1, "2024-01-05", "2024-01-06"), // L
+            mock_trade(-40.0, 1, "2024-01-07", "2024-01-08"), // L
+            mock_trade(-20.0, 1, "2024-01-09", "2024-01-10"), // L (streak 3)
+            mock_trade(60.0, 1, "2024-01-11", "2024-01-12"),  // W
         ];
 
         let streaks = analyze_streaks(&trades).unwrap();
@@ -524,10 +523,10 @@ mod tests {
     #[test]
     fn test_time_in_market() {
         let trades = vec![
-            mock_trade(100.0, 2, "2024-01-01", "2024-01-03"),  // 3 days
-            mock_trade(50.0, 1, "2024-01-05", "2024-01-06"),   // 2 days
-            // Gap: 01-04 is empty
-            // Total period: 2024-01-01 to 2024-01-06 = 6 days
+            mock_trade(100.0, 2, "2024-01-01", "2024-01-03"), // 3 days
+            mock_trade(50.0, 1, "2024-01-05", "2024-01-06"),  // 2 days
+                                                              // Gap: 01-04 is empty
+                                                              // Total period: 2024-01-01 to 2024-01-06 = 6 days
         ];
 
         let analysis = analyze_time_in_market(&trades).unwrap();

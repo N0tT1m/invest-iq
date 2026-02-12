@@ -6,9 +6,10 @@ use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Supported tax jurisdictions
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TaxJurisdiction {
     /// United States - wash sale (30 days), short/long term (1 year)
+    #[default]
     US,
     /// United Kingdom - bed and breakfast rule (30 days)
     UK,
@@ -20,12 +21,6 @@ pub enum TaxJurisdiction {
     Germany,
     /// Custom rules
     Custom,
-}
-
-impl Default for TaxJurisdiction {
-    fn default() -> Self {
-        Self::US
-    }
 }
 
 impl std::fmt::Display for TaxJurisdiction {
@@ -86,12 +81,15 @@ impl TaxRules {
             jurisdiction: TaxJurisdiction::UK,
             wash_sale_window_days: 30,
             long_term_threshold_days: 0, // No distinction
-            short_term_rate: 0.20, // Higher rate
+            short_term_rate: 0.20,       // Higher rate
             long_term_rate: 0.20,
             annual_loss_limit: None,
             loss_carryforward_years: None,
             has_wash_sale_rule: true,
-            special_notes: Some("Bed and breakfast rule: 30-day matching rule for same/similar securities.".to_string()),
+            special_notes: Some(
+                "Bed and breakfast rule: 30-day matching rule for same/similar securities."
+                    .to_string(),
+            ),
         }
     }
 
@@ -385,11 +383,7 @@ impl TaxCalculator {
         };
 
         // Tax impact: positive = tax owed, negative = tax savings
-        let tax_impact = if gain_loss >= 0.0 {
-            gain_loss * tax_rate
-        } else {
-            gain_loss * tax_rate // Negative, so this is savings
-        };
+        let tax_impact = gain_loss * tax_rate;
 
         TaxEstimate {
             gain_loss,
@@ -440,14 +434,12 @@ impl TaxCalculator {
                     short_term_gains += gain_loss;
                     GainType::ShortTermGain
                 }
+            } else if lot.holding_period(sale_date, &self.rules) == HoldingPeriod::LongTerm {
+                long_term_losses += gain_loss.abs();
+                GainType::LongTermLoss
             } else {
-                if lot.holding_period(sale_date, &self.rules) == HoldingPeriod::LongTerm {
-                    long_term_losses += gain_loss.abs();
-                    GainType::LongTermLoss
-                } else {
-                    short_term_losses += gain_loss.abs();
-                    GainType::ShortTermLoss
-                }
+                short_term_losses += gain_loss.abs();
+                GainType::ShortTermLoss
             };
 
             lot_details.push(LotTaxDetail {
@@ -546,11 +538,17 @@ mod tests {
 
         // After 100 days - short term
         let short_term_date = purchase_date + Duration::days(100);
-        assert_eq!(lot.holding_period(short_term_date, &rules), HoldingPeriod::ShortTerm);
+        assert_eq!(
+            lot.holding_period(short_term_date, &rules),
+            HoldingPeriod::ShortTerm
+        );
 
         // After 400 days - long term
         let long_term_date = purchase_date + Duration::days(400);
-        assert_eq!(lot.holding_period(long_term_date, &rules), HoldingPeriod::LongTerm);
+        assert_eq!(
+            lot.holding_period(long_term_date, &rules),
+            HoldingPeriod::LongTerm
+        );
     }
 
     #[test]

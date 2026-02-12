@@ -29,7 +29,7 @@ pub async fn request_id_middleware(
         .map(|s| s.to_string())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    tracing::Span::current().record("request_id", &id.as_str());
+    tracing::Span::current().record("request_id", id.as_str());
 
     request.extensions_mut().insert(RequestId(id.clone()));
 

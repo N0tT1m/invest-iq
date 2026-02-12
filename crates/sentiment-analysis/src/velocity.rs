@@ -56,8 +56,12 @@ impl VelocitySignal {
     /// Get trading implication
     pub fn trading_implication(&self) -> &'static str {
         match self {
-            VelocitySignal::AcceleratingPositive => "Strong buy signal - sentiment momentum building",
-            VelocitySignal::AcceleratingNegative => "Strong sell signal - negative momentum building",
+            VelocitySignal::AcceleratingPositive => {
+                "Strong buy signal - sentiment momentum building"
+            }
+            VelocitySignal::AcceleratingNegative => {
+                "Strong sell signal - negative momentum building"
+            }
             VelocitySignal::Decelerating => "Momentum fading - consider taking profits or waiting",
             VelocitySignal::TurningPoint => "Potential reversal - watch for confirmation",
             VelocitySignal::Stable => "No clear direction - maintain current position",
@@ -167,12 +171,8 @@ impl SentimentVelocityCalculator {
         let confidence = self.calculate_confidence(&sorted);
 
         // Generate interpretation
-        let interpretation = self.generate_interpretation(
-            current_sentiment,
-            velocity,
-            acceleration,
-            &signal,
-        );
+        let interpretation =
+            self.generate_interpretation(current_sentiment, velocity, acceleration, &signal);
 
         SentimentDynamics {
             current_sentiment,
@@ -193,7 +193,7 @@ impl SentimentVelocityCalculator {
 
         // Use weighted recent changes
         let n = sorted.len();
-        let recent_count = (n / 2).max(2).min(5);
+        let recent_count = (n / 2).clamp(2, 5);
 
         let recent_slice = &sorted[n.saturating_sub(recent_count)..];
         if recent_slice.len() < 2 {
@@ -252,13 +252,11 @@ impl SentimentVelocityCalculator {
         let mid = n / 2;
 
         // Calculate average sentiment for each half
-        let first_half_avg: f64 = sorted[..mid].iter()
-            .map(|p| p.sentiment_score)
-            .sum::<f64>() / mid as f64;
+        let first_half_avg: f64 =
+            sorted[..mid].iter().map(|p| p.sentiment_score).sum::<f64>() / mid as f64;
 
-        let second_half_avg: f64 = sorted[mid..].iter()
-            .map(|p| p.sentiment_score)
-            .sum::<f64>() / (n - mid) as f64;
+        let second_half_avg: f64 =
+            sorted[mid..].iter().map(|p| p.sentiment_score).sum::<f64>() / (n - mid) as f64;
 
         let shift_magnitude = (second_half_avg - first_half_avg).abs();
 
@@ -304,7 +302,8 @@ impl SentimentVelocityCalculator {
         let abs_acceleration = acceleration.abs();
 
         // Check for turning point (velocity near zero but high acceleration)
-        if abs_velocity < self.velocity_threshold && abs_acceleration > self.acceleration_threshold {
+        if abs_velocity < self.velocity_threshold && abs_acceleration > self.acceleration_threshold
+        {
             return VelocitySignal::TurningPoint;
         }
 
@@ -332,11 +331,11 @@ impl SentimentVelocityCalculator {
             let previous_trend = sorted[n - 2].sentiment_score - sorted[n - 3].sentiment_score;
 
             // Sign change indicates potential turning point
-            if (recent_trend > 0.0 && previous_trend < 0.0) ||
-               (recent_trend < 0.0 && previous_trend > 0.0) {
-                if abs_acceleration > self.acceleration_threshold {
-                    return VelocitySignal::TurningPoint;
-                }
+            if ((recent_trend > 0.0 && previous_trend < 0.0)
+                || (recent_trend < 0.0 && previous_trend > 0.0))
+                && abs_acceleration > self.acceleration_threshold
+            {
+                return VelocitySignal::TurningPoint;
             }
         }
 
@@ -351,9 +350,8 @@ impl SentimentVelocityCalculator {
         let data_confidence = (n as f64 / 10.0).min(1.0);
 
         // Confidence based on article counts (more articles = more reliable)
-        let avg_articles: f64 = sorted.iter()
-            .map(|p| p.article_count as f64)
-            .sum::<f64>() / n as f64;
+        let avg_articles: f64 =
+            sorted.iter().map(|p| p.article_count as f64).sum::<f64>() / n as f64;
         let article_confidence = (avg_articles / 20.0).min(1.0);
 
         // Confidence based on time span coverage
@@ -476,7 +474,10 @@ mod tests {
         let data = create_test_data(&[10.0, 12.0, 8.0, 11.0, 9.0]);
         let result = calculator.calculate(&data);
 
-        assert!(result.velocity.abs() < 5.0, "Velocity should be near zero for stable sentiment");
+        assert!(
+            result.velocity.abs() < 5.0,
+            "Velocity should be near zero for stable sentiment"
+        );
     }
 
     #[test]
@@ -496,7 +497,10 @@ mod tests {
         let data = create_test_data(&[-60.0, -50.0, -40.0, 20.0, 40.0, 60.0]);
         let result = calculator.calculate(&data);
 
-        assert!(result.narrative_shift.is_some(), "Should detect narrative shift");
+        assert!(
+            result.narrative_shift.is_some(),
+            "Should detect narrative shift"
+        );
         if let Some(shift) = result.narrative_shift {
             assert_eq!(shift.from_theme, "Bearish");
             assert_eq!(shift.to_theme, "Bullish");

@@ -1,0 +1,177 @@
+# InvestIQ Helm Chart Values
+
+# ---------- Global ----------
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# ---------- API Server ----------
+apiServer:
+  replicaCount: 1
+  image:
+    repository: investiq/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  env:
+    RUST_LOG: info
+    RUST_LOG_FORMAT: json
+    RATE_LIMIT_PER_MINUTE: "120"
+    REQUIRE_AUTH: "false"
+    CACHE_TTL: "300"
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  probes:
+    liveness:
+      path: /health
+      initialDelaySeconds: 30
+      periodSeconds: 15
+    readiness:
+      path: /health
+      initialDelaySeconds: 10
+      periodSeconds: 10
+
+# ---------- Frontend (Dash) ----------
+frontend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: investiq/frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8050
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  env:
+    API_ENDPOINT: http://investiq-api:3000
+
+# ---------- ML Signal Models ----------
+signalModels:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: investiq/signal-models
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8004
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  env:
+    MODEL_DIR: /app/models
+  probes:
+    liveness:
+      path: /health
+      initialDelaySeconds: 30
+      periodSeconds: 15
+    readiness:
+      path: /health
+      initialDelaySeconds: 15
+      periodSeconds: 10
+
+# ---------- Redis ----------
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: 7-alpine
+  service:
+    type: ClusterIP
+    port: 6379
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ---------- Trading Agent (optional) ----------
+tradingAgent:
+  enabled: false
+  image:
+    repository: investiq/trading-agent
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  env:
+    RUST_LOG: info
+
+# ---------- Ingress ----------
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/rate-limit: "60"
+  hosts:
+    - host: investiq.example.com
+      paths:
+        - path: /api
+          pathType: Prefix
+          service: api
+        - path: /
+          pathType: Prefix
+          service: frontend
+  tls: []
+    # - secretName: investiq-tls
+    #   hosts:
+    #     - investiq.example.com
+
+# ---------- Persistence ----------
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+
+# ---------- Secrets ----------
+secrets:
+  polygonApiKey: ""
+  alpacaApiKey: ""
+  alpacaSecretKey: ""
+  apiKeys: ""
+  liveTradingKey: ""
+
+# ---------- PostgreSQL (optional, via values) ----------
+postgresql:
+  enabled: false
+  auth:
+    database: investiq
+    username: investiq
+    password: investiq_dev
+  primary:
+    persistence:
+      size: 5Gi

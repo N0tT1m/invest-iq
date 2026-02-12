@@ -171,7 +171,10 @@ impl ConfidenceCalibrator {
         sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
         // Pool adjacent violators algorithm (PAVA)
-        let mut values: Vec<f64> = sorted.iter().map(|(_, o)| if *o { 1.0 } else { 0.0 }).collect();
+        let mut values: Vec<f64> = sorted
+            .iter()
+            .map(|(_, o)| if *o { 1.0 } else { 0.0 })
+            .collect();
         let mut weights: Vec<f64> = vec![1.0; values.len()];
 
         let mut i = 0;
@@ -179,16 +182,15 @@ impl ConfidenceCalibrator {
             if values[i] > values[i + 1] {
                 // Pool violating pair
                 let total_weight = weights[i] + weights[i + 1];
-                let pooled_value = (values[i] * weights[i] + values[i + 1] * weights[i + 1]) / total_weight;
+                let pooled_value =
+                    (values[i] * weights[i] + values[i + 1] * weights[i + 1]) / total_weight;
                 values[i] = pooled_value;
                 weights[i] = total_weight;
                 values.remove(i + 1);
                 weights.remove(i + 1);
 
                 // Check for further violations going backwards
-                if i > 0 {
-                    i -= 1;
-                }
+                i = i.saturating_sub(1);
             } else {
                 i += 1;
             }
@@ -254,9 +256,7 @@ impl ConfidenceCalibrator {
                 CalibrationMethod::PlattScaling => {
                     1.0 / (1.0 + (-self.platt_a * raw_confidence - self.platt_b).exp())
                 }
-                CalibrationMethod::IsotonicRegression => {
-                    self.isotonic_lookup(raw_confidence)
-                }
+                CalibrationMethod::IsotonicRegression => self.isotonic_lookup(raw_confidence),
                 CalibrationMethod::TemperatureScaling => {
                     self.apply_temperature(raw_confidence, self.temperature)
                 }
@@ -268,11 +268,8 @@ impl ConfidenceCalibrator {
 
         // Estimate uncertainty based on calibration and sample size
         let sample_size = self.stats.as_ref().map(|s| s.sample_size).unwrap_or(0);
-        let (model_uncertainty, data_uncertainty) = self.estimate_uncertainty(
-            raw_confidence,
-            calibrated,
-            sample_size,
-        );
+        let (model_uncertainty, data_uncertainty) =
+            self.estimate_uncertainty(raw_confidence, calibrated, sample_size);
 
         let total_uncertainty = (model_uncertainty.powi(2) + data_uncertainty.powi(2)).sqrt();
 
@@ -310,9 +307,10 @@ impl ConfidenceCalibrator {
         }
 
         // Binary search for closest value
-        match self.isotonic_table.binary_search_by(|probe| {
-            probe.0.partial_cmp(&value).unwrap()
-        }) {
+        match self
+            .isotonic_table
+            .binary_search_by(|probe| probe.0.partial_cmp(&value).unwrap())
+        {
             Ok(idx) => self.isotonic_table[idx].1,
             Err(idx) => {
                 if idx == 0 {
@@ -330,12 +328,7 @@ impl ConfidenceCalibrator {
         }
     }
 
-    fn estimate_uncertainty(
-        &self,
-        raw: f64,
-        calibrated: f64,
-        sample_size: usize,
-    ) -> (f64, f64) {
+    fn estimate_uncertainty(&self, raw: f64, calibrated: f64, sample_size: usize) -> (f64, f64) {
         // Model uncertainty (epistemic) - decreases with more calibration data
         let model_uncertainty = if sample_size > 0 {
             0.5 / (sample_size as f64).sqrt()
@@ -420,7 +413,8 @@ impl ConfidenceCalibrator {
             }
 
             let avg_predicted: f64 = bin.iter().map(|(p, _)| p).sum::<f64>() / bin.len() as f64;
-            let actual_positive_rate = bin.iter().filter(|(_, o)| *o).count() as f64 / bin.len() as f64;
+            let actual_positive_rate =
+                bin.iter().filter(|(_, o)| *o).count() as f64 / bin.len() as f64;
             let calibration_error = (avg_predicted - actual_positive_rate).abs();
 
             ece += calibration_error * bin.len() as f64 / n;
@@ -491,7 +485,9 @@ mod tests {
             })
             .collect();
 
-        calibrator.fit(&predictions, CalibrationMethod::PlattScaling).unwrap();
+        calibrator
+            .fit(&predictions, CalibrationMethod::PlattScaling)
+            .unwrap();
 
         let result = calibrator.calibrate(0.5);
         assert!(calibrator.is_fitted());
@@ -504,18 +500,21 @@ mod tests {
 
         let predictions: Vec<(f64, bool)> = (0..100)
             .map(|i| {
-                let pred = (i as f64) / 100.0;
+                let pred = (i as f64 + 1.0) / 101.0; // Avoid 0.0 and 1.0 (cause logit -inf/+inf)
                 let actual = rand_like(i) > 0.5;
                 (pred, actual)
             })
             .collect();
 
-        calibrator.fit(&predictions, CalibrationMethod::TemperatureScaling).unwrap();
+        calibrator
+            .fit(&predictions, CalibrationMethod::TemperatureScaling)
+            .unwrap();
         assert!(calibrator.is_fitted());
     }
 
     fn rand_like(seed: i32) -> f64 {
-        ((seed * 1103515245 + 12345) % 100) as f64 / 100.0
+        ((seed as i64).wrapping_mul(1103515245).wrapping_add(12345) % 100).unsigned_abs() as f64
+            / 100.0
     }
 
     #[test]
@@ -524,12 +523,26 @@ mod tests {
 
         // Well-calibrated predictions
         let predictions: Vec<(f64, bool)> = vec![
-            (0.1, false), (0.1, false), (0.1, true), (0.1, false), (0.1, false),
-            (0.5, true), (0.5, false), (0.5, true), (0.5, false), (0.5, true),
-            (0.9, true), (0.9, true), (0.9, true), (0.9, true), (0.9, false),
+            (0.1, false),
+            (0.1, false),
+            (0.1, true),
+            (0.1, false),
+            (0.1, false),
+            (0.5, true),
+            (0.5, false),
+            (0.5, true),
+            (0.5, false),
+            (0.5, true),
+            (0.9, true),
+            (0.9, true),
+            (0.9, true),
+            (0.9, true),
+            (0.9, false),
         ];
 
-        calibrator.fit(&predictions, CalibrationMethod::None).unwrap();
+        calibrator
+            .fit(&predictions, CalibrationMethod::None)
+            .unwrap();
 
         let stats = calibrator.stats().unwrap();
         assert!(stats.ece < 0.3); // Reasonably calibrated

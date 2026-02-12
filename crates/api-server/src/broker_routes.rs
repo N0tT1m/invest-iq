@@ -4,26 +4,35 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use alpaca_broker::MarketOrderRequest;
+use broker_trait::{BrokerAccount, BrokerOrder, BrokerOrderRequest, BrokerPosition};
 use portfolio_manager::TradeInput;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::{audit, auth, ApiResponse, AppError, AppState};
+use notification_service::{Alert, AlertType};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ExecuteTradeRequest {
+    /// Stock ticker symbol (e.g. AAPL)
     pub symbol: String,
-    pub action: String, // "buy" or "sell"
+    /// Trade direction: "buy" or "sell"
+    pub action: String,
+    /// Number of shares to trade
+    #[schema(value_type = f64)]
     pub shares: Decimal,
+    /// Optional confidence score from analysis (0.0-1.0)
     pub confidence: Option<f64>,
+    /// Optional trade notes
     pub notes: Option<String>,
+    /// Optional idempotency key to prevent duplicate orders
     pub idempotency_key: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ClosePositionRequest {
+    /// Optional notes about why the position is being closed
     pub notes: Option<String>,
 }
 
@@ -40,48 +49,76 @@ pub fn broker_read_routes() -> Router<AppState> {
 pub fn broker_write_routes() -> Router<AppState> {
     Router::new()
         .route("/api/broker/execute", post(execute_trade))
-        .route("/api/broker/positions/:symbol", delete(close_broker_position))
+        .route(
+            "/api/broker/positions/:symbol",
+            delete(close_broker_position),
+        )
         .route("/api/broker/orders/:id/cancel", post(cancel_order))
         .layer(middleware::from_fn(auth::live_trading_auth_middleware))
 }
 
-/// Get Alpaca account information
+#[utoipa::path(
+    get,
+    path = "/api/broker/account",
+    tag = "Trading",
+    responses(
+        (status = 200, description = "Broker account information including balance and buying power"),
+        (status = 500, description = "Broker not configured or API error"),
+    ),
+)]
+/// Get broker account information
 async fn get_account_info(
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<alpaca_broker::Account>>, AppError> {
-    let alpaca_client = state.alpaca_client.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Alpaca broker not configured"))?;
+) -> Result<Json<ApiResponse<BrokerAccount>>, AppError> {
+    let broker = state
+        .broker_client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Broker not configured"))?;
 
-    let account = alpaca_client.get_account().await?;
+    let account = broker.get_account().await?;
 
     Ok(Json(ApiResponse::success(account)))
 }
 
-/// Helper: sum unrealized intraday P&L from Alpaca positions
-async fn account_daily_pl(alpaca_client: &alpaca_broker::AlpacaClient) -> f64 {
-    match alpaca_client.get_positions().await {
-        Ok(positions) => {
-            positions.iter()
-                .filter_map(|p| p.unrealized_intraday_pl.parse::<f64>().ok())
-                .sum()
-        }
+/// Helper: sum unrealized intraday P&L from broker positions
+async fn account_daily_pl(broker: &dyn broker_trait::BrokerClient) -> f64 {
+    match broker.get_positions().await {
+        Ok(positions) => positions
+            .iter()
+            .filter_map(|p| p.unrealized_intraday_pl.parse::<f64>().ok())
+            .sum(),
         Err(_) => 0.0,
     }
 }
 
-/// Execute a trade through Alpaca
+#[utoipa::path(
+    post,
+    path = "/api/broker/execute",
+    tag = "Trading",
+    request_body = ExecuteTradeRequest,
+    responses(
+        (status = 200, description = "Trade executed successfully, returns order details"),
+        (status = 500, description = "Trade execution failed (risk check, circuit breaker, or broker error)"),
+    ),
+)]
+/// Execute a trade through broker
 async fn execute_trade(
     State(state): State<AppState>,
     Json(req): Json<ExecuteTradeRequest>,
-) -> Result<Json<ApiResponse<alpaca_broker::Order>>, AppError> {
-    let alpaca_client = state.alpaca_client.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Alpaca broker not configured"))?;
+) -> Result<Json<ApiResponse<BrokerOrder>>, AppError> {
+    let broker = state
+        .broker_client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Broker not configured"))?;
 
     let symbol = req.symbol.to_uppercase();
     let is_buy = req.action.to_lowercase() == "buy";
 
     // Get DB pool for audit logging, idempotency, and transactions
-    let pool = state.portfolio_manager.as_ref().map(|pm| pm.db().pool().clone());
+    let pool = state
+        .portfolio_manager
+        .as_ref()
+        .map(|pm| pm.db().pool().clone());
 
     // --- Idempotency check ---
     if let (Some(ref idem_key), Some(ref pool)) = (&req.idempotency_key, &pool) {
@@ -96,7 +133,7 @@ async fn execute_trade(
 
         if let Some((response_json,)) = existing {
             tracing::info!("Idempotency hit for key={}", idem_key);
-            if let Ok(cached_order) = serde_json::from_str::<alpaca_broker::Order>(&response_json) {
+            if let Ok(cached_order) = serde_json::from_str::<BrokerOrder>(&response_json) {
                 return Ok(Json(ApiResponse::success(cached_order)));
             }
         }
@@ -105,76 +142,144 @@ async fn execute_trade(
     // Pre-trade risk checks for buy orders
     if is_buy {
         if let Some(risk_manager) = state.risk_manager.as_ref() {
-            let account = alpaca_client.get_account().await?;
+            let account = broker.get_account().await?;
             let portfolio_value = account.portfolio_value.parse::<f64>().unwrap_or(0.0);
             let cash = account.cash.parse::<f64>().unwrap_or(0.0);
             let buying_power = account.buying_power.parse::<f64>().unwrap_or(0.0);
 
-            let positions = alpaca_client.get_positions().await.unwrap_or_default();
+            let positions = broker.get_positions().await.unwrap_or_default();
             let positions_count = positions.len() as i32;
-            let positions_value: f64 = positions.iter()
+            let positions_value: f64 = positions
+                .iter()
                 .filter_map(|p| p.market_value.parse::<f64>().ok())
                 .sum();
 
-            let daily_pl = account_daily_pl(alpaca_client).await;
-            let cb_check = risk_manager.check_circuit_breakers(portfolio_value, daily_pl).await?;
+            let daily_pl = account_daily_pl(broker.as_ref()).await;
+            let cb_check = risk_manager
+                .check_circuit_breakers(portfolio_value, daily_pl)
+                .await?;
             if !cb_check.can_trade {
                 if let Some(ref pool) = pool {
-                    audit::log_audit(pool, "circuit_breaker_triggered", Some(&symbol), Some(&req.action),
-                        Some(&cb_check.reason), "user", None).await;
+                    audit::log_audit(
+                        pool,
+                        "circuit_breaker_triggered",
+                        Some(&symbol),
+                        Some(&req.action),
+                        Some(&cb_check.reason),
+                        "user",
+                        None,
+                    )
+                    .await;
+                }
+                if let Some(ref notif) = state.notification {
+                    notif.send_alert(Alert::new(
+                        AlertType::CircuitBreakerTripped {
+                            reason: cb_check.reason.clone(),
+                        },
+                        "Circuit Breaker Tripped",
+                        format!("Trade blocked for {}: {}", symbol, cb_check.reason),
+                    ));
                 }
                 return Err(anyhow::anyhow!("Circuit breaker: {}", cb_check.reason).into());
             }
 
-            if !alpaca_client.is_paper() {
+            if !broker.is_paper() {
                 let confidence = req.confidence.unwrap_or(0.5);
-                let risk_check = risk_manager.check_trade_risk(
-                    confidence, cash, positions_value, positions_count,
-                ).await?;
+                let risk_check = risk_manager
+                    .check_trade_risk(confidence, cash, positions_value, positions_count)
+                    .await?;
                 if !risk_check.can_trade {
                     if let Some(ref pool) = pool {
-                        audit::log_audit(pool, "risk_check_failed", Some(&symbol), Some(&req.action),
-                            Some(&risk_check.reason), "user", None).await;
+                        audit::log_audit(
+                            pool,
+                            "risk_check_failed",
+                            Some(&symbol),
+                            Some(&req.action),
+                            Some(&risk_check.reason),
+                            "user",
+                            None,
+                        )
+                        .await;
                     }
                     return Err(anyhow::anyhow!("Risk check failed: {}", risk_check.reason).into());
                 }
             }
 
             if buying_power <= 0.0 {
-                return Err(anyhow::anyhow!("Insufficient buying power: ${:.2}", buying_power).into());
+                return Err(
+                    anyhow::anyhow!("Insufficient buying power: ${:.2}", buying_power).into(),
+                );
             }
         }
     }
 
     // Create market order
     let market_order = match req.action.to_lowercase().as_str() {
-        "buy" => MarketOrderRequest::buy(&symbol, req.shares),
-        "sell" => MarketOrderRequest::sell(&symbol, req.shares),
+        "buy" => BrokerOrderRequest::buy(&symbol, req.shares),
+        "sell" => BrokerOrderRequest::sell(&symbol, req.shares),
         _ => return Err(anyhow::anyhow!("Invalid action: must be 'buy' or 'sell'").into()),
     };
 
-    tracing::info!("Executing {} order: {} shares of {}", req.action, req.shares, symbol);
+    tracing::info!(
+        "Executing {} order: {} shares of {}",
+        req.action,
+        req.shares,
+        symbol
+    );
 
     // Submit order to Alpaca
-    let order = alpaca_client.submit_market_order(market_order).await?;
+    let order = broker.submit_market_order(market_order).await?;
 
-    tracing::info!("Order submitted successfully: {} ({})", order.id, order.status);
+    tracing::info!(
+        "Order submitted successfully: {} ({})",
+        order.id,
+        order.status
+    );
 
     // Audit: order submitted
     if let Some(ref pool) = pool {
         let details = serde_json::json!({
             "shares": req.shares.to_f64().unwrap_or(0.0),
             "status": order.status,
-        }).to_string();
-        audit::log_audit(pool, "order_submitted", Some(&symbol), Some(&req.action),
-            Some(&details), "user", Some(&order.id)).await;
+        })
+        .to_string();
+        audit::log_audit(
+            pool,
+            "order_submitted",
+            Some(&symbol),
+            Some(&req.action),
+            Some(&details),
+            "user",
+            Some(&order.id),
+        )
+        .await;
+    }
+
+    // Notify: trade executed
+    if let Some(ref notif) = state.notification {
+        let fill_price_f64 = order
+            .filled_avg_price
+            .as_ref()
+            .and_then(|p| p.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        notif.send_alert(Alert::new(
+            AlertType::TradeExecuted {
+                symbol: symbol.clone(),
+                action: req.action.clone(),
+                shares: req.shares.to_f64().unwrap_or(0.0),
+                price: fill_price_f64,
+                confidence: req.confidence,
+            },
+            format!("{} {} {}", req.action.to_uppercase(), symbol, req.shares),
+            format!("Order {} (status: {})", order.id, order.status),
+        ));
     }
 
     // --- Post-fill: log trade, register risk, update portfolio in a transaction ---
     if let Some(trade_logger) = state.trade_logger.as_ref() {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        let filled_order = alpaca_client.get_order(&order.id).await.unwrap_or(order.clone());
+        let filled_order = broker.get_order(&order.id).await.unwrap_or(order.clone());
 
         let fill_price_f64 = if let Some(avg_price_str) = &filled_order.filled_avg_price {
             avg_price_str.parse::<f64>().unwrap_or(0.0)
@@ -187,7 +292,10 @@ async fn execute_trade(
 
             // Use a DB transaction for all post-fill writes
             if let Some(ref pool) = pool {
-                let mut tx = pool.begin().await.map_err(|e| anyhow::anyhow!("Transaction start failed: {}", e))?;
+                let mut tx = pool
+                    .begin()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Transaction start failed: {}", e))?;
 
                 // 1. Log trade
                 let trade_result = sqlx::query(
@@ -211,8 +319,10 @@ async fn execute_trade(
                     if is_buy {
                         if let Some(risk_manager) = state.risk_manager.as_ref() {
                             let params = risk_manager.get_parameters().await.unwrap_or_default();
-                            let stop_loss_price = fill_price_f64 * (1.0 - params.default_stop_loss_percent / 100.0);
-                            let take_profit_price = fill_price_f64 * (1.0 + params.default_take_profit_percent / 100.0);
+                            let stop_loss_price =
+                                fill_price_f64 * (1.0 - params.default_stop_loss_percent / 100.0);
+                            let take_profit_price =
+                                fill_price_f64 * (1.0 + params.default_take_profit_percent / 100.0);
 
                             let _ = sqlx::query(
                                 "INSERT OR REPLACE INTO active_risk_positions
@@ -248,7 +358,7 @@ async fn execute_trade(
                         .await;
                     } else {
                         let _ = sqlx::query(
-                            "UPDATE positions SET shares = shares - ? WHERE symbol = ?"
+                            "UPDATE positions SET shares = shares - ? WHERE symbol = ?",
                         )
                         .bind(req.shares.to_f64().unwrap_or(0.0))
                         .bind(&symbol)
@@ -256,12 +366,11 @@ async fn execute_trade(
                         .await;
 
                         // Remove position if shares <= 0
-                        let _ = sqlx::query(
-                            "DELETE FROM positions WHERE symbol = ? AND shares <= 0"
-                        )
-                        .bind(&symbol)
-                        .execute(&mut *tx)
-                        .await;
+                        let _ =
+                            sqlx::query("DELETE FROM positions WHERE symbol = ? AND shares <= 0")
+                                .bind(&symbol)
+                                .execute(&mut *tx)
+                                .await;
                     }
 
                     // 4. Audit log within transaction
@@ -269,7 +378,8 @@ async fn execute_trade(
                         "fill_price": fill_price_f64,
                         "shares": req.shares.to_f64().unwrap_or(0.0),
                         "order_status": filled_order.status,
-                    }).to_string();
+                    })
+                    .to_string();
                     let _ = sqlx::query(
                         "INSERT INTO audit_log (event_type, symbol, action, details, user_id, order_id)
                          VALUES ('trade_executed', ?, ?, ?, 'user', ?)"
@@ -285,9 +395,14 @@ async fn execute_trade(
                     if let Err(e) = tx.commit().await {
                         tracing::error!("Transaction commit failed: {}", e);
                     } else {
-                        tracing::info!("Trade logged, risk registered, portfolio updated (tx committed)");
+                        tracing::info!(
+                            "Trade logged, risk registered, portfolio updated (tx committed)"
+                        );
                         // Increment trade counter metric
-                        state.metrics.trade_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        state
+                            .metrics
+                            .trade_count
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             } else {
@@ -299,13 +414,19 @@ async fn execute_trade(
                     price: fill_price,
                     trade_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
                     commission: Some(Decimal::ZERO),
-                    notes: req.notes.clone().or(Some(format!("Auto-logged from Alpaca order {}", filled_order.id))),
+                    notes: req.notes.clone().or(Some(format!(
+                        "Auto-logged from Alpaca order {}",
+                        filled_order.id
+                    ))),
                     alert_id: None,
                     analysis_id: None,
                 };
                 if trade_logger.log_trade(trade).await.is_ok() {
                     // Increment trade counter metric
-                    state.metrics.trade_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .metrics
+                        .trade_count
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         }
@@ -333,42 +454,71 @@ async fn execute_trade(
     Ok(Json(ApiResponse::success(order)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/broker/positions",
+    tag = "Trading",
+    responses(
+        (status = 200, description = "List of all open broker positions"),
+        (status = 500, description = "Broker not configured or API error"),
+    ),
+)]
 /// Get all positions from Alpaca
 async fn get_broker_positions(
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<Vec<alpaca_broker::Position>>>, AppError> {
-    let alpaca_client = state.alpaca_client.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Alpaca broker not configured"))?;
+) -> Result<Json<ApiResponse<Vec<BrokerPosition>>>, AppError> {
+    let broker = state
+        .broker_client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Broker not configured"))?;
 
-    let positions = alpaca_client.get_positions().await?;
+    let positions = broker.get_positions().await?;
 
     Ok(Json(ApiResponse::success(positions)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/broker/positions/{symbol}",
+    tag = "Trading",
+    params(
+        ("symbol" = String, Path, description = "Stock ticker symbol of the position to close"),
+    ),
+    request_body = ClosePositionRequest,
+    responses(
+        (status = 200, description = "Position closed successfully, returns order details"),
+        (status = 500, description = "Broker not configured or close failed"),
+    ),
+)]
 /// Close a position (sell all shares)
 async fn close_broker_position(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
     Json(req): Json<ClosePositionRequest>,
-) -> Result<Json<ApiResponse<alpaca_broker::Order>>, AppError> {
-    let alpaca_client = state.alpaca_client.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Alpaca broker not configured"))?;
+) -> Result<Json<ApiResponse<BrokerOrder>>, AppError> {
+    let broker = state
+        .broker_client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Broker not configured"))?;
 
     let symbol = symbol.to_uppercase();
 
     tracing::info!("Closing position for {}", symbol);
 
-    let order = alpaca_client.close_position(&symbol).await?;
+    let order = broker.close_position(&symbol).await?;
 
     // Auto-log if trade logger available
     if let Some(trade_logger) = state.trade_logger.as_ref() {
         // Wait for fill
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        let filled_order = alpaca_client.get_order(&order.id).await.unwrap_or(order.clone());
+        let filled_order = broker.get_order(&order.id).await.unwrap_or(order.clone());
 
-        if let (Some(qty_str), Some(price_str)) = (&filled_order.filled_quantity, &filled_order.filled_avg_price) {
-            if let (Ok(qty_f64), Ok(price_f64)) = (qty_str.parse::<f64>(), price_str.parse::<f64>()) {
+        if let (Some(qty_str), Some(price_str)) =
+            (&filled_order.filled_qty, &filled_order.filled_avg_price)
+        {
+            if let (Ok(qty_f64), Ok(price_f64)) = (qty_str.parse::<f64>(), price_str.parse::<f64>())
+            {
                 let qty = Decimal::from_f64(qty_f64).unwrap_or(Decimal::ZERO);
                 let price = Decimal::from_f64(price_f64).unwrap_or(Decimal::ZERO);
                 let trade = TradeInput {
@@ -378,14 +528,20 @@ async fn close_broker_position(
                     price,
                     trade_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
                     commission: Some(Decimal::ZERO),
-                    notes: req.notes.or(Some(format!("Closed position via Alpaca order {}", filled_order.id))),
+                    notes: req.notes.or(Some(format!(
+                        "Closed position via Alpaca order {}",
+                        filled_order.id
+                    ))),
                     alert_id: None,
                     analysis_id: None,
                 };
 
                 if trade_logger.log_trade(trade).await.is_ok() {
                     // Increment trade counter metric
-                    state.metrics.trade_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .metrics
+                        .trade_count
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         }
@@ -399,40 +555,79 @@ async fn close_broker_position(
     Ok(Json(ApiResponse::success(order)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/broker/orders",
+    tag = "Trading",
+    responses(
+        (status = 200, description = "List of recent broker orders (up to 50)"),
+        (status = 500, description = "Broker not configured or API error"),
+    ),
+)]
 /// Get all orders
 async fn get_orders(
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<Vec<alpaca_broker::Order>>>, AppError> {
-    let alpaca_client = state.alpaca_client.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Alpaca broker not configured"))?;
+) -> Result<Json<ApiResponse<Vec<BrokerOrder>>>, AppError> {
+    let broker = state
+        .broker_client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Broker not configured"))?;
 
-    let orders = alpaca_client.get_orders(Some(50)).await?;
+    let orders = broker.get_orders(Some(50)).await?;
 
     Ok(Json(ApiResponse::success(orders)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/broker/orders/{id}",
+    tag = "Trading",
+    params(
+        ("id" = String, Path, description = "Broker order ID"),
+    ),
+    responses(
+        (status = 200, description = "Order details"),
+        (status = 500, description = "Broker not configured or order not found"),
+    ),
+)]
 /// Get a specific order
 async fn get_order(
     State(state): State<AppState>,
     Path(order_id): Path<String>,
-) -> Result<Json<ApiResponse<alpaca_broker::Order>>, AppError> {
-    let alpaca_client = state.alpaca_client.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Alpaca broker not configured"))?;
+) -> Result<Json<ApiResponse<BrokerOrder>>, AppError> {
+    let broker = state
+        .broker_client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Broker not configured"))?;
 
-    let order = alpaca_client.get_order(&order_id).await?;
+    let order = broker.get_order(&order_id).await?;
 
     Ok(Json(ApiResponse::success(order)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/broker/orders/{id}/cancel",
+    tag = "Trading",
+    params(
+        ("id" = String, Path, description = "Broker order ID to cancel"),
+    ),
+    responses(
+        (status = 200, description = "Order canceled successfully"),
+        (status = 500, description = "Broker not configured or cancel failed"),
+    ),
+)]
 /// Cancel an order
 async fn cancel_order(
     State(state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let alpaca_client = state.alpaca_client.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Alpaca broker not configured"))?;
+    let broker = state
+        .broker_client
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Broker not configured"))?;
 
-    alpaca_client.cancel_order(&order_id).await?;
+    broker.cancel_order(&order_id).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({
         "message": "Order canceled successfully",

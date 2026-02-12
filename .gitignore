@@ -62,3 +62,9 @@ node_modules/
 
 # Frontend build artifacts
 /frontend/venv/
+
+# Tauri build artifacts
+/WixTools/
+*.msi
+*.dmg
+*.AppImage

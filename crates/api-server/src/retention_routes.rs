@@ -3,21 +3,21 @@
 //! Archives old records and provides retention management endpoints.
 //! Covers: trades, audit log, backtest results, sentiment history, analysis features.
 
+use crate::{ApiResponse, AppError, AppState};
 use axum::{
     extract::{Query, State},
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use crate::{ApiResponse, AppError, AppState};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct RetentionQuery {
-    pub days: Option<i64>,  // Records older than this many days (default: 365)
-    pub dry_run: Option<bool>,  // If true, just count without archiving
+    pub days: Option<i64>,     // Records older than this many days (default: 365)
+    pub dry_run: Option<bool>, // If true, just count without archiving
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct RetentionResult {
     pub trades_archived: i64,
     pub audit_entries_archived: i64,
@@ -28,7 +28,7 @@ pub struct RetentionResult {
     pub cutoff_date: String,
 }
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct RetentionRun {
     pub id: i64,
     pub run_date: String,
@@ -46,25 +46,40 @@ pub fn retention_routes() -> Router<AppState> {
         .route("/api/admin/audit/verify", get(verify_audit_chain))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/audit/verify",
+    responses((status = 200, description = "Audit hash chain verification result")),
+    tag = "Admin"
+)]
 /// Verify the tamper-evident audit hash chain.
 async fn verify_audit_chain(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<crate::audit::AuditChainVerification>>, AppError> {
-    let pool = state.portfolio_manager.as_ref()
+    let pool = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
-        .db().pool();
+        .db()
+        .pool();
 
     let verification = crate::audit::verify_audit_chain(pool).await?;
     Ok(Json(ApiResponse::success(verification)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/retention/policy",
+    responses((status = 200, description = "Current retention policy configuration")),
+    tag = "Admin"
+)]
 /// Get configured retention policy
 async fn get_retention_policy() -> Result<Json<ApiResponse<RetentionPolicy>>, AppError> {
     let policy = RetentionPolicy::from_env();
     Ok(Json(ApiResponse::success(policy)))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct RetentionPolicy {
     pub trades_retention_days: i64,
     pub audit_retention_days: i64,
@@ -82,30 +97,49 @@ impl RetentionPolicy {
 
         Self {
             trades_retention_days: std::env::var("RETENTION_TRADES_DAYS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(default_days),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(default_days),
             audit_retention_days: std::env::var("RETENTION_AUDIT_DAYS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(default_days),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(default_days),
             backtest_retention_days: std::env::var("RETENTION_BACKTEST_DAYS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(default_days),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(default_days),
             sentiment_retention_days: std::env::var("RETENTION_SENTIMENT_DAYS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(90),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(90),
             analysis_features_retention_days: std::env::var("RETENTION_FEATURES_DAYS")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(90),
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(90),
         }
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/retention",
+    responses((status = 200, description = "History of retention runs")),
+    tag = "Admin"
+)]
 async fn get_retention_history(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<RetentionRun>>>, AppError> {
-    let pool = state.portfolio_manager.as_ref()
+    let pool = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
-        .db().pool();
+        .db()
+        .pool();
 
     let runs: Vec<RetentionRun> = sqlx::query_as(
         "SELECT id, run_date, trades_archived, audit_entries_archived,
                 backtest_results_archived, completed_at
-         FROM retention_runs ORDER BY run_date DESC LIMIT 20"
+         FROM retention_runs ORDER BY run_date DESC LIMIT 20",
     )
     .fetch_all(pool)
     .await?;
@@ -113,13 +147,23 @@ async fn get_retention_history(
     Ok(Json(ApiResponse::success(runs)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/admin/retention/run",
+    params(RetentionQuery),
+    responses((status = 200, description = "Retention run results")),
+    tag = "Admin"
+)]
 async fn run_retention(
     State(state): State<AppState>,
     Query(query): Query<RetentionQuery>,
 ) -> Result<Json<ApiResponse<RetentionResult>>, AppError> {
-    let pool = state.portfolio_manager.as_ref()
+    let pool = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
-        .db().pool();
+        .db()
+        .pool();
 
     let days = query.days.unwrap_or(365);
     let dry_run = query.dry_run.unwrap_or(false);
@@ -133,45 +177,40 @@ async fn run_retention(
     let features_cutoff_str = features_cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
 
     if dry_run {
-        let trade_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM trades WHERE trade_date < ?"
-        )
-        .bind(&cutoff_str)
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
+        let trade_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM trades WHERE trade_date < ?")
+                .bind(&cutoff_str)
+                .fetch_one(pool)
+                .await
+                .unwrap_or((0,));
 
-        let audit_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM audit_log WHERE created_at < ?"
-        )
-        .bind(&cutoff_str)
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
+        let audit_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE created_at < ?")
+                .bind(&cutoff_str)
+                .fetch_one(pool)
+                .await
+                .unwrap_or((0,));
 
-        let backtest_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM backtest_results WHERE created_at < ?"
-        )
-        .bind(&cutoff_str)
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
+        let backtest_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM backtest_results WHERE created_at < ?")
+                .bind(&cutoff_str)
+                .fetch_one(pool)
+                .await
+                .unwrap_or((0,));
 
-        let sentiment_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM sentiment_history WHERE recorded_at < ?"
-        )
-        .bind(&sentiment_cutoff_str)
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
+        let sentiment_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM sentiment_history WHERE recorded_at < ?")
+                .bind(&sentiment_cutoff_str)
+                .fetch_one(pool)
+                .await
+                .unwrap_or((0,));
 
-        let features_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM analysis_features WHERE created_at < ?"
-        )
-        .bind(&features_cutoff_str)
-        .fetch_one(pool)
-        .await
-        .unwrap_or((0,));
+        let features_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM analysis_features WHERE created_at < ?")
+                .bind(&features_cutoff_str)
+                .fetch_one(pool)
+                .await
+                .unwrap_or((0,));
 
         return Ok(Json(ApiResponse::success(RetentionResult {
             trades_archived: trade_count.0,

@@ -29,7 +29,8 @@ impl DiscordNotifier {
             "username": "InvestIQ Trading Agent",
         });
 
-        match self.client
+        match self
+            .client
             .post(&self.webhook_url)
             .json(&payload)
             .send()

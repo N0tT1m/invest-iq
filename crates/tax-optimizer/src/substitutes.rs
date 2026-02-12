@@ -151,7 +151,7 @@ impl SubstituteFinder {
 
         // Check sector ETFs
         if let Some(sector) = self.substitutes_db.get_sector(symbol) {
-            if let Some(sector_etf) = self.substitutes_db.get_sector_etf(&sector) {
+            if let Some(sector_etf) = self.substitutes_db.get_sector_etf(sector) {
                 if sector_etf != symbol {
                     substitutes.push(SubstituteSecurity {
                         symbol: sector_etf.to_string(),
@@ -170,13 +170,17 @@ impl SubstituteFinder {
         // Filter based on config
         substitutes.retain(|s| {
             s.correlation.overall >= self.config.min_correlation
-                && s.expense_ratio.map_or(true, |e| e <= self.config.max_expense_ratio)
+                && s.expense_ratio
+                    .is_none_or(|e| e <= self.config.max_expense_ratio)
                 && (self.config.include_leveraged || s.substitute_type != SubstituteType::Leveraged)
         });
 
         // Sort by correlation
         substitutes.sort_by(|a, b| {
-            b.correlation.overall.partial_cmp(&a.correlation.overall).unwrap()
+            b.correlation
+                .overall
+                .partial_cmp(&a.correlation.overall)
+                .unwrap()
         });
 
         // Limit results
@@ -261,86 +265,95 @@ impl Default for SubstitutesDatabase {
         let mut substitutes = std::collections::HashMap::new();
 
         // AAPL substitutes
-        substitutes.insert("AAPL".to_string(), vec![
-            SubstituteSecurity {
-                symbol: "MSFT".to_string(),
-                name: "Microsoft Corporation".to_string(),
-                substitute_type: SubstituteType::Competitor,
-                correlation: CorrelationScore::calculate(0.82, 0.85, 0.9),
-                expense_ratio: None,
-                wash_sale_safe: true,
-                reason: "Large-cap tech with similar volatility profile".to_string(),
-                risk_comparison: "Similar risk profile".to_string(),
-            },
-            SubstituteSecurity {
-                symbol: "QQQ".to_string(),
-                name: "Invesco QQQ Trust".to_string(),
-                substitute_type: SubstituteType::IndexFund,
-                correlation: CorrelationScore::calculate(0.88, 0.90, 0.8),
-                expense_ratio: Some(0.20),
-                wash_sale_safe: true,
-                reason: "NASDAQ-100 index with AAPL as top holding".to_string(),
-                risk_comparison: "Diversified, lower single-stock risk".to_string(),
-            },
-        ]);
+        substitutes.insert(
+            "AAPL".to_string(),
+            vec![
+                SubstituteSecurity {
+                    symbol: "MSFT".to_string(),
+                    name: "Microsoft Corporation".to_string(),
+                    substitute_type: SubstituteType::Competitor,
+                    correlation: CorrelationScore::calculate(0.82, 0.85, 0.9),
+                    expense_ratio: None,
+                    wash_sale_safe: true,
+                    reason: "Large-cap tech with similar volatility profile".to_string(),
+                    risk_comparison: "Similar risk profile".to_string(),
+                },
+                SubstituteSecurity {
+                    symbol: "QQQ".to_string(),
+                    name: "Invesco QQQ Trust".to_string(),
+                    substitute_type: SubstituteType::IndexFund,
+                    correlation: CorrelationScore::calculate(0.88, 0.90, 0.8),
+                    expense_ratio: Some(0.20),
+                    wash_sale_safe: true,
+                    reason: "NASDAQ-100 index with AAPL as top holding".to_string(),
+                    risk_comparison: "Diversified, lower single-stock risk".to_string(),
+                },
+            ],
+        );
 
         // MSFT substitutes
-        substitutes.insert("MSFT".to_string(), vec![
-            SubstituteSecurity {
-                symbol: "AAPL".to_string(),
-                name: "Apple Inc.".to_string(),
-                substitute_type: SubstituteType::Competitor,
-                correlation: CorrelationScore::calculate(0.82, 0.85, 0.9),
-                expense_ratio: None,
-                wash_sale_safe: true,
-                reason: "Large-cap tech with similar volatility profile".to_string(),
-                risk_comparison: "Similar risk profile".to_string(),
-            },
-            SubstituteSecurity {
-                symbol: "VGT".to_string(),
-                name: "Vanguard Information Technology ETF".to_string(),
-                substitute_type: SubstituteType::SectorETF,
-                correlation: CorrelationScore::calculate(0.90, 0.88, 1.0),
-                expense_ratio: Some(0.10),
-                wash_sale_safe: true,
-                reason: "Broad tech sector with MSFT exposure".to_string(),
-                risk_comparison: "Diversified tech exposure".to_string(),
-            },
-        ]);
+        substitutes.insert(
+            "MSFT".to_string(),
+            vec![
+                SubstituteSecurity {
+                    symbol: "AAPL".to_string(),
+                    name: "Apple Inc.".to_string(),
+                    substitute_type: SubstituteType::Competitor,
+                    correlation: CorrelationScore::calculate(0.82, 0.85, 0.9),
+                    expense_ratio: None,
+                    wash_sale_safe: true,
+                    reason: "Large-cap tech with similar volatility profile".to_string(),
+                    risk_comparison: "Similar risk profile".to_string(),
+                },
+                SubstituteSecurity {
+                    symbol: "VGT".to_string(),
+                    name: "Vanguard Information Technology ETF".to_string(),
+                    substitute_type: SubstituteType::SectorETF,
+                    correlation: CorrelationScore::calculate(0.90, 0.88, 1.0),
+                    expense_ratio: Some(0.10),
+                    wash_sale_safe: true,
+                    reason: "Broad tech sector with MSFT exposure".to_string(),
+                    risk_comparison: "Diversified tech exposure".to_string(),
+                },
+            ],
+        );
 
         // S&P 500 ETF substitutes
-        substitutes.insert("SPY".to_string(), vec![
-            SubstituteSecurity {
-                symbol: "VOO".to_string(),
-                name: "Vanguard S&P 500 ETF".to_string(),
-                substitute_type: SubstituteType::IndexFund,
-                correlation: CorrelationScore::calculate(0.99, 0.99, 1.0),
-                expense_ratio: Some(0.03),
-                wash_sale_safe: false, // Substantially identical!
-                reason: "Tracks same index, lower expense ratio".to_string(),
-                risk_comparison: "Identical exposure".to_string(),
-            },
-            SubstituteSecurity {
-                symbol: "IVV".to_string(),
-                name: "iShares Core S&P 500 ETF".to_string(),
-                substitute_type: SubstituteType::IndexFund,
-                correlation: CorrelationScore::calculate(0.99, 0.99, 1.0),
-                expense_ratio: Some(0.03),
-                wash_sale_safe: false, // Substantially identical!
-                reason: "Tracks same index".to_string(),
-                risk_comparison: "Identical exposure".to_string(),
-            },
-            SubstituteSecurity {
-                symbol: "VTI".to_string(),
-                name: "Vanguard Total Stock Market ETF".to_string(),
-                substitute_type: SubstituteType::IndexFund,
-                correlation: CorrelationScore::calculate(0.97, 0.98, 0.85),
-                expense_ratio: Some(0.03),
-                wash_sale_safe: true,
-                reason: "Total US market, broader than S&P 500".to_string(),
-                risk_comparison: "Slightly more small-cap exposure".to_string(),
-            },
-        ]);
+        substitutes.insert(
+            "SPY".to_string(),
+            vec![
+                SubstituteSecurity {
+                    symbol: "VOO".to_string(),
+                    name: "Vanguard S&P 500 ETF".to_string(),
+                    substitute_type: SubstituteType::IndexFund,
+                    correlation: CorrelationScore::calculate(0.99, 0.99, 1.0),
+                    expense_ratio: Some(0.03),
+                    wash_sale_safe: false, // Substantially identical!
+                    reason: "Tracks same index, lower expense ratio".to_string(),
+                    risk_comparison: "Identical exposure".to_string(),
+                },
+                SubstituteSecurity {
+                    symbol: "IVV".to_string(),
+                    name: "iShares Core S&P 500 ETF".to_string(),
+                    substitute_type: SubstituteType::IndexFund,
+                    correlation: CorrelationScore::calculate(0.99, 0.99, 1.0),
+                    expense_ratio: Some(0.03),
+                    wash_sale_safe: false, // Substantially identical!
+                    reason: "Tracks same index".to_string(),
+                    risk_comparison: "Identical exposure".to_string(),
+                },
+                SubstituteSecurity {
+                    symbol: "VTI".to_string(),
+                    name: "Vanguard Total Stock Market ETF".to_string(),
+                    substitute_type: SubstituteType::IndexFund,
+                    correlation: CorrelationScore::calculate(0.97, 0.98, 0.85),
+                    expense_ratio: Some(0.03),
+                    wash_sale_safe: true,
+                    reason: "Total US market, broader than S&P 500".to_string(),
+                    risk_comparison: "Slightly more small-cap exposure".to_string(),
+                },
+            ],
+        );
 
         let identical_pairs = vec![
             ("SPY".to_string(), "VOO".to_string()),
@@ -418,10 +431,10 @@ mod tests {
 
         // VTI should be wash-sale safe
         let vti = subs.iter().find(|s| s.symbol == "VTI");
-        assert!(vti.map_or(false, |s| s.wash_sale_safe));
+        assert!(vti.is_some_and(|s| s.wash_sale_safe));
 
         // VOO should NOT be wash-sale safe (substantially identical)
         let voo = subs.iter().find(|s| s.symbol == "VOO");
-        assert!(voo.map_or(true, |s| !s.wash_sale_safe));
+        assert!(voo.is_none_or(|s| !s.wash_sale_safe));
     }
 }

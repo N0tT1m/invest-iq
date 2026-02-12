@@ -1,4 +1,7 @@
-use analysis_core::{adaptive, AnalysisError, AnalysisResult, AnalystConsensusData, Financials, FundamentalAnalyzer, SignalStrength};
+use analysis_core::{
+    adaptive, AnalysisError, AnalysisResult, AnalystConsensusData, Financials, FundamentalAnalyzer,
+    SignalStrength,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
@@ -8,29 +11,64 @@ fn classify_sector(sic_desc: Option<&str>) -> &'static str {
         Some(d) => d.to_lowercase(),
         None => return "unknown",
     };
-    if desc.contains("software") || desc.contains("semiconductor") || desc.contains("computer")
-        || desc.contains("electronic") || desc.contains("data processing") || desc.contains("technology") {
+    if desc.contains("software")
+        || desc.contains("semiconductor")
+        || desc.contains("computer")
+        || desc.contains("electronic")
+        || desc.contains("data processing")
+        || desc.contains("technology")
+    {
         "technology"
-    } else if desc.contains("pharma") || desc.contains("biological") || desc.contains("medical")
-        || desc.contains("health") || desc.contains("biotech") {
+    } else if desc.contains("pharma")
+        || desc.contains("biological")
+        || desc.contains("medical")
+        || desc.contains("health")
+        || desc.contains("biotech")
+    {
         "healthcare"
-    } else if desc.contains("bank") || desc.contains("insurance") || desc.contains("credit")
-        || desc.contains("securities") || desc.contains("financial") || desc.contains("invest") {
+    } else if desc.contains("bank")
+        || desc.contains("insurance")
+        || desc.contains("credit")
+        || desc.contains("securities")
+        || desc.contains("financial")
+        || desc.contains("invest")
+    {
         "financial"
-    } else if desc.contains("electric") && (desc.contains("utility") || desc.contains("service")) || desc.contains("natural gas distribution") || desc.contains("water supply") {
+    } else if desc.contains("electric") && (desc.contains("utility") || desc.contains("service"))
+        || desc.contains("natural gas distribution")
+        || desc.contains("water supply")
+    {
         "utilities"
-    } else if desc.contains("petroleum") || desc.contains("crude") || desc.contains("oil")
-        || desc.contains("natural gas") || desc.contains("mining") || desc.contains("coal") {
+    } else if desc.contains("petroleum")
+        || desc.contains("crude")
+        || desc.contains("oil")
+        || desc.contains("natural gas")
+        || desc.contains("mining")
+        || desc.contains("coal")
+    {
         "energy"
-    } else if desc.contains("food") || desc.contains("beverage") || desc.contains("tobacco")
-        || desc.contains("household") || desc.contains("soap") || desc.contains("retail") {
+    } else if desc.contains("food")
+        || desc.contains("beverage")
+        || desc.contains("tobacco")
+        || desc.contains("household")
+        || desc.contains("soap")
+        || desc.contains("retail")
+    {
         "consumer_staples"
-    } else if desc.contains("auto") || desc.contains("aircraft") || desc.contains("industrial")
-        || desc.contains("machinery") || desc.contains("manufacturing") || desc.contains("railroad") {
+    } else if desc.contains("auto")
+        || desc.contains("aircraft")
+        || desc.contains("industrial")
+        || desc.contains("machinery")
+        || desc.contains("manufacturing")
+        || desc.contains("railroad")
+    {
         "industrial"
     } else if desc.contains("real estate") || desc.contains("reit") {
         "real_estate"
-    } else if desc.contains("telecom") || desc.contains("communication") || desc.contains("broadcast") {
+    } else if desc.contains("telecom")
+        || desc.contains("communication")
+        || desc.contains("broadcast")
+    {
         "telecom"
     } else {
         "unknown"
@@ -137,9 +175,16 @@ impl FundamentalAnalysisEngine {
         let ttm_slice = &financials[..ttm_quarters];
 
         // Helper: sum an Optional field across TTM quarters, returning None if all are None
-        fn sum_ttm(quarters: &[Financials], accessor: fn(&Financials) -> Option<f64>) -> Option<f64> {
-            let values: Vec<f64> = quarters.iter().filter_map(|f| accessor(f)).collect();
-            if values.is_empty() { None } else { Some(values.iter().sum()) }
+        fn sum_ttm(
+            quarters: &[Financials],
+            accessor: fn(&Financials) -> Option<f64>,
+        ) -> Option<f64> {
+            let values: Vec<f64> = quarters.iter().filter_map(accessor).collect();
+            if values.is_empty() {
+                None
+            } else {
+                Some(values.iter().sum())
+            }
         }
 
         let ttm_revenue = sum_ttm(ttm_slice, |f| f.revenue);
@@ -169,9 +214,18 @@ impl FundamentalAnalysisEngine {
         // This is robust against missing quarters or gaps in Polygon data.
         let revenue_growth = if financials.len() >= 5 {
             let current_ttm: f64 = financials[..4].iter().filter_map(|f| f.revenue).sum();
-            let prior_ttm: f64 = financials[4..financials.len().min(8)].iter().filter_map(|f| f.revenue).sum();
-            let current_count = financials[..4].iter().filter(|f| f.revenue.is_some()).count();
-            let prior_count = financials[4..financials.len().min(8)].iter().filter(|f| f.revenue.is_some()).count();
+            let prior_ttm: f64 = financials[4..financials.len().min(8)]
+                .iter()
+                .filter_map(|f| f.revenue)
+                .sum();
+            let current_count = financials[..4]
+                .iter()
+                .filter(|f| f.revenue.is_some())
+                .count();
+            let prior_count = financials[4..financials.len().min(8)]
+                .iter()
+                .filter(|f| f.revenue.is_some())
+                .count();
             if current_count >= 3 && prior_count >= 3 && prior_ttm > 0.0 {
                 // Normalize if quarter counts differ
                 let current_norm = current_ttm / current_count as f64 * 4.0;
@@ -195,9 +249,8 @@ impl FundamentalAnalysisEngine {
                 let growth_rate = revenue_growth.unwrap_or(0.0) / 100.0;
                 let rf = risk_free_rate.unwrap_or(0.045);
                 let equity_risk_premium = 0.055;
-                let implied_pe = (1.0 / (rf + equity_risk_premium - growth_rate.min(0.08)))
-                    .max(5.0)
-                    .min(80.0);
+                let implied_pe =
+                    (1.0 / (rf + equity_risk_premium - growth_rate.min(0.08))).clamp(5.0, 80.0);
                 let pe_z = (pe - implied_pe) / implied_pe.max(1.0);
 
                 metrics_map.insert("implied_pe".to_string(), json!(implied_pe));
@@ -233,7 +286,8 @@ impl FundamentalAnalysisEngine {
                 data_fields_present += 1;
 
                 // Compute historical ROE from available quarters
-                let roe_history: Vec<f64> = financials.iter()
+                let roe_history: Vec<f64> = financials
+                    .iter()
                     .filter_map(|f| {
                         if let (Some(ni), Some(eq)) = (f.net_income, f.shareholders_equity) {
                             if eq > 0.0 {
@@ -277,7 +331,8 @@ impl FundamentalAnalysisEngine {
                 data_fields_present += 1;
 
                 // Compute historical profit margins
-                let margin_history: Vec<f64> = financials.iter()
+                let margin_history: Vec<f64> = financials
+                    .iter()
                     .filter_map(|f| {
                         if let (Some(ni), Some(rev)) = (f.net_income, f.revenue) {
                             if rev > 0.0 {
@@ -320,7 +375,8 @@ impl FundamentalAnalysisEngine {
                 data_fields_present += 1;
 
                 // Compute historical gross margins
-                let gm_history: Vec<f64> = financials.iter()
+                let gm_history: Vec<f64> = financials
+                    .iter()
                     .filter_map(|f| {
                         if let (Some(gp), Some(rev)) = (f.gross_profit, f.revenue) {
                             if rev > 0.0 {
@@ -363,7 +419,8 @@ impl FundamentalAnalysisEngine {
                 data_fields_present += 1;
 
                 // Compute historical operating margins
-                let om_history: Vec<f64> = financials.iter()
+                let om_history: Vec<f64> = financials
+                    .iter()
                     .filter_map(|f| {
                         if let (Some(oi), Some(rev)) = (f.operating_income, f.revenue) {
                             if rev > 0.0 {
@@ -406,7 +463,8 @@ impl FundamentalAnalysisEngine {
                 data_fields_present += 1;
 
                 // Compute historical D/E from available quarters
-                let de_history: Vec<f64> = financials.iter()
+                let de_history: Vec<f64> = financials
+                    .iter()
                     .filter_map(|f| {
                         if let (Some(tl), Some(eq)) = (f.total_liabilities, f.shareholders_equity) {
                             if eq > 0.0 {
@@ -518,38 +576,64 @@ impl FundamentalAnalysisEngine {
             let mut f_score: u32 = 0;
 
             // 1. Positive net income (TTM)
-            if ttm_net_income.map_or(false, |ni| ni > 0.0) { f_score += 1; }
+            if ttm_net_income.is_some_and(|ni| ni > 0.0) {
+                f_score += 1;
+            }
             // 2. Positive operating cash flow (TTM)
-            if ttm_ocf.map_or(false, |ocf| ocf > 0.0) { f_score += 1; }
+            if ttm_ocf.is_some_and(|ocf| ocf > 0.0) {
+                f_score += 1;
+            }
             // 3. Cash flow > net income (earnings quality)
             if let (Some(ocf), Some(ni)) = (ttm_ocf, ttm_net_income) {
-                if ni > 0.0 && ocf > ni { f_score += 1; }
+                if ni > 0.0 && ocf > ni {
+                    f_score += 1;
+                }
             }
             // 4. ROA increasing (latest vs prior quarter)
-            if let (Some(ni_curr), Some(ta_curr), Some(ni_prior), Some(ta_prior)) =
-                (latest.net_income, bs_total_assets, prior.net_income, prior.total_assets) {
+            if let (Some(ni_curr), Some(ta_curr), Some(ni_prior), Some(ta_prior)) = (
+                latest.net_income,
+                bs_total_assets,
+                prior.net_income,
+                prior.total_assets,
+            ) {
                 if ta_curr > 0.0 && ta_prior > 0.0 && (ni_curr / ta_curr) > (ni_prior / ta_prior) {
                     f_score += 1;
                 }
             }
             // 5. Lower leverage (D/E decreasing)
-            if let (Some(tl_curr), Some(eq_curr), Some(tl_prior), Some(eq_prior)) =
-                (bs_total_liabilities, bs_shareholders_equity, prior.total_liabilities, prior.shareholders_equity) {
+            if let (Some(tl_curr), Some(eq_curr), Some(tl_prior), Some(eq_prior)) = (
+                bs_total_liabilities,
+                bs_shareholders_equity,
+                prior.total_liabilities,
+                prior.shareholders_equity,
+            ) {
                 if eq_curr > 0.0 && eq_prior > 0.0 && (tl_curr / eq_curr) < (tl_prior / eq_prior) {
                     f_score += 1;
                 }
             }
             // 6. Higher gross margin
-            if let (Some(gp_curr), Some(rev_curr), Some(gp_prior), Some(rev_prior)) =
-                (latest.gross_profit, latest.revenue, prior.gross_profit, prior.revenue) {
-                if rev_curr > 0.0 && rev_prior > 0.0 && (gp_curr / rev_curr) > (gp_prior / rev_prior) {
+            if let (Some(gp_curr), Some(rev_curr), Some(gp_prior), Some(rev_prior)) = (
+                latest.gross_profit,
+                latest.revenue,
+                prior.gross_profit,
+                prior.revenue,
+            ) {
+                if rev_curr > 0.0
+                    && rev_prior > 0.0
+                    && (gp_curr / rev_curr) > (gp_prior / rev_prior)
+                {
                     f_score += 1;
                 }
             }
             // 7. Higher asset turnover
-            if let (Some(rev_curr), Some(ta_curr), Some(rev_prior), Some(ta_prior)) =
-                (latest.revenue, bs_total_assets, prior.revenue, prior.total_assets) {
-                if ta_curr > 0.0 && ta_prior > 0.0 && (rev_curr / ta_curr) > (rev_prior / ta_prior) {
+            if let (Some(rev_curr), Some(ta_curr), Some(rev_prior), Some(ta_prior)) = (
+                latest.revenue,
+                bs_total_assets,
+                prior.revenue,
+                prior.total_assets,
+            ) {
+                if ta_curr > 0.0 && ta_prior > 0.0 && (rev_curr / ta_curr) > (rev_prior / ta_prior)
+                {
                     f_score += 1;
                 }
             }
@@ -566,15 +650,26 @@ impl FundamentalAnalysisEngine {
         }
 
         // --- Altman Z-Score (approximation — uses equity/assets as WC/TA proxy) ---
-        if let (Some(ta), Some(tl), Some(eq), Some(oi), Some(rev)) =
-            (bs_total_assets, bs_total_liabilities, bs_shareholders_equity, ttm_operating_income, ttm_revenue) {
+        if let (Some(ta), Some(tl), Some(eq), Some(oi), Some(rev)) = (
+            bs_total_assets,
+            bs_total_liabilities,
+            bs_shareholders_equity,
+            ttm_operating_income,
+            ttm_revenue,
+        ) {
             if ta > 0.0 && tl > 0.0 {
                 let wc_ta = eq / ta;
                 let ebit_ta = oi / ta;
                 let sales_ta = rev / ta;
                 let mve_tl = if let (Some(p), Some(s)) = (current_price, shares_outstanding) {
-                    if p > 0.0 && s > 0.0 { (p * s) / tl } else { 0.0 }
-                } else { 0.0 };
+                    if p > 0.0 && s > 0.0 {
+                        (p * s) / tl
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
 
                 let z_score = 1.2 * wc_ta + 3.3 * ebit_ta + 0.6 * mve_tl + 1.0 * sales_ta;
                 metrics_map.insert("altman_z_score".to_string(), json!(z_score));
@@ -591,8 +686,12 @@ impl FundamentalAnalysisEngine {
         }
 
         // --- DuPont Decomposition: ROE = Net Margin × Asset Turnover × Equity Multiplier ---
-        if let (Some(ni), Some(rev), Some(ta), Some(eq)) =
-            (ttm_net_income, ttm_revenue, bs_total_assets, bs_shareholders_equity) {
+        if let (Some(ni), Some(rev), Some(ta), Some(eq)) = (
+            ttm_net_income,
+            ttm_revenue,
+            bs_total_assets,
+            bs_shareholders_equity,
+        ) {
             if rev > 0.0 && ta > 0.0 && eq > 0.0 {
                 let net_margin_pct = (ni / rev) * 100.0;
                 let asset_turnover = rev / ta;
@@ -601,15 +700,23 @@ impl FundamentalAnalysisEngine {
 
                 metrics_map.insert("dupont_net_margin".to_string(), json!(net_margin_pct));
                 metrics_map.insert("dupont_asset_turnover".to_string(), json!(asset_turnover));
-                metrics_map.insert("dupont_equity_multiplier".to_string(), json!(equity_multiplier));
+                metrics_map.insert(
+                    "dupont_equity_multiplier".to_string(),
+                    json!(equity_multiplier),
+                );
                 metrics_map.insert("dupont_roe".to_string(), json!(dupont_roe));
                 data_fields_present += 1;
 
                 // Compute historical asset turnover for z-score
-                let at_history: Vec<f64> = financials.iter()
+                let at_history: Vec<f64> = financials
+                    .iter()
                     .filter_map(|f| {
                         if let (Some(r), Some(a)) = (f.revenue, f.total_assets) {
-                            if a > 0.0 { Some(r / a) } else { None }
+                            if a > 0.0 {
+                                Some(r / a)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -628,10 +735,15 @@ impl FundamentalAnalysisEngine {
                 }
 
                 // Compute historical equity multiplier for z-score
-                let em_history: Vec<f64> = financials.iter()
+                let em_history: Vec<f64> = financials
+                    .iter()
                     .filter_map(|f| {
                         if let (Some(a), Some(e)) = (f.total_assets, f.shareholders_equity) {
-                            if e > 0.0 { Some(a / e) } else { None }
+                            if e > 0.0 {
+                                Some(a / e)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -654,24 +766,37 @@ impl FundamentalAnalysisEngine {
         // --- Multi-Quarter Trend Analysis ---
         if financials.len() >= 4 {
             // Revenue acceleration: compare recent 2Q growth vs prior 2Q growth
-            let q_revenues: Vec<Option<f64>> = financials.iter().take(8).map(|f| f.revenue).collect();
+            let q_revenues: Vec<Option<f64>> =
+                financials.iter().take(8).map(|f| f.revenue).collect();
             if q_revenues.len() >= 4 {
                 let recent_revs: Vec<f64> = q_revenues[..2].iter().filter_map(|&v| v).collect();
                 let prior_revs: Vec<f64> = q_revenues[2..4].iter().filter_map(|&v| v).collect();
-                if recent_revs.len() == 2 && prior_revs.len() == 2 && recent_revs[1].abs() > 1.0 && prior_revs[1].abs() > 1.0 {
+                if recent_revs.len() == 2
+                    && prior_revs.len() == 2
+                    && recent_revs[1].abs() > 1.0
+                    && prior_revs[1].abs() > 1.0
+                {
                     let recent_growth = (recent_revs[0] - recent_revs[1]) / recent_revs[1].abs();
                     let prior_growth = (prior_revs[0] - prior_revs[1]) / prior_revs[1].abs();
                     let acceleration = recent_growth - prior_growth;
-                    metrics_map.insert("revenue_acceleration".to_string(), json!(acceleration * 100.0));
+                    metrics_map.insert(
+                        "revenue_acceleration".to_string(),
+                        json!(acceleration * 100.0),
+                    );
 
                     // Compute historical acceleration values for z-score
                     let mut accel_history: Vec<f64> = Vec::new();
                     for i in 0..financials.len().saturating_sub(4) {
-                        let revs: Vec<Option<f64>> = financials[i..i+4].iter().map(|f| f.revenue).collect();
+                        let revs: Vec<Option<f64>> =
+                            financials[i..i + 4].iter().map(|f| f.revenue).collect();
                         if revs.len() == 4 {
                             let r1: Vec<f64> = revs[..2].iter().filter_map(|&v| v).collect();
                             let r2: Vec<f64> = revs[2..4].iter().filter_map(|&v| v).collect();
-                            if r1.len() == 2 && r2.len() == 2 && r1[1].abs() > 1.0 && r2[1].abs() > 1.0 {
+                            if r1.len() == 2
+                                && r2.len() == 2
+                                && r1[1].abs() > 1.0
+                                && r2[1].abs() > 1.0
+                            {
                                 let g1 = (r1[0] - r1[1]) / r1[1].abs();
                                 let g2 = (r2[0] - r2[1]) / r2[1].abs();
                                 accel_history.push(g1 - g2);
@@ -681,7 +806,8 @@ impl FundamentalAnalysisEngine {
 
                     if accel_history.len() >= 2 {
                         let accel_z = adaptive::z_score_of(acceleration, &accel_history);
-                        metrics_map.insert("revenue_acceleration_z_score".to_string(), json!(accel_z));
+                        metrics_map
+                            .insert("revenue_acceleration_z_score".to_string(), json!(accel_z));
 
                         if accel_z > 1.0 {
                             let weight = adaptive::z_score_to_weight(accel_z);
@@ -703,18 +829,25 @@ impl FundamentalAnalysisEngine {
 
             // Margin expansion: compare latest quarter margin vs 4Q-ago margin
             if let (Some(ni_latest), Some(rev_latest)) = (latest.net_income, latest.revenue) {
-                if let (Some(ni_prior), Some(rev_prior)) = (financials[3].net_income, financials[3].revenue) {
+                if let (Some(ni_prior), Some(rev_prior)) =
+                    (financials[3].net_income, financials[3].revenue)
+                {
                     if rev_latest > 0.0 && rev_prior > 0.0 {
                         let margin_latest = ni_latest / rev_latest;
                         let margin_prior = ni_prior / rev_prior;
                         let margin_change = (margin_latest - margin_prior) * 100.0;
-                        metrics_map.insert("margin_expansion_yoy".to_string(), json!(margin_change));
+                        metrics_map
+                            .insert("margin_expansion_yoy".to_string(), json!(margin_change));
 
                         // Compute historical margin changes for z-score
                         let mut margin_change_history: Vec<f64> = Vec::new();
                         for i in 0..financials.len().saturating_sub(4) {
-                            if let (Some(ni_curr), Some(rev_curr)) = (financials[i].net_income, financials[i].revenue) {
-                                if let (Some(ni_prior_q), Some(rev_prior_q)) = (financials[i+3].net_income, financials[i+3].revenue) {
+                            if let (Some(ni_curr), Some(rev_curr)) =
+                                (financials[i].net_income, financials[i].revenue)
+                            {
+                                if let (Some(ni_prior_q), Some(rev_prior_q)) =
+                                    (financials[i + 3].net_income, financials[i + 3].revenue)
+                                {
                                     if rev_curr > 0.0 && rev_prior_q > 0.0 {
                                         let m_curr = ni_curr / rev_curr;
                                         let m_prior = ni_prior_q / rev_prior_q;
@@ -725,8 +858,12 @@ impl FundamentalAnalysisEngine {
                         }
 
                         if margin_change_history.len() >= 2 {
-                            let margin_change_z = adaptive::z_score_of(margin_change, &margin_change_history);
-                            metrics_map.insert("margin_expansion_z_score".to_string(), json!(margin_change_z));
+                            let margin_change_z =
+                                adaptive::z_score_of(margin_change, &margin_change_history);
+                            metrics_map.insert(
+                                "margin_expansion_z_score".to_string(),
+                                json!(margin_change_z),
+                            );
 
                             if margin_change_z > 1.0 {
                                 let weight = adaptive::z_score_to_weight(margin_change_z);
@@ -750,7 +887,9 @@ impl FundamentalAnalysisEngine {
             // Consecutive revenue beats (quarters of positive sequential growth)
             let mut consecutive_growth = 0u32;
             for i in 0..financials.len().min(4).saturating_sub(1) {
-                if let (Some(r_curr), Some(r_prior)) = (financials[i].revenue, financials[i + 1].revenue) {
+                if let (Some(r_curr), Some(r_prior)) =
+                    (financials[i].revenue, financials[i + 1].revenue)
+                {
                     if r_prior > 0.0 && r_curr > r_prior {
                         consecutive_growth += 1;
                     } else {
@@ -763,7 +902,10 @@ impl FundamentalAnalysisEngine {
             if consecutive_growth >= 3 {
                 signals.push(("Consistent Revenue Growth", 2, true));
             }
-            metrics_map.insert("consecutive_growth_quarters".to_string(), json!(consecutive_growth));
+            metrics_map.insert(
+                "consecutive_growth_quarters".to_string(),
+                json!(consecutive_growth),
+            );
         }
 
         // --- EV/EBITDA (growth-implied fair value) ---
@@ -782,9 +924,8 @@ impl FundamentalAnalysisEngine {
                     let growth_rate = revenue_growth.unwrap_or(0.0) / 100.0;
                     let rf = risk_free_rate.unwrap_or(0.045);
                     let equity_risk_premium = 0.055;
-                    let implied_pe = (1.0 / (rf + equity_risk_premium - growth_rate.min(0.08)))
-                        .max(5.0)
-                        .min(80.0);
+                    let implied_pe =
+                        (1.0 / (rf + equity_risk_premium - growth_rate.min(0.08))).clamp(5.0, 80.0);
                     let implied_ev_ebitda = implied_pe * 0.7; // Rough approximation
                     let ev_ebitda_z = (ev_ebitda - implied_ev_ebitda) / implied_ev_ebitda.max(1.0);
 
@@ -814,8 +955,14 @@ impl FundamentalAnalysisEngine {
                 // Compute historical accrual ratios for z-score
                 let mut accrual_history: Vec<f64> = Vec::new();
                 for i in 0..financials.len().saturating_sub(4) {
-                    let hist_ni: f64 = financials[i..i.min(i+4)].iter().filter_map(|f| f.net_income).sum();
-                    let hist_ocf: f64 = financials[i..i.min(i+4)].iter().filter_map(|f| f.cash_flow_operating).sum();
+                    let hist_ni: f64 = financials[i..i.min(i + 4)]
+                        .iter()
+                        .filter_map(|f| f.net_income)
+                        .sum();
+                    let hist_ocf: f64 = financials[i..i.min(i + 4)]
+                        .iter()
+                        .filter_map(|f| f.cash_flow_operating)
+                        .sum();
                     if let Some(hist_ta) = financials[i].total_assets {
                         if hist_ta > 0.0 {
                             accrual_history.push((hist_ni - hist_ocf) / hist_ta);
@@ -848,7 +995,9 @@ impl FundamentalAnalysisEngine {
 
         // --- Working Capital Efficiency (Working Capital Turnover) ---
         // Measures how efficiently company uses working capital to generate revenue
-        if let (Some(rev), Some(ta), Some(tl)) = (ttm_revenue, bs_total_assets, bs_total_liabilities) {
+        if let (Some(rev), Some(ta), Some(tl)) =
+            (ttm_revenue, bs_total_assets, bs_total_liabilities)
+        {
             // Approximate working capital as net current assets (Total Assets - Total Liabilities)
             // Note: Polygon doesn't provide current assets/liabilities separately
             let working_capital = ta - tl;
@@ -860,7 +1009,9 @@ impl FundamentalAnalysisEngine {
                 // Compute historical WC turnover for z-score
                 let mut wc_turnover_history: Vec<f64> = Vec::new();
                 for f in financials.iter() {
-                    if let (Some(f_rev), Some(f_ta), Some(f_tl)) = (f.revenue, f.total_assets, f.total_liabilities) {
+                    if let (Some(f_rev), Some(f_ta), Some(f_tl)) =
+                        (f.revenue, f.total_assets, f.total_liabilities)
+                    {
                         let f_wc = f_ta - f_tl;
                         if f_wc > 0.0 {
                             wc_turnover_history.push(f_rev / f_wc);
@@ -898,20 +1049,38 @@ impl FundamentalAnalysisEngine {
 
             // DSRI: Days Sales in Receivables Index (requires receivables — not available)
             // GMI: Gross Margin Index
-            let gmi = if let (Some(gp_curr), Some(rev_curr), Some(gp_prior), Some(rev_prior)) =
-                (latest.gross_profit, latest.revenue, prior.gross_profit, prior.revenue) {
+            let gmi = if let (Some(gp_curr), Some(rev_curr), Some(gp_prior), Some(rev_prior)) = (
+                latest.gross_profit,
+                latest.revenue,
+                prior.gross_profit,
+                prior.revenue,
+            ) {
                 if rev_curr > 0.0 && rev_prior > 0.0 {
                     let gm_prior = gp_prior / rev_prior;
                     let gm_curr = gp_curr / rev_curr;
-                    if gm_curr > 0.0 { Some(gm_prior / gm_curr) } else { None }
-                } else { None }
-            } else { None };
+                    if gm_curr > 0.0 {
+                        Some(gm_prior / gm_curr)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             // AQI: Asset Quality Index (requires current assets breakdown — not available)
             // SGI: Sales Growth Index
             let sgi = if let (Some(rev_curr), Some(rev_prior)) = (latest.revenue, prior.revenue) {
-                if rev_prior > 0.0 { Some(rev_curr / rev_prior) } else { None }
-            } else { None };
+                if rev_prior > 0.0 {
+                    Some(rev_curr / rev_prior)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             // DEPI: Depreciation Index (requires D&A — not available from Polygon)
 
@@ -919,7 +1088,10 @@ impl FundamentalAnalysisEngine {
             if let (Some(gmi_val), Some(sgi_val)) = (gmi, sgi) {
                 // Partial M-Score approximation (coefficients from Beneish 1999, scaled)
                 let m_score_partial = -4.84 + 0.92 * (gmi_val - 1.0) + 0.528 * (sgi_val - 1.0);
-                metrics_map.insert("beneish_m_score_partial".to_string(), json!(m_score_partial));
+                metrics_map.insert(
+                    "beneish_m_score_partial".to_string(),
+                    json!(m_score_partial),
+                );
                 data_fields_present += 1;
 
                 // M-Score > -2.22 suggests potential manipulation
@@ -945,26 +1117,39 @@ impl FundamentalAnalysisEngine {
                 if let Some(ocf) = ttm_ocf {
                     if ocf > 0.0 {
                         let buyback_intensity = (-cff) / ocf;
-                        metrics_map.insert("buyback_intensity".to_string(), json!(buyback_intensity));
+                        metrics_map
+                            .insert("buyback_intensity".to_string(), json!(buyback_intensity));
 
                         // Compute historical buyback intensity for z-score
                         let mut intensity_history: Vec<f64> = Vec::new();
                         for i in 0..financials.len().saturating_sub(4) {
-                            let hist_cff: f64 = financials[i..i.min(i+4)].iter()
-                                .filter_map(|f| f.cash_flow_financing).sum();
-                            let hist_ocf: f64 = financials[i..i.min(i+4)].iter()
-                                .filter_map(|f| f.cash_flow_operating).sum();
+                            let hist_cff: f64 = financials[i..i.min(i + 4)]
+                                .iter()
+                                .filter_map(|f| f.cash_flow_financing)
+                                .sum();
+                            let hist_ocf: f64 = financials[i..i.min(i + 4)]
+                                .iter()
+                                .filter_map(|f| f.cash_flow_operating)
+                                .sum();
                             if hist_cff < 0.0 && hist_ocf > 0.0 {
                                 intensity_history.push((-hist_cff) / hist_ocf);
                             }
                         }
 
                         if intensity_history.len() >= 2 {
-                            let intensity_z = adaptive::z_score_of(buyback_intensity, &intensity_history);
-                            metrics_map.insert("buyback_intensity_z_score".to_string(), json!(intensity_z));
+                            let intensity_z =
+                                adaptive::z_score_of(buyback_intensity, &intensity_history);
+                            metrics_map.insert(
+                                "buyback_intensity_z_score".to_string(),
+                                json!(intensity_z),
+                            );
                             if intensity_z > 1.0 {
                                 let weight = adaptive::z_score_to_weight(intensity_z);
-                                signals.push(("Aggressive Buyback/Debt Repay (vs History)", weight, true));
+                                signals.push((
+                                    "Aggressive Buyback/Debt Repay (vs History)",
+                                    weight,
+                                    true,
+                                ));
                             }
                         } else {
                             // Fall back to absolute
@@ -987,19 +1172,16 @@ impl FundamentalAnalysisEngine {
                     }
                 }
                 // Raising while operating CF is negative = red flag
-                if ttm_ocf.map_or(false, |ocf| ocf < 0.0) {
+                if ttm_ocf.is_some_and(|ocf| ocf < 0.0) {
                     signals.push(("Capital Raise + Negative OCF", 3, false));
                 }
             }
         }
 
         // --- DCF-Lite Intrinsic Value Estimate (uses TTM FCF) ---
-        if let (Some(ocf), Some(cfi), Some(shares), true) = (
-            ttm_ocf,
-            ttm_cfi,
-            shares_outstanding,
-            price > 0.0,
-        ) {
+        if let (Some(ocf), Some(cfi), Some(shares), true) =
+            (ttm_ocf, ttm_cfi, shares_outstanding, price > 0.0)
+        {
             if shares > 0.0 {
                 let fcf = ocf + cfi;
                 let fcf_per_share = fcf / shares;
@@ -1053,38 +1235,67 @@ impl FundamentalAnalysisEngine {
 
         // --- Fundamental Value Score: quality + valuation ---
         // Composite quality score from existing metrics using z-scores where available
-        let has_strong_roe = if let Some(roe_z) = metrics_map.get("roe_z_score").and_then(|v| v.as_f64()) {
-            roe_z > 0.5
-        } else {
-            metrics_map.get("roe").and_then(|v| v.as_f64()).map_or(false, |r| r > 12.0)
-        };
+        let has_strong_roe =
+            if let Some(roe_z) = metrics_map.get("roe_z_score").and_then(|v| v.as_f64()) {
+                roe_z > 0.5
+            } else {
+                metrics_map
+                    .get("roe")
+                    .and_then(|v| v.as_f64())
+                    .is_some_and(|r| r > 12.0)
+            };
 
-        let has_high_margins = if let Some(pm_z) = metrics_map.get("profit_margin_z_score").and_then(|v| v.as_f64()) {
+        let has_high_margins = if let Some(pm_z) = metrics_map
+            .get("profit_margin_z_score")
+            .and_then(|v| v.as_f64())
+        {
             pm_z > 0.5
         } else {
-            metrics_map.get("profit_margin").and_then(|v| v.as_f64()).map_or(false, |m| m > 12.0)
+            metrics_map
+                .get("profit_margin")
+                .and_then(|v| v.as_f64())
+                .is_some_and(|m| m > 12.0)
         };
 
-        let has_positive_cf = ttm_ocf.map_or(false, |ocf| ocf > 0.0);
+        let has_positive_cf = ttm_ocf.is_some_and(|ocf| ocf > 0.0);
 
-        let has_strong_roic = metrics_map.get("roic").and_then(|v| v.as_f64()).map_or(false, |r| r > 10.0);
+        let has_strong_roic = metrics_map
+            .get("roic")
+            .and_then(|v| v.as_f64())
+            .is_some_and(|r| r > 10.0);
 
-        let has_rev_growth = if let Some(rg_z) = metrics_map.get("revenue_growth_z_score").and_then(|v| v.as_f64()) {
+        let has_rev_growth = if let Some(rg_z) = metrics_map
+            .get("revenue_growth_z_score")
+            .and_then(|v| v.as_f64())
+        {
             rg_z > 0.5
         } else {
-            revenue_growth.map_or(false, |g| g > 5.0)
+            revenue_growth.is_some_and(|g| g > 5.0)
         };
 
-        let has_low_debt = if let Some(de_z) = metrics_map.get("debt_to_equity_z_score").and_then(|v| v.as_f64()) {
+        let has_low_debt = if let Some(de_z) = metrics_map
+            .get("debt_to_equity_z_score")
+            .and_then(|v| v.as_f64())
+        {
             de_z < 0.0
         } else {
-            metrics_map.get("debt_to_equity").and_then(|v| v.as_f64()).map_or(false, |d| d < 1.5)
+            metrics_map
+                .get("debt_to_equity")
+                .and_then(|v| v.as_f64())
+                .is_some_and(|d| d < 1.5)
         };
 
-        let quality_score: u32 = [has_strong_roe, has_high_margins, has_positive_cf, has_strong_roic, has_rev_growth, has_low_debt]
-            .iter()
-            .filter(|&&v| v)
-            .count() as u32;
+        let quality_score: u32 = [
+            has_strong_roe,
+            has_high_margins,
+            has_positive_cf,
+            has_strong_roic,
+            has_rev_growth,
+            has_low_debt,
+        ]
+        .iter()
+        .filter(|&&v| v)
+        .count() as u32;
         metrics_map.insert("quality_score".to_string(), json!(quality_score));
 
         if quality_score >= 4 {
@@ -1119,8 +1330,14 @@ impl FundamentalAnalysisEngine {
             // Compute historical growth rates across available quarters
             let mut growth_history: Vec<f64> = Vec::new();
             for i in 0..financials.len().saturating_sub(5) {
-                let current_ttm: f64 = financials[i..i.min(i+4)].iter().filter_map(|f| f.revenue).sum();
-                let prior_ttm: f64 = financials[i+4..financials.len().min(i+8)].iter().filter_map(|f| f.revenue).sum();
+                let current_ttm: f64 = financials[i..i.min(i + 4)]
+                    .iter()
+                    .filter_map(|f| f.revenue)
+                    .sum();
+                let prior_ttm: f64 = financials[i + 4..financials.len().min(i + 8)]
+                    .iter()
+                    .filter_map(|f| f.revenue)
+                    .sum();
                 if current_ttm > 0.0 && prior_ttm > 0.0 {
                     growth_history.push(((current_ttm - prior_ttm) / prior_ttm) * 100.0);
                 }
@@ -1181,9 +1398,7 @@ impl FundamentalAnalysisEngine {
 
         let reason = signals
             .iter()
-            .map(|(name, _, bullish)| {
-                format!("{} {}", if *bullish { "+" } else { "-" }, name)
-            })
+            .map(|(name, _, bullish)| format!("{} {}", if *bullish { "+" } else { "-" }, name))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -1194,7 +1409,11 @@ impl FundamentalAnalysisEngine {
             timestamp: Utc::now(),
             signal,
             confidence,
-            reason: if reason.is_empty() { "Insufficient fundamental data".to_string() } else { reason },
+            reason: if reason.is_empty() {
+                "Insufficient fundamental data".to_string()
+            } else {
+                reason
+            },
             metrics,
         })
     }
@@ -1202,6 +1421,7 @@ impl FundamentalAnalysisEngine {
     /// Enhanced analysis that incorporates analyst consensus data.
     /// Blends the original fundamental score (70%) with analyst consensus signals (30%).
     /// If no consensus data is available, falls through to analyze_enhanced unchanged.
+    #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_consensus(
         &self,
         symbol: &str,
@@ -1212,7 +1432,14 @@ impl FundamentalAnalysisEngine {
         risk_free_rate: Option<f64>,
         sic_description: Option<&str>,
     ) -> Result<AnalysisResult, AnalysisError> {
-        let mut result = self.analyze_enhanced(symbol, financials, current_price, shares_outstanding, risk_free_rate, sic_description)?;
+        let mut result = self.analyze_enhanced(
+            symbol,
+            financials,
+            current_price,
+            shares_outstanding,
+            risk_free_rate,
+            sic_description,
+        )?;
 
         // If no consensus data at all, return unchanged
         if consensus_data.consensus.is_none() && consensus_data.recent_ratings.is_empty() {
@@ -1238,9 +1465,15 @@ impl FundamentalAnalysisEngine {
         if let Some(consensus) = &consensus_data.consensus {
             // Store metrics
             if let Some(target) = consensus.consensus_price_target {
-                metrics_map.insert("analyst_price_target".to_string(), serde_json::json!(target));
+                metrics_map.insert(
+                    "analyst_price_target".to_string(),
+                    serde_json::json!(target),
+                );
                 let upside_pct = ((target - price) / price) * 100.0;
-                metrics_map.insert("analyst_upside_pct".to_string(), serde_json::json!(upside_pct));
+                metrics_map.insert(
+                    "analyst_upside_pct".to_string(),
+                    serde_json::json!(upside_pct),
+                );
 
                 // Price target signals
                 if upside_pct > 20.0 {
@@ -1255,11 +1488,15 @@ impl FundamentalAnalysisEngine {
             }
 
             if let Some(rating) = &consensus.consensus_rating {
-                metrics_map.insert("analyst_consensus_rating".to_string(), serde_json::json!(rating));
+                metrics_map.insert(
+                    "analyst_consensus_rating".to_string(),
+                    serde_json::json!(rating),
+                );
                 let r = rating.to_lowercase();
                 if r.contains("strong buy") {
                     consensus_signals.push(("Consensus: Strong Buy", 2, true));
-                } else if r.contains("buy") || r.contains("outperform") || r.contains("overweight") {
+                } else if r.contains("buy") || r.contains("outperform") || r.contains("overweight")
+                {
                     consensus_signals.push(("Consensus: Buy", 2, true));
                 } else if r.contains("strong sell") || r.contains("underperform") {
                     consensus_signals.push(("Consensus: Strong Sell", 2, false));
@@ -1288,7 +1525,11 @@ impl FundamentalAnalysisEngine {
                 let h = consensus.hold_count.unwrap_or(0);
                 let s = consensus.sell_count.unwrap_or(0);
                 let total = b + h + s;
-                if total > 0 { Some(total) } else { None }
+                if total > 0 {
+                    Some(total)
+                } else {
+                    None
+                }
             });
             if let Some(c) = count {
                 metrics_map.insert("analyst_count".to_string(), serde_json::json!(c));
@@ -1302,18 +1543,30 @@ impl FundamentalAnalysisEngine {
             for rating in &consensus_data.recent_ratings {
                 if let Some(action) = &rating.rating_action {
                     let a = action.to_lowercase();
-                    if a.contains("upgrade") || a.contains("initiated") || a.contains("reiterate") && rating.rating.as_ref().map_or(false, |r| {
-                        let rl = r.to_lowercase();
-                        rl.contains("buy") || rl.contains("outperform") || rl.contains("overweight")
-                    }) {
+                    if a.contains("upgrade")
+                        || a.contains("initiated")
+                        || a.contains("reiterate")
+                            && rating.rating.as_ref().is_some_and(|r| {
+                                let rl = r.to_lowercase();
+                                rl.contains("buy")
+                                    || rl.contains("outperform")
+                                    || rl.contains("overweight")
+                            })
+                    {
                         upgrades += 1;
                     } else if a.contains("downgrade") {
                         downgrades += 1;
                     }
                 }
             }
-            metrics_map.insert("analyst_upgrades_recent".to_string(), serde_json::json!(upgrades));
-            metrics_map.insert("analyst_downgrades_recent".to_string(), serde_json::json!(downgrades));
+            metrics_map.insert(
+                "analyst_upgrades_recent".to_string(),
+                serde_json::json!(upgrades),
+            );
+            metrics_map.insert(
+                "analyst_downgrades_recent".to_string(),
+                serde_json::json!(downgrades),
+            );
 
             let net = upgrades - downgrades;
             if net >= 3 {
@@ -1399,7 +1652,9 @@ impl FundamentalAnalysisEngine {
         }
 
         // ROE Analysis
-        if let (Some(net_income), Some(equity)) = (financials.net_income, financials.shareholders_equity) {
+        if let (Some(net_income), Some(equity)) =
+            (financials.net_income, financials.shareholders_equity)
+        {
             if let Some(roe) = self.calculate_roe(net_income, equity) {
                 metrics_map.insert("roe".to_string(), json!(roe));
 
@@ -1426,7 +1681,9 @@ impl FundamentalAnalysisEngine {
         }
 
         // Debt-to-Equity Analysis
-        if let (Some(liabilities), Some(equity)) = (financials.total_liabilities, financials.shareholders_equity) {
+        if let (Some(liabilities), Some(equity)) =
+            (financials.total_liabilities, financials.shareholders_equity)
+        {
             if let Some(d2e) = self.calculate_debt_to_equity(liabilities, equity) {
                 metrics_map.insert("debt_to_equity".to_string(), json!(d2e));
 
@@ -1440,7 +1697,9 @@ impl FundamentalAnalysisEngine {
         }
 
         // Current Ratio (Liquidity)
-        if let (Some(assets), Some(liabilities)) = (financials.total_assets, financials.total_liabilities) {
+        if let (Some(assets), Some(liabilities)) =
+            (financials.total_assets, financials.total_liabilities)
+        {
             if let Some(current_ratio) = self.calculate_current_ratio(assets, liabilities) {
                 metrics_map.insert("current_ratio".to_string(), json!(current_ratio));
 
@@ -1494,9 +1753,7 @@ impl FundamentalAnalysisEngine {
 
         let reason = signals
             .iter()
-            .map(|(name, _, bullish)| {
-                format!("{} {}", if *bullish { "+" } else { "-" }, name)
-            })
+            .map(|(name, _, bullish)| format!("{} {}", if *bullish { "+" } else { "-" }, name))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -1507,7 +1764,11 @@ impl FundamentalAnalysisEngine {
             timestamp: Utc::now(),
             signal,
             confidence,
-            reason: if reason.is_empty() { "Insufficient fundamental data".to_string() } else { reason },
+            reason: if reason.is_empty() {
+                "Insufficient fundamental data".to_string()
+            } else {
+                reason
+            },
             metrics,
         })
     }

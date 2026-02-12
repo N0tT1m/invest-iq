@@ -95,23 +95,21 @@ pub async fn auth_middleware(
         }
     };
 
-    tracing::debug!(
-        "Valid API key: {} (role: {})",
-        mask_api_key(&api_key),
-        role
-    );
+    tracing::debug!("Valid API key: {} (role: {})", mask_api_key(&api_key), role);
 
     // Add the validated API key and role to request extensions
-    request.extensions_mut().insert(ValidatedApiKey {
-        key: api_key,
-        role,
-    });
+    request
+        .extensions_mut()
+        .insert(ValidatedApiKey { key: api_key, role });
 
     Ok(next.run(request).await)
 }
 
 /// Extract API key from request headers or query parameters
-pub(crate) fn extract_api_key(headers: &HeaderMap, _request: &Request) -> Result<String, AuthError> {
+pub(crate) fn extract_api_key(
+    headers: &HeaderMap,
+    _request: &Request,
+) -> Result<String, AuthError> {
     // 1. Try X-API-Key header (recommended approach)
     if let Some(api_key) = headers.get("X-API-Key") {
         if let Ok(key) = api_key.to_str() {
@@ -200,7 +198,9 @@ pub async fn live_trading_auth_middleware(
     match expected_key {
         None => {
             // No live trading key configured — block all write endpoints as safety default
-            tracing::warn!("Live trading write endpoint called but LIVE_TRADING_KEY not configured");
+            tracing::warn!(
+                "Live trading write endpoint called but LIVE_TRADING_KEY not configured"
+            );
             Err(AuthError::LiveTradingNotConfigured)
         }
         Some(expected) => {
@@ -240,7 +240,9 @@ impl std::fmt::Display for AuthError {
         match self {
             AuthError::MissingApiKey => write!(f, "Missing API key"),
             AuthError::InvalidApiKey => write!(f, "Invalid API key"),
-            AuthError::InsufficientRole(role) => write!(f, "Insufficient permissions. Required role: {}", role),
+            AuthError::InsufficientRole(role) => {
+                write!(f, "Insufficient permissions. Required role: {}", role)
+            }
             AuthError::Locked => write!(f, "Too many failed authentication attempts"),
             AuthError::LiveTradingNotConfigured => write!(f, "Live trading key not configured"),
             AuthError::MissingLiveTradingKey => write!(f, "Missing live trading key"),
@@ -314,10 +316,7 @@ pub async fn require_trader_middleware(
 }
 
 /// Middleware to require admin role
-pub async fn require_admin_middleware(
-    request: Request,
-    next: Next,
-) -> Result<Response, AuthError> {
+pub async fn require_admin_middleware(request: Request, next: Next) -> Result<Response, AuthError> {
     check_role(Role::Admin, &request)?;
     Ok(next.run(request).await)
 }

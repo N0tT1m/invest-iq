@@ -59,11 +59,7 @@ impl OpportunityRanker {
     }
 
     /// Rank opportunities based on user preferences
-    pub fn rank(
-        &self,
-        opportunities: &mut [Opportunity],
-        preferences: &UserPreference,
-    ) {
+    pub fn rank(&self, opportunities: &mut [Opportunity], preferences: &UserPreference) {
         for opp in opportunities.iter_mut() {
             opp.relevance_score = self.calculate_relevance(opp, preferences);
         }
@@ -205,7 +201,11 @@ impl OpportunityRanker {
     }
 
     /// Filter opportunities that don't meet minimum relevance threshold
-    pub fn filter_relevant(&self, opportunities: &[Opportunity], min_relevance: f64) -> Vec<Opportunity> {
+    pub fn filter_relevant(
+        &self,
+        opportunities: &[Opportunity],
+        min_relevance: f64,
+    ) -> Vec<Opportunity> {
         opportunities
             .iter()
             .filter(|o| o.relevance_score >= min_relevance)
@@ -223,7 +223,8 @@ impl OpportunityRanker {
         &self,
         opportunities: &[Opportunity],
     ) -> std::collections::HashMap<String, Vec<Opportunity>> {
-        let mut groups: std::collections::HashMap<String, Vec<Opportunity>> = std::collections::HashMap::new();
+        let mut groups: std::collections::HashMap<String, Vec<Opportunity>> =
+            std::collections::HashMap::new();
 
         for opp in opportunities {
             let key = match opp.signal {
@@ -282,14 +283,19 @@ mod tests {
         ranker.rank(&mut opps, &prefs);
 
         // Higher confidence should generally rank higher
-        assert!(opps[0].confidence >= opps[1].confidence || opps[0].relevance_score >= opps[1].relevance_score);
+        assert!(
+            opps[0].confidence >= opps[1].confidence
+                || opps[0].relevance_score >= opps[1].relevance_score
+        );
     }
 
     #[test]
     fn test_excluded_symbols() {
         let ranker = OpportunityRanker::new();
-        let mut prefs = UserPreference::default();
-        prefs.excluded_symbols = vec!["AAPL".to_string()];
+        let prefs = UserPreference {
+            excluded_symbols: vec!["AAPL".to_string()],
+            ..Default::default()
+        };
 
         let mut opps = vec![
             create_test_opportunity("AAPL", 0.9),

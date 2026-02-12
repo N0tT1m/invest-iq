@@ -1,0 +1,15 @@
+[package]
+name = "notification-service"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }

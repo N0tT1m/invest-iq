@@ -1,8 +1,8 @@
+use super::AnalysisOrchestrator;
 use analysis_core::{SignalStrength, UnifiedAnalysis};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::task::JoinSet;
-use super::AnalysisOrchestrator;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StockSuggestion {
@@ -35,25 +35,23 @@ impl StockUniverse {
         match self {
             StockUniverse::Custom(symbols) => symbols.clone(),
             StockUniverse::PopularStocks => vec![
-                "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "BRK.B",
-                "V", "JPM", "WMT", "MA", "PG", "HD", "DIS", "NFLX", "ADBE", "CRM",
-                "CSCO", "INTC", "AMD", "PYPL", "COST", "PEP", "TMO", "MRK", "ABBV",
-                "NKE", "CVX", "MCD",
+                "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "BRK.B", "V", "JPM",
+                "WMT", "MA", "PG", "HD", "DIS", "NFLX", "ADBE", "CRM", "CSCO", "INTC", "AMD",
+                "PYPL", "COST", "PEP", "TMO", "MRK", "ABBV", "NKE", "CVX", "MCD",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect(),
             StockUniverse::TechStocks => vec![
-                "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX",
-                "ADBE", "CRM", "CSCO", "INTC", "AMD", "PYPL", "ORCL", "IBM", "QCOM",
-                "NOW", "SNOW", "ZM",
+                "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "NFLX", "ADBE", "CRM",
+                "CSCO", "INTC", "AMD", "PYPL", "ORCL", "IBM", "QCOM", "NOW", "SNOW", "ZM",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect(),
             StockUniverse::BlueChips => vec![
-                "AAPL", "MSFT", "JPM", "JNJ", "V", "WMT", "PG", "MA", "HD", "DIS",
-                "CVX", "MCD", "KO", "PEP", "CSCO", "VZ", "INTC", "MRK", "ABBV", "NKE",
+                "AAPL", "MSFT", "JPM", "JNJ", "V", "WMT", "PG", "MA", "HD", "DIS", "CVX", "MCD",
+                "KO", "PEP", "CSCO", "VZ", "INTC", "MRK", "ABBV", "NKE",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -104,7 +102,9 @@ impl StockScreener {
         for symbol in symbols {
             let orchestrator = Arc::clone(&self.orchestrator);
             tasks.spawn(async move {
-                let result = orchestrator.analyze(&symbol, analysis_core::Timeframe::Day1, 365).await;
+                let result = orchestrator
+                    .analyze(&symbol, analysis_core::Timeframe::Day1, 365)
+                    .await;
                 (symbol, result)
             });
         }
@@ -136,7 +136,11 @@ impl StockScreener {
         let total_passed_filters = suggestions.len();
 
         // Sort by score (highest first)
-        suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        suggestions.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Limit results
         suggestions.truncate(filters.limit);
@@ -159,7 +163,8 @@ impl StockScreener {
     fn create_suggestion(&self, analysis: UnifiedAnalysis) -> Option<StockSuggestion> {
         // Calculate composite score (0-100)
         let signal_score = (analysis.overall_signal.to_score() + 100) as f64 / 200.0; // Normalize -100..100 to 0..1
-        let score = ((signal_score * 0.6 + analysis.overall_confidence * 0.4) * 100.0).clamp(0.0, 100.0);
+        let score =
+            ((signal_score * 0.6 + analysis.overall_confidence * 0.4) * 100.0).clamp(0.0, 100.0);
 
         // Extract key highlights
         let mut highlights = Vec::new();
@@ -167,16 +172,22 @@ impl StockScreener {
         // Technical highlights
         if let Some(tech) = &analysis.technical {
             if tech.confidence > 0.6 {
-                highlights.push(format!("Technical: {:?} ({}% conf)",
-                    tech.signal, (tech.confidence * 100.0) as i32));
+                highlights.push(format!(
+                    "Technical: {:?} ({}% conf)",
+                    tech.signal,
+                    (tech.confidence * 100.0) as i32
+                ));
             }
         }
 
         // Fundamental highlights
         if let Some(fund) = &analysis.fundamental {
             if fund.confidence > 0.6 {
-                highlights.push(format!("Fundamental: {:?} ({}% conf)",
-                    fund.signal, (fund.confidence * 100.0) as i32));
+                highlights.push(format!(
+                    "Fundamental: {:?} ({}% conf)",
+                    fund.signal,
+                    (fund.confidence * 100.0) as i32
+                ));
             }
         }
 

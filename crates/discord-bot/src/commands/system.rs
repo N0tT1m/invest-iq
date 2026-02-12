@@ -1,11 +1,9 @@
-use crate::embeds;
-use crate::Handler;
-use crate::respond_ephemeral;
 use super::{get_string_opt, resolve_subcommand};
+use crate::embeds;
+use crate::respond_ephemeral;
+use crate::Handler;
 
-use serenity::all::{
-    CommandDataOption, CommandInteraction, EditInteractionResponse,
-};
+use serenity::all::{CommandDataOption, CommandInteraction, EditInteractionResponse};
 use serenity::prelude::*;
 
 impl Handler {
@@ -39,17 +37,28 @@ impl Handler {
                 match resp.json::<serde_json::Value>().await {
                     Ok(json) => {
                         let embed = embeds::build_health_embed(status_code.as_u16(), &json);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error parsing health: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content(format!("Error parsing health: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -67,31 +76,51 @@ impl Handler {
 
         let _ = command.defer(&ctx.http).await;
 
-        let url = format!("{}/api/symbols/search?q={}&limit=10", self.api_base, urlencoding::encode(&query));
+        let url = format!(
+            "{}/api/symbols/search?q={}&limit=10",
+            self.api_base,
+            urlencoding::encode(&query)
+        );
         match self.api_get(&url).await {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<serde_json::Value>().await {
                     Ok(json) => {
-                        let data = json.get("data")
+                        let data = json
+                            .get("data")
                             .and_then(|d| d.as_array())
                             .cloned()
                             .unwrap_or_default();
                         let embed = embeds::build_search_embed(&query, &data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }

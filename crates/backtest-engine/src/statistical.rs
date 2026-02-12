@@ -43,15 +43,25 @@ pub fn bootstrap_confidence_intervals(
             let gross_profit: f64 = resampled
                 .iter()
                 .map(|t| {
-                    let pl = rust_decimal::prelude::ToPrimitive::to_f64(&t.profit_loss).unwrap_or(0.0);
-                    if pl > 0.0 { pl } else { 0.0 }
+                    let pl =
+                        rust_decimal::prelude::ToPrimitive::to_f64(&t.profit_loss).unwrap_or(0.0);
+                    if pl > 0.0 {
+                        pl
+                    } else {
+                        0.0
+                    }
                 })
                 .sum();
             let gross_loss: f64 = resampled
                 .iter()
                 .map(|t| {
-                    let pl = rust_decimal::prelude::ToPrimitive::to_f64(&t.profit_loss).unwrap_or(0.0);
-                    if pl < 0.0 { pl.abs() } else { 0.0 }
+                    let pl =
+                        rust_decimal::prelude::ToPrimitive::to_f64(&t.profit_loss).unwrap_or(0.0);
+                    if pl < 0.0 {
+                        pl.abs()
+                    } else {
+                        0.0
+                    }
                 })
                 .sum();
             let pf = if gross_loss > 0.0 {
@@ -68,10 +78,7 @@ pub fn bootstrap_confidence_intervals(
                 .map(|t| t.profit_loss_percent / 100.0)
                 .collect();
             let mean = rets.iter().sum::<f64>() / rets.len() as f64;
-            let var = rets
-                .iter()
-                .map(|r| (r - mean).powi(2))
-                .sum::<f64>()
+            let var = rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>()
                 / (rets.len() as f64 - 1.0).max(1.0);
             let std = var.sqrt();
             let sharpe = if std > 1e-10 {
@@ -122,10 +129,7 @@ pub fn bootstrap_confidence_intervals(
 ///
 /// `raw_p_value`: the p-value of the primary test (e.g. Sharpe > 0).
 /// `num_tests`: total number of strategies/parameters tested.
-pub fn hypothesis_correction(
-    raw_p_value: f64,
-    num_tests: i32,
-) -> HypothesisCorrectionResult {
+pub fn hypothesis_correction(raw_p_value: f64, num_tests: i32) -> HypothesisCorrectionResult {
     let n = num_tests.max(1) as f64;
 
     // Bonferroni: multiply p by number of tests
@@ -224,11 +228,7 @@ pub fn cpcv(
             .collect();
         let n = returns.len() as f64;
         let mean = returns.iter().sum::<f64>() / n;
-        let var = returns
-            .iter()
-            .map(|r| (r - mean).powi(2))
-            .sum::<f64>()
-            / (n - 1.0).max(1.0);
+        let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0);
         let std = var.sqrt();
 
         let sharpe = if std > 1e-10 {

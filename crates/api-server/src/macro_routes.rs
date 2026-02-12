@@ -5,9 +5,9 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::{get_default_analysis, get_cached_etf_bars, ApiResponse, AppError, AppState};
+use crate::{get_cached_etf_bars, get_default_analysis, ApiResponse, AppError, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct MacroIndicators {
     pub available: bool,
     pub market_regime: String,
@@ -15,7 +15,7 @@ pub struct MacroIndicators {
     pub message: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct MacroIndicator {
     pub name: String,
     pub value: Option<f64>,
@@ -25,7 +25,7 @@ pub struct MacroIndicator {
     pub interpretation: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct MacroSensitivity {
     pub symbol: String,
     pub available: bool,
@@ -43,21 +43,29 @@ pub fn macro_routes() -> Router<AppState> {
 }
 
 fn compute_return(bars: &[analysis_core::Bar], days: usize) -> Option<f64> {
-    if bars.len() < days + 1 { return None; }
+    if bars.len() < days + 1 {
+        return None;
+    }
     let recent = bars.last()?.close;
     let past = bars[bars.len() - 1 - days].close;
-    if past == 0.0 { return None; }
+    if past == 0.0 {
+        return None;
+    }
     Some(((recent - past) / past) * 100.0)
 }
 
 fn compute_sma(bars: &[analysis_core::Bar], period: usize) -> Option<f64> {
-    if bars.len() < period { return None; }
+    if bars.len() < period {
+        return None;
+    }
     let sum: f64 = bars[bars.len() - period..].iter().map(|b| b.close).sum();
     Some(sum / period as f64)
 }
 
 fn compute_realized_vol(bars: &[analysis_core::Bar], days: usize) -> Option<f64> {
-    if bars.len() < days + 1 { return None; }
+    if bars.len() < days + 1 {
+        return None;
+    }
     let returns: Vec<f64> = bars[bars.len() - days - 1..]
         .windows(2)
         .map(|w| (w[1].close / w[0].close).ln())
@@ -67,6 +75,12 @@ fn compute_realized_vol(bars: &[analysis_core::Bar], days: usize) -> Option<f64>
     Some(var.sqrt() * (252.0_f64).sqrt() * 100.0)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/macro/indicators",
+    responses((status = 200, description = "Macro indicators derived from ETF data (SPY, TLT, GLD)")),
+    tag = "Market Data"
+)]
 async fn get_macro_indicators(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<MacroIndicators>>, AppError> {
@@ -98,9 +112,13 @@ async fn get_macro_indicators(
     let spy_sma50 = compute_sma(&spy_bars, 50);
     let market_trend = match (spy_return, spy_sma20, spy_sma50) {
         (Some(ret), Some(sma20), Some(sma50)) => {
-            if ret > 2.0 && sma20 > sma50 { "Bullish" }
-            else if ret < -2.0 && sma20 < sma50 { "Bearish" }
-            else { "Neutral" }
+            if ret > 2.0 && sma20 > sma50 {
+                "Bullish"
+            } else if ret < -2.0 && sma20 < sma50 {
+                "Bearish"
+            } else {
+                "Neutral"
+            }
         }
         _ => "Unknown",
     };
@@ -109,10 +127,22 @@ async fn get_macro_indicators(
         value: spy_return.map(|v| (v * 10.0).round() / 10.0),
         unit: "%".to_string(),
         description: "S&P 500 20-day return".to_string(),
-        trend: Some(if spy_return.unwrap_or(0.0) > 0.0 { "up" } else { "down" }.to_string()),
-        interpretation: Some(format!("{} — SMA20 {} SMA50",
+        trend: Some(
+            if spy_return.unwrap_or(0.0) > 0.0 {
+                "up"
+            } else {
+                "down"
+            }
+            .to_string(),
+        ),
+        interpretation: Some(format!(
+            "{} — SMA20 {} SMA50",
             market_trend,
-            if spy_sma20.unwrap_or(0.0) > spy_sma50.unwrap_or(0.0) { "above" } else { "below" }
+            if spy_sma20.unwrap_or(0.0) > spy_sma50.unwrap_or(0.0) {
+                "above"
+            } else {
+                "below"
+            }
         )),
     });
 
@@ -128,7 +158,14 @@ async fn get_macro_indicators(
         value: tlt_return.map(|v| (v * 10.0).round() / 10.0),
         unit: "%".to_string(),
         description: "Long-term Treasury 20-day return".to_string(),
-        trend: Some(if tlt_return.unwrap_or(0.0) > 0.0 { "up" } else { "down" }.to_string()),
+        trend: Some(
+            if tlt_return.unwrap_or(0.0) > 0.0 {
+                "up"
+            } else {
+                "down"
+            }
+            .to_string(),
+        ),
         interpretation: Some(rate_env.to_string()),
     });
 
@@ -144,7 +181,14 @@ async fn get_macro_indicators(
         value: gld_return.map(|v| (v * 10.0).round() / 10.0),
         unit: "%".to_string(),
         description: "Gold 20-day return as inflation proxy".to_string(),
-        trend: Some(if gld_return.unwrap_or(0.0) > 0.0 { "up" } else { "down" }.to_string()),
+        trend: Some(
+            if gld_return.unwrap_or(0.0) > 0.0 {
+                "up"
+            } else {
+                "down"
+            }
+            .to_string(),
+        ),
         interpretation: Some(inflation_sig.to_string()),
     });
 
@@ -181,7 +225,14 @@ async fn get_macro_indicators(
         value: risk_appetite.map(|v| (v * 10.0).round() / 10.0),
         unit: "%".to_string(),
         description: "SPY vs TLT relative performance (positive = risk-on)".to_string(),
-        trend: Some(if risk_appetite.unwrap_or(0.0) > 0.0 { "up" } else { "down" }.to_string()),
+        trend: Some(
+            if risk_appetite.unwrap_or(0.0) > 0.0 {
+                "up"
+            } else {
+                "down"
+            }
+            .to_string(),
+        ),
         interpretation: Some(risk_label.to_string()),
     });
 
@@ -204,6 +255,13 @@ async fn get_macro_indicators(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/macro/sensitivity/{symbol}",
+    params(("symbol" = String, Path, description = "Stock ticker symbol")),
+    responses((status = 200, description = "Stock's macro sensitivity metrics")),
+    tag = "Market Data"
+)]
 async fn get_macro_sensitivity(
     State(state): State<AppState>,
     Path(symbol): Path<String>,

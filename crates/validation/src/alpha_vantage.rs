@@ -98,11 +98,7 @@ impl AlphaVantageClient {
     }
 
     /// Get MACD data from Alpha Vantage
-    pub async fn get_macd(
-        &self,
-        symbol: &str,
-        interval: &str,
-    ) -> Result<Vec<MACDIndicatorData>> {
+    pub async fn get_macd(&self, symbol: &str, interval: &str) -> Result<Vec<MACDIndicatorData>> {
         let url = format!(
             "{}?function=MACD&symbol={}&interval={}&series_type=close&apikey={}",
             BASE_URL, symbol, interval, self.api_key
@@ -126,11 +122,17 @@ impl AlphaVantageClient {
         let mut data = Vec::new();
         if let Some(obj) = technical_analysis.as_object() {
             for (timestamp, values) in obj {
-                let macd = values.get("MACD").and_then(|v| v.as_str())
+                let macd = values
+                    .get("MACD")
+                    .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok());
-                let signal = values.get("MACD_Signal").and_then(|v| v.as_str())
+                let signal = values
+                    .get("MACD_Signal")
+                    .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok());
-                let hist = values.get("MACD_Hist").and_then(|v| v.as_str())
+                let hist = values
+                    .get("MACD_Hist")
+                    .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok());
 
                 if let (Some(macd), Some(signal), Some(hist)) = (macd, signal, hist) {

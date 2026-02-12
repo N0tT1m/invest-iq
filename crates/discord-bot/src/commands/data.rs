@@ -1,11 +1,9 @@
-use crate::embeds;
-use crate::Handler;
-use crate::respond_ephemeral;
 use super::{get_string_opt, resolve_subcommand};
+use crate::embeds;
+use crate::respond_ephemeral;
+use crate::Handler;
 
-use serenity::all::{
-    CommandDataOption, CommandInteraction, EditInteractionResponse,
-};
+use serenity::all::{CommandDataOption, CommandInteraction, EditInteractionResponse};
 use serenity::prelude::*;
 
 impl Handler {
@@ -21,12 +19,30 @@ impl Handler {
         };
 
         match sub_name {
-            "earnings" => self.handle_data_endpoint(ctx, command, sub_opt, "earnings").await,
-            "dividends" => self.handle_data_endpoint(ctx, command, sub_opt, "dividends").await,
-            "options" => self.handle_data_endpoint(ctx, command, sub_opt, "options").await,
-            "insiders" => self.handle_data_endpoint(ctx, command, sub_opt, "insiders").await,
-            "short" => self.handle_data_endpoint(ctx, command, sub_opt, "short-interest").await,
-            "correlation" => self.handle_data_endpoint(ctx, command, sub_opt, "correlation").await,
+            "earnings" => {
+                self.handle_data_endpoint(ctx, command, sub_opt, "earnings")
+                    .await
+            }
+            "dividends" => {
+                self.handle_data_endpoint(ctx, command, sub_opt, "dividends")
+                    .await
+            }
+            "options" => {
+                self.handle_data_endpoint(ctx, command, sub_opt, "options")
+                    .await
+            }
+            "insiders" => {
+                self.handle_data_endpoint(ctx, command, sub_opt, "insiders")
+                    .await
+            }
+            "short" => {
+                self.handle_data_endpoint(ctx, command, sub_opt, "short-interest")
+                    .await
+            }
+            "correlation" => {
+                self.handle_data_endpoint(ctx, command, sub_opt, "correlation")
+                    .await
+            }
             _ => {
                 let _ = respond_ephemeral(ctx, command, "Unknown data subcommand.").await;
             }
@@ -63,21 +79,36 @@ impl Handler {
                             "correlation" => embeds::build_correlation_embed(&symbol, data),
                             _ => unreachable!(),
                         };
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }

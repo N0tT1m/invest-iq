@@ -78,18 +78,33 @@ pub fn format_volume(v: f64) -> String {
 
 pub fn parse_f64(val: &serde_json::Value, key: &str) -> f64 {
     val.get(key)
-        .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .and_then(|v| {
+            v.as_f64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
         .unwrap_or(0.0)
 }
 
 fn risk_indicator(score: f64) -> &'static str {
-    if score >= 70.0 { "\u{1F534}" }       // red circle
-    else if score >= 40.0 { "\u{1F7E1}" }  // yellow circle
-    else { "\u{1F7E2}" }                    // green circle
+    if score >= 70.0 {
+        "\u{1F534}"
+    }
+    // red circle
+    else if score >= 40.0 {
+        "\u{1F7E1}"
+    }
+    // yellow circle
+    else {
+        "\u{1F7E2}"
+    } // green circle
 }
 
 fn pnl_color(val: f64) -> u32 {
-    if val >= 0.0 { COLOR_GREEN } else { COLOR_RED }
+    if val >= 0.0 {
+        COLOR_GREEN
+    } else {
+        COLOR_RED
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -97,12 +112,19 @@ fn pnl_color(val: f64) -> u32 {
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn build_analysis_embed_from_json(symbol: &str, data: &serde_json::Value) -> CreateEmbed {
-    let signal = parse_signal(data.get("overall_signal").and_then(|v| v.as_str()).unwrap_or("Neutral"));
+    let signal = parse_signal(
+        data.get("overall_signal")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Neutral"),
+    );
     let emoji = signal_emoji(&signal);
     let label = signal.to_label();
     let color = signal_color(&signal);
 
-    let recommendation = data.get("recommendation").and_then(|v| v.as_str()).unwrap_or("");
+    let recommendation = data
+        .get("recommendation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let mut desc = recommendation.to_string();
     if let Some(tier) = data.get("conviction_tier").and_then(|v| v.as_str()) {
         desc.push_str(&format!("\n**Conviction:** {}", tier));
@@ -134,10 +156,14 @@ pub fn build_analysis_embed_from_json(symbol: &str, data: &serde_json::Value) ->
     ] {
         if let Some(engine) = data.get(*key) {
             let sig = engine.get("signal").and_then(|v| v.as_str()).unwrap_or("?");
-            let conf = engine.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let conf = engine
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             let reason = engine.get("reason").and_then(|v| v.as_str()).unwrap_or("");
             let extra = if *key == "quantitative" {
-                engine.get("metrics")
+                engine
+                    .get("metrics")
                     .and_then(|m| m.get("sharpe_ratio"))
                     .and_then(|v| v.as_f64())
                     .map(|s| format!(" | Sharpe: {:.2}", s))
@@ -148,7 +174,13 @@ pub fn build_analysis_embed_from_json(symbol: &str, data: &serde_json::Value) ->
             let text = if reason.is_empty() {
                 format!("{} ({:.0}%){}", sig, conf * 100.0, extra)
             } else {
-                format!("{} ({:.0}%) - {}{}", sig, conf * 100.0, truncate(reason, 80), extra)
+                format!(
+                    "{} ({:.0}%) - {}{}",
+                    sig,
+                    conf * 100.0,
+                    truncate(reason, 80),
+                    extra
+                )
             };
             embed = embed.field(format!("{} {}", icon, label_str), text, false);
         }
@@ -202,14 +234,24 @@ pub fn build_analysis_embed_from_json(symbol: &str, data: &serde_json::Value) ->
 
 pub fn build_price_embed(symbol: &str, snapshot: &SnapshotTicker) -> CreateEmbed {
     let price = snapshot
-        .last_trade.as_ref().and_then(|t| t.p)
+        .last_trade
+        .as_ref()
+        .and_then(|t| t.p)
         .or_else(|| snapshot.day.as_ref().and_then(|d| d.c))
         .unwrap_or(0.0);
 
     let change = snapshot.todays_change.unwrap_or(0.0);
     let change_pct = snapshot.todays_change_perc.unwrap_or(0.0);
-    let color = if change >= 0.0 { COLOR_GREEN } else { COLOR_RED };
-    let arrow = if change >= 0.0 { "\u{1F7E2}" } else { "\u{1F534}" };
+    let color = if change >= 0.0 {
+        COLOR_GREEN
+    } else {
+        COLOR_RED
+    };
+    let arrow = if change >= 0.0 {
+        "\u{1F7E2}"
+    } else {
+        "\u{1F534}"
+    };
 
     let mut embed = CreateEmbed::new()
         .title(format!("{} {} ${:.2}", arrow, symbol, price))
@@ -217,7 +259,11 @@ pub fn build_price_embed(symbol: &str, snapshot: &SnapshotTicker) -> CreateEmbed
         .footer(footer())
         .timestamp(Timestamp::now());
 
-    embed = embed.field("Day Change", format!("{:+.2} ({:+.2}%)", change, change_pct), true);
+    embed = embed.field(
+        "Day Change",
+        format!("{:+.2} ({:+.2}%)", change, change_pct),
+        true,
+    );
 
     if let Some(prev) = snapshot.prev_day.as_ref().and_then(|d| d.c) {
         embed = embed.field("Prev Close", format!("${:.2}", prev), true);
@@ -235,11 +281,18 @@ pub fn build_price_embed(symbol: &str, snapshot: &SnapshotTicker) -> CreateEmbed
     embed
 }
 
-pub fn build_portfolio_embed(account: &serde_json::Value, positions: &[serde_json::Value]) -> CreateEmbed {
+pub fn build_portfolio_embed(
+    account: &serde_json::Value,
+    positions: &[serde_json::Value],
+) -> CreateEmbed {
     let equity = parse_f64(account, "equity");
     let buying_power = parse_f64(account, "buying_power");
     let day_pl = parse_f64(account, "equity") - parse_f64(account, "last_equity");
-    let color = if day_pl >= 0.0 { COLOR_GREEN } else { COLOR_RED };
+    let color = if day_pl >= 0.0 {
+        COLOR_GREEN
+    } else {
+        COLOR_RED
+    };
 
     let mut embed = CreateEmbed::new()
         .title("\u{1F4B0} Portfolio Overview")
@@ -276,8 +329,15 @@ pub fn build_portfolio_embed(account: &serde_json::Value, positions: &[serde_jso
 }
 
 pub fn build_backtest_embed(symbol: &str, result: &serde_json::Value) -> CreateEmbed {
-    let total_return = result.get("total_return_percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let color = if total_return >= 0.0 { COLOR_GREEN } else { COLOR_RED };
+    let total_return = result
+        .get("total_return_percent")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let color = if total_return >= 0.0 {
+        COLOR_GREEN
+    } else {
+        COLOR_RED
+    };
 
     let mut embed = CreateEmbed::new()
         .title(format!("\u{1F4CA} Backtest: {}", symbol))
@@ -313,7 +373,11 @@ pub fn build_backtest_embed(symbol: &str, result: &serde_json::Value) -> CreateE
 }
 
 pub fn build_compare_embed_from_json(symbol: &str, data: &serde_json::Value) -> CreateEmbed {
-    let signal = parse_signal(data.get("overall_signal").and_then(|v| v.as_str()).unwrap_or("Neutral"));
+    let signal = parse_signal(
+        data.get("overall_signal")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Neutral"),
+    );
     let emoji = signal_emoji(&signal);
     let label = signal.to_label();
     let color = signal_color(&signal);
@@ -340,7 +404,10 @@ pub fn build_compare_embed_from_json(symbol: &str, data: &serde_json::Value) -> 
         }
     }
 
-    let recommendation = data.get("recommendation").and_then(|v| v.as_str()).unwrap_or("");
+    let recommendation = data
+        .get("recommendation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     embed = embed.description(truncate(recommendation, 200));
 
     embed
@@ -446,13 +513,29 @@ pub fn build_agent_pending_embed(trades: &[&serde_json::Value]) -> CreateEmbed {
         let mut text = String::new();
         for (i, trade) in trades.iter().take(15).enumerate() {
             let id = trade.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-            let sym = trade.get("symbol").and_then(|v| v.as_str()).unwrap_or("???");
-            let action = trade.get("action").and_then(|v| v.as_str()).unwrap_or("???");
-            let qty = trade.get("quantity").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let conf = trade.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let sym = trade
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
+            let action = trade
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
+            let qty = trade
+                .get("quantity")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let conf = trade
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
             text.push_str(&format!(
                 "**#{}** {} {} x {:.1} | conf: {:.0}%\n",
-                id, action.to_uppercase(), sym, qty, conf * 100.0
+                id,
+                action.to_uppercase(),
+                sym,
+                qty,
+                conf * 100.0
             ));
             if i >= 14 {
                 text.push_str(&format!("...and {} more", trades.len() - 15));
@@ -507,14 +590,27 @@ pub fn build_agent_history_embed(trades: &[&serde_json::Value]) -> CreateEmbed {
         let mut text = String::new();
         for trade in trades.iter().take(10) {
             let id = trade.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-            let sym = trade.get("symbol").and_then(|v| v.as_str()).unwrap_or("???");
-            let action = trade.get("action").and_then(|v| v.as_str()).unwrap_or("???");
-            let status = trade.get("status").and_then(|v| v.as_str()).unwrap_or("???");
+            let sym = trade
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
+            let action = trade
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
+            let status = trade
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
             let pnl = trade.get("pnl").and_then(|v| v.as_f64());
             let pnl_str = pnl.map(|p| format!(" | ${:+.2}", p)).unwrap_or_default();
             text.push_str(&format!(
                 "**#{}** {} {} [{}]{}\n",
-                id, action.to_uppercase(), sym, status, pnl_str
+                id,
+                action.to_uppercase(),
+                sym,
+                status,
+                pnl_str
             ));
         }
         embed = embed.description(text);
@@ -532,10 +628,25 @@ pub fn build_agent_regimes_embed(data: &serde_json::Value) -> CreateEmbed {
 
     if let Some(regimes) = data.as_array() {
         for regime in regimes {
-            let name = regime.get("regime").and_then(|v| v.as_str()).unwrap_or("Unknown");
-            let wr = regime.get("win_rate").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let count = regime.get("trade_count").and_then(|v| v.as_i64()).unwrap_or(0);
-            let color_dot = if wr >= 0.6 { "\u{1F7E2}" } else if wr >= 0.4 { "\u{1F7E1}" } else { "\u{1F534}" };
+            let name = regime
+                .get("regime")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown");
+            let wr = regime
+                .get("win_rate")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let count = regime
+                .get("trade_count")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let color_dot = if wr >= 0.6 {
+                "\u{1F7E2}"
+            } else if wr >= 0.4 {
+                "\u{1F7E1}"
+            } else {
+                "\u{1F534}"
+            };
             embed = embed.field(
                 format!("{} {}", color_dot, name.replace('_', " ")),
                 format!("{:.0}% ({} trades)", wr * 100.0, count),
@@ -557,8 +668,17 @@ pub fn build_agent_regimes_embed(data: &serde_json::Value) -> CreateEmbed {
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn build_risk_overview_embed(data: &serde_json::Value) -> CreateEmbed {
-    let overall = data.get("overall_risk_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let color = if overall >= 70.0 { COLOR_RED } else if overall >= 40.0 { COLOR_GOLD } else { COLOR_GREEN };
+    let overall = data
+        .get("overall_risk_score")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let color = if overall >= 70.0 {
+        COLOR_RED
+    } else if overall >= 40.0 {
+        COLOR_GOLD
+    } else {
+        COLOR_GREEN
+    };
 
     let mut embed = CreateEmbed::new()
         .title(format!("{} Portfolio Risk Radar", risk_indicator(overall)))
@@ -590,11 +710,24 @@ pub fn build_risk_overview_embed(data: &serde_json::Value) -> CreateEmbed {
 }
 
 pub fn build_risk_symbol_embed(symbol: &str, data: &serde_json::Value) -> CreateEmbed {
-    let overall = data.get("overall_risk_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let color = if overall >= 70.0 { COLOR_RED } else if overall >= 40.0 { COLOR_GOLD } else { COLOR_GREEN };
+    let overall = data
+        .get("overall_risk_score")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let color = if overall >= 70.0 {
+        COLOR_RED
+    } else if overall >= 40.0 {
+        COLOR_GOLD
+    } else {
+        COLOR_GREEN
+    };
 
     let mut embed = CreateEmbed::new()
-        .title(format!("{} {} Risk Analysis", risk_indicator(overall), symbol))
+        .title(format!(
+            "{} {} Risk Analysis",
+            risk_indicator(overall),
+            symbol
+        ))
         .description(format!("Risk Score: **{:.0}/100**", overall))
         .color(color)
         .footer(footer())
@@ -623,9 +756,16 @@ pub fn build_risk_symbol_embed(symbol: &str, data: &serde_json::Value) -> Create
 }
 
 pub fn build_circuit_breakers_embed(data: &serde_json::Value) -> CreateEmbed {
-    let halted = data.get("trading_halted").and_then(|v| v.as_bool()).unwrap_or(false);
+    let halted = data
+        .get("trading_halted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let color = if halted { COLOR_RED } else { COLOR_GREEN };
-    let status = if halted { "\u{1F6D1} HALTED" } else { "\u{1F7E2} Active" };
+    let status = if halted {
+        "\u{1F6D1} HALTED"
+    } else {
+        "\u{1F7E2} Active"
+    };
 
     let mut embed = CreateEmbed::new()
         .title(format!("Circuit Breakers — {}", status))
@@ -639,13 +779,19 @@ pub fn build_circuit_breakers_embed(data: &serde_json::Value) -> CreateEmbed {
         }
     }
 
-    if let Some(v) = data.get("daily_loss_limit_percent").and_then(|v| v.as_f64()) {
+    if let Some(v) = data
+        .get("daily_loss_limit_percent")
+        .and_then(|v| v.as_f64())
+    {
         embed = embed.field("Daily Loss Limit", format!("{:.1}%", v), true);
     }
     if let Some(v) = data.get("max_consecutive_losses").and_then(|v| v.as_i64()) {
         embed = embed.field("Max Consec. Losses", v.to_string(), true);
     }
-    if let Some(v) = data.get("account_drawdown_limit_percent").and_then(|v| v.as_f64()) {
+    if let Some(v) = data
+        .get("account_drawdown_limit_percent")
+        .and_then(|v| v.as_f64())
+    {
         embed = embed.field("Drawdown Limit", format!("{:.1}%", v), true);
     }
     if let Some(v) = data.get("consecutive_losses").and_then(|v| v.as_i64()) {
@@ -657,7 +803,10 @@ pub fn build_circuit_breakers_embed(data: &serde_json::Value) -> CreateEmbed {
 
 pub fn build_risk_positions_embed(positions: &[serde_json::Value]) -> CreateEmbed {
     let mut embed = CreateEmbed::new()
-        .title(format!("\u{1F6E1}\u{FE0F} Tracked Positions ({})", positions.len()))
+        .title(format!(
+            "\u{1F6E1}\u{FE0F} Tracked Positions ({})",
+            positions.len()
+        ))
         .color(COLOR_BLUE)
         .footer(footer_plain())
         .timestamp(Timestamp::now());
@@ -670,7 +819,10 @@ pub fn build_risk_positions_embed(positions: &[serde_json::Value]) -> CreateEmbe
             let sym = pos.get("symbol").and_then(|v| v.as_str()).unwrap_or("???");
             let sl = pos.get("stop_loss").and_then(|v| v.as_f64());
             let tp = pos.get("take_profit").and_then(|v| v.as_f64());
-            let trailing = pos.get("trailing_stop").and_then(|v| v.as_bool()).unwrap_or(false);
+            let trailing = pos
+                .get("trailing_stop")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             let mut info = format!("**{}**", sym);
             if let Some(sl) = sl {
@@ -700,8 +852,17 @@ pub fn build_risk_positions_embed(positions: &[serde_json::Value]) -> CreateEmbe
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn build_news_embed(symbol: &str, data: &serde_json::Value) -> CreateEmbed {
-    let sentiment = data.get("overall_sentiment").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let color = if sentiment > 0.1 { COLOR_GREEN } else if sentiment < -0.1 { COLOR_RED } else { COLOR_GOLD };
+    let sentiment = data
+        .get("overall_sentiment")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let color = if sentiment > 0.1 {
+        COLOR_GREEN
+    } else if sentiment < -0.1 {
+        COLOR_RED
+    } else {
+        COLOR_GOLD
+    };
 
     let mut embed = CreateEmbed::new()
         .title(format!("\u{1F4F0} {} News & Sentiment", symbol))
@@ -724,9 +885,18 @@ pub fn build_news_embed(symbol: &str, data: &serde_json::Value) -> CreateEmbed {
     if let Some(headlines) = data.get("headlines").and_then(|v| v.as_array()) {
         let mut news_text = String::new();
         for hl in headlines.iter().take(5) {
-            let title = hl.get("title").and_then(|v| v.as_str()).unwrap_or("No title");
+            let title = hl
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("No title");
             let sent = hl.get("sentiment").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let icon = if sent > 0.1 { "\u{1F7E2}" } else if sent < -0.1 { "\u{1F534}" } else { "\u{26AA}" };
+            let icon = if sent > 0.1 {
+                "\u{1F7E2}"
+            } else if sent < -0.1 {
+                "\u{1F534}"
+            } else {
+                "\u{26AA}"
+            };
             news_text.push_str(&format!("{} {}\n", icon, truncate(title, 80)));
         }
         if !news_text.is_empty() {
@@ -752,18 +922,24 @@ pub fn build_sectors_embed(data: &serde_json::Value) -> CreateEmbed {
 
     if let Some(sectors) = data.get("sectors").and_then(|v| v.as_array()) {
         for sector in sectors.iter().take(11) {
-            let name = sector.get("name").and_then(|v| v.as_str())
+            let name = sector
+                .get("name")
+                .and_then(|v| v.as_str())
                 .or_else(|| sector.get("symbol").and_then(|v| v.as_str()))
                 .unwrap_or("???");
-            let ret = sector.get("return_1d").and_then(|v| v.as_f64())
+            let ret = sector
+                .get("return_1d")
+                .and_then(|v| v.as_f64())
                 .or_else(|| sector.get("change_percent").and_then(|v| v.as_f64()))
                 .unwrap_or(0.0);
-            let icon = if ret > 0.0 { "\u{1F7E2}" } else if ret < 0.0 { "\u{1F534}" } else { "\u{26AA}" };
-            embed = embed.field(
-                format!("{} {}", icon, name),
-                format!("{:+.2}%", ret),
-                true,
-            );
+            let icon = if ret > 0.0 {
+                "\u{1F7E2}"
+            } else if ret < 0.0 {
+                "\u{1F534}"
+            } else {
+                "\u{26AA}"
+            };
+            embed = embed.field(format!("{} {}", icon, name), format!("{:+.2}%", ret), true);
         }
     }
 
@@ -807,7 +983,9 @@ pub fn build_screen_embed(data: &serde_json::Value) -> CreateEmbed {
         .footer(footer())
         .timestamp(Timestamp::now());
 
-    if let Some(opportunities) = data.get("opportunities").and_then(|v| v.as_array())
+    if let Some(opportunities) = data
+        .get("opportunities")
+        .and_then(|v| v.as_array())
         .or_else(|| data.as_array())
     {
         if opportunities.is_empty() {
@@ -948,7 +1126,10 @@ pub fn build_insiders_embed(symbol: &str, data: &serde_json::Value) -> CreateEmb
             let title = tx.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let tx_type = tx.get("type").and_then(|v| v.as_str()).unwrap_or("???");
             let shares = tx.get("shares").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            text.push_str(&format!("{} ({}) — {} {:.0}\n", name, title, tx_type, shares));
+            text.push_str(&format!(
+                "{} ({}) — {} {:.0}\n",
+                name, title, tx_type, shares
+            ));
         }
         if !text.is_empty() {
             embed = embed.field("Recent Transactions", text, false);
@@ -963,8 +1144,17 @@ pub fn build_insiders_embed(symbol: &str, data: &serde_json::Value) -> CreateEmb
 }
 
 pub fn build_short_interest_embed(symbol: &str, data: &serde_json::Value) -> CreateEmbed {
-    let score = data.get("squeeze_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let color = if score >= 70.0 { COLOR_RED } else if score >= 40.0 { COLOR_GOLD } else { COLOR_GREEN };
+    let score = data
+        .get("squeeze_score")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let color = if score >= 70.0 {
+        COLOR_RED
+    } else if score >= 40.0 {
+        COLOR_GOLD
+    } else {
+        COLOR_GREEN
+    };
 
     let mut embed = CreateEmbed::new()
         .title(format!("\u{1F4C9} {} Short Interest", symbol))
@@ -1009,12 +1199,14 @@ pub fn build_correlation_embed(symbol: &str, data: &serde_json::Value) -> Create
     if let Some(corrs) = data.get("correlations").and_then(|v| v.as_object()) {
         for bm in &benchmarks {
             if let Some(val) = corrs.get(*bm).and_then(|v| v.as_f64()) {
-                let bar = if val.abs() >= 0.7 { "\u{1F7E0}" } else if val.abs() >= 0.4 { "\u{1F7E1}" } else { "\u{1F7E2}" };
-                embed = embed.field(
-                    format!("{} vs {}", bar, bm),
-                    format!("{:.3}", val),
-                    true,
-                );
+                let bar = if val.abs() >= 0.7 {
+                    "\u{1F7E0}"
+                } else if val.abs() >= 0.4 {
+                    "\u{1F7E1}"
+                } else {
+                    "\u{1F7E2}"
+                };
+                embed = embed.field(format!("{} vs {}", bar, bm), format!("{:.3}", val), true);
             }
         }
     }
@@ -1048,10 +1240,16 @@ pub fn build_orders_embed(orders: &[serde_json::Value]) -> CreateEmbed {
     } else {
         let mut text = String::new();
         for order in orders.iter().take(10) {
-            let sym = order.get("symbol").and_then(|v| v.as_str()).unwrap_or("???");
+            let sym = order
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
             let side = order.get("side").and_then(|v| v.as_str()).unwrap_or("???");
             let qty = parse_f64(order, "qty");
-            let status = order.get("status").and_then(|v| v.as_str()).unwrap_or("???");
+            let status = order
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
             let icon = match status {
                 "filled" => "\u{2705}",
                 "cancelled" | "canceled" => "\u{274C}",
@@ -1060,7 +1258,11 @@ pub fn build_orders_embed(orders: &[serde_json::Value]) -> CreateEmbed {
             };
             text.push_str(&format!(
                 "{} **{}** {} x {:.1} [{}]\n",
-                icon, side.to_uppercase(), sym, qty, status
+                icon,
+                side.to_uppercase(),
+                sym,
+                qty,
+                status
             ));
         }
         if orders.len() > 10 {
@@ -1083,7 +1285,9 @@ pub fn build_tax_harvest_embed(data: &serde_json::Value) -> CreateEmbed {
         .footer(footer_plain())
         .timestamp(Timestamp::now());
 
-    if let Some(opps) = data.get("opportunities").and_then(|v| v.as_array())
+    if let Some(opps) = data
+        .get("opportunities")
+        .and_then(|v| v.as_array())
         .or_else(|| data.as_array())
     {
         if opps.is_empty() {
@@ -1092,8 +1296,15 @@ pub fn build_tax_harvest_embed(data: &serde_json::Value) -> CreateEmbed {
             let mut text = String::new();
             for opp in opps.iter().take(10) {
                 let sym = opp.get("symbol").and_then(|v| v.as_str()).unwrap_or("???");
-                let loss = opp.get("unrealized_loss").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                text.push_str(&format!("**{}** — ${:.2} harvestable loss\n", sym, loss.abs()));
+                let loss = opp
+                    .get("unrealized_loss")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                text.push_str(&format!(
+                    "**{}** — ${:.2} harvestable loss\n",
+                    sym,
+                    loss.abs()
+                ));
             }
             embed = embed.description(text);
         }
@@ -1105,7 +1316,10 @@ pub fn build_tax_harvest_embed(data: &serde_json::Value) -> CreateEmbed {
 }
 
 pub fn build_tax_summary_embed(year: i64, data: &serde_json::Value) -> CreateEmbed {
-    let net = data.get("net_gain_loss").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let net = data
+        .get("net_gain_loss")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let color = pnl_color(net);
 
     let mut embed = CreateEmbed::new()
@@ -1149,13 +1363,20 @@ pub fn build_walkforward_embed(symbol: &str, data: &serde_json::Value) -> Create
         embed = embed.field("OOS Sharpe", format!("{:.2}", oos_sharpe), true);
     }
     if let Some(ratio) = data.get("overfitting_ratio").and_then(|v| v.as_f64()) {
-        let icon = if ratio > 0.5 { "\u{1F534}" } else { "\u{1F7E2}" };
+        let icon = if ratio > 0.5 {
+            "\u{1F534}"
+        } else {
+            "\u{1F7E2}"
+        };
         embed = embed.field("Overfit Ratio", format!("{} {:.2}", icon, ratio), true);
     }
     if let Some(folds) = data.get("num_folds").and_then(|v| v.as_i64()) {
         embed = embed.field("Folds", folds.to_string(), true);
     }
-    if let Some(ret) = data.get("oos_total_return_percent").and_then(|v| v.as_f64()) {
+    if let Some(ret) = data
+        .get("oos_total_return_percent")
+        .and_then(|v| v.as_f64())
+    {
         embed = embed.field("OOS Return", format!("{:.2}%", ret), true);
     }
 
@@ -1198,7 +1419,9 @@ pub fn build_strategies_embed(data: &serde_json::Value) -> CreateEmbed {
         .footer(footer_plain())
         .timestamp(Timestamp::now());
 
-    if let Some(strategies) = data.get("strategies").and_then(|v| v.as_array())
+    if let Some(strategies) = data
+        .get("strategies")
+        .and_then(|v| v.as_array())
         .or_else(|| data.as_array())
     {
         if strategies.is_empty() {
@@ -1207,9 +1430,21 @@ pub fn build_strategies_embed(data: &serde_json::Value) -> CreateEmbed {
             let mut text = String::new();
             for strat in strategies.iter().take(10) {
                 let name = strat.get("name").and_then(|v| v.as_str()).unwrap_or("???");
-                let health = strat.get("health_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let decay = strat.get("decay_percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let icon = if health >= 70.0 { "\u{1F7E2}" } else if health >= 40.0 { "\u{1F7E1}" } else { "\u{1F534}" };
+                let health = strat
+                    .get("health_score")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let decay = strat
+                    .get("decay_percent")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let icon = if health >= 70.0 {
+                    "\u{1F7E2}"
+                } else if health >= 40.0 {
+                    "\u{1F7E1}"
+                } else {
+                    "\u{1F534}"
+                };
                 text.push_str(&format!(
                     "{} **{}** — Health: {:.0} | Decay: {:.1}%\n",
                     icon, name, health, decay
@@ -1229,10 +1464,18 @@ pub fn build_strategies_embed(data: &serde_json::Value) -> CreateEmbed {
 // ══════════════════════════════════════════════════════════════════════
 
 pub fn build_health_embed(status_code: u16, data: &serde_json::Value) -> CreateEmbed {
-    let overall = if status_code == 200 { "\u{1F7E2} Healthy" }
-        else if status_code == 503 { "\u{1F534} Degraded" }
-        else { "\u{1F7E1} Unknown" };
-    let color = if status_code == 200 { COLOR_GREEN } else { COLOR_RED };
+    let overall = if status_code == 200 {
+        "\u{1F7E2} Healthy"
+    } else if status_code == 503 {
+        "\u{1F534} Degraded"
+    } else {
+        "\u{1F7E1} Unknown"
+    };
+    let color = if status_code == 200 {
+        COLOR_GREEN
+    } else {
+        COLOR_RED
+    };
 
     let mut embed = CreateEmbed::new()
         .title(format!("{} System Health", overall))
@@ -1242,8 +1485,14 @@ pub fn build_health_embed(status_code: u16, data: &serde_json::Value) -> CreateE
 
     if let Some(checks) = data.get("checks").and_then(|v| v.as_object()) {
         for (name, check) in checks {
-            let status = check.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let latency = check.get("latency_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+            let status = check
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let latency = check
+                .get("latency_ms")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let error = check.get("error").and_then(|v| v.as_str());
             let icon = match status {
                 "ok" | "healthy" => "\u{2705}",
@@ -1275,10 +1524,18 @@ pub fn build_search_embed(query: &str, results: &[serde_json::Value]) -> CreateE
     } else {
         let mut text = String::new();
         for result in results.iter().take(10) {
-            let ticker = result.get("ticker").and_then(|v| v.as_str()).unwrap_or("???");
+            let ticker = result
+                .get("ticker")
+                .and_then(|v| v.as_str())
+                .unwrap_or("???");
             let name = result.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let market = result.get("market").and_then(|v| v.as_str()).unwrap_or("");
-            text.push_str(&format!("**{}** — {} ({})\n", ticker, truncate(name, 40), market));
+            text.push_str(&format!(
+                "**{}** — {} ({})\n",
+                ticker,
+                truncate(name, 40),
+                market
+            ));
         }
         embed = embed.description(text);
     }

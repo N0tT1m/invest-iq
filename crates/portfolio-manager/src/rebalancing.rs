@@ -29,7 +29,9 @@ impl RebalanceCalculator {
         let mut current_values: HashMap<String, f64> = HashMap::new();
         for p in positions {
             let mv = p.market_value.to_f64().unwrap_or(0.0);
-            *current_values.entry(p.position.symbol.clone()).or_insert(0.0) += mv;
+            *current_values
+                .entry(p.position.symbol.clone())
+                .or_insert(0.0) += mv;
         }
 
         // Process symbol-level targets
@@ -174,7 +176,7 @@ mod tests {
     fn test_rebalance_calculation() {
         let positions = vec![
             make_position("AAPL", 10.0, 150.0, 160.0), // 1600
-            make_position("MSFT", 5.0, 300.0, 320.0),   // 1600
+            make_position("MSFT", 5.0, 300.0, 320.0),  // 1600
         ];
         let total = Decimal::from(3200);
 
@@ -229,8 +231,7 @@ mod tests {
         }];
 
         let sector_map = HashMap::new();
-        let drift =
-            RebalanceCalculator::compute_drift(&positions, &targets, total, &sector_map);
+        let drift = RebalanceCalculator::compute_drift(&positions, &targets, total, &sector_map);
         assert_eq!(drift.len(), 1);
         // AAPL is at 50%, target 60% → drift = -10%
         assert!(drift[0].drift_percent < 0.0);

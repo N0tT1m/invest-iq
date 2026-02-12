@@ -1,13 +1,11 @@
+use super::{get_int_opt, get_string_opt};
 use crate::charts;
 use crate::embeds;
-use crate::Handler;
-use crate::respond_ephemeral;
 use crate::parse_signal_from_json;
-use super::{get_string_opt, get_int_opt};
+use crate::respond_ephemeral;
+use crate::Handler;
 
-use serenity::all::{
-    CommandDataOption, CommandInteraction, EditInteractionResponse,
-};
+use serenity::all::{CommandDataOption, CommandInteraction, EditInteractionResponse};
 use serenity::builder::{CreateAttachment, CreateEmbed};
 use serenity::prelude::*;
 
@@ -38,7 +36,8 @@ impl Handler {
                         let chart_path = async {
                             let now = chrono::Utc::now();
                             let start = now - chrono::Duration::days(90);
-                            let bars = self.polygon_client
+                            let bars = self
+                                .polygon_client
                                 .get_aggregates(&symbol, 1, "day", start, now)
                                 .await
                                 .ok()?;
@@ -46,9 +45,7 @@ impl Handler {
                                 return None;
                             }
                             let signal = parse_signal_from_json(data);
-                            charts::generate_chart(&symbol, &bars, &signal)
-                                .await
-                                .ok()
+                            charts::generate_chart(&symbol, &bars, &signal).await.ok()
                         }
                         .await;
 
@@ -70,8 +67,10 @@ impl Handler {
                         let _ = command
                             .edit_response(
                                 &ctx.http,
-                                EditInteractionResponse::new()
-                                    .content(format!("Error parsing analysis for {}: {}", symbol, e)),
+                                EditInteractionResponse::new().content(format!(
+                                    "Error parsing analysis for {}: {}",
+                                    symbol, e
+                                )),
                             )
                             .await;
                     }
@@ -83,8 +82,12 @@ impl Handler {
                 let _ = command
                     .edit_response(
                         &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("Error analyzing {} ({}): {}", symbol, status, &body[..body.len().min(200)])),
+                        EditInteractionResponse::new().content(format!(
+                            "Error analyzing {} ({}): {}",
+                            symbol,
+                            status,
+                            &body[..body.len().min(200)]
+                        )),
                     )
                     .await;
             }
@@ -152,17 +155,25 @@ impl Handler {
 
         let now = chrono::Utc::now();
         let start = now - chrono::Duration::days(days);
-        match self.polygon_client.get_aggregates(&symbol, 1, "day", start, now).await {
+        match self
+            .polygon_client
+            .get_aggregates(&symbol, 1, "day", start, now)
+            .await
+        {
             Ok(bars) if !bars.is_empty() => {
-                let signal = match self.api_get(&format!("{}/api/analyze/{}", self.api_base, symbol)).await {
-                    Ok(resp) => {
-                        resp.json::<serde_json::Value>().await.ok()
-                            .map(|json| {
-                                let data = json.get("data").unwrap_or(&json);
-                                parse_signal_from_json(data)
-                            })
-                            .unwrap_or(analysis_core::SignalStrength::Neutral)
-                    }
+                let signal = match self
+                    .api_get(&format!("{}/api/analyze/{}", self.api_base, symbol))
+                    .await
+                {
+                    Ok(resp) => resp
+                        .json::<serde_json::Value>()
+                        .await
+                        .ok()
+                        .map(|json| {
+                            let data = json.get("data").unwrap_or(&json);
+                            parse_signal_from_json(data)
+                        })
+                        .unwrap_or(analysis_core::SignalStrength::Neutral),
                     Err(_) => analysis_core::SignalStrength::Neutral,
                 };
 
@@ -242,7 +253,10 @@ impl Handler {
                     let _ = respond_ephemeral(
                         ctx,
                         command,
-                        &format!("Watchlist full (max {} symbols).", crate::MAX_WATCHLIST_SIZE),
+                        &format!(
+                            "Watchlist full (max {} symbols).",
+                            crate::MAX_WATCHLIST_SIZE
+                        ),
                     )
                     .await;
                     return;
@@ -273,8 +287,8 @@ impl Handler {
             }
             "remove" => {
                 let Some(sym) = symbol else {
-                    let _ = respond_ephemeral(ctx, command, "Please provide a symbol to remove.")
-                        .await;
+                    let _ =
+                        respond_ephemeral(ctx, command, "Please provide a symbol to remove.").await;
                     return;
                 };
 
@@ -376,10 +390,8 @@ impl Handler {
 
         let account_url = format!("{}/api/broker/account", api_base);
         let positions_url = format!("{}/api/broker/positions", api_base);
-        let (account_res, positions_res) = tokio::join!(
-            self.api_get(&account_url),
-            self.api_get(&positions_url)
-        );
+        let (account_res, positions_res) =
+            tokio::join!(self.api_get(&account_url), self.api_get(&positions_url));
 
         let account = match account_res {
             Ok(resp) if resp.status().is_success() => {
@@ -461,10 +473,7 @@ impl Handler {
         let url1 = format!("{}/api/analyze/{}", self.api_base, sym1);
         let url2 = format!("{}/api/analyze/{}", self.api_base, sym2);
 
-        let (res1, res2) = tokio::join!(
-            self.api_get(&url1),
-            self.api_get(&url2)
-        );
+        let (res1, res2) = tokio::join!(self.api_get(&url1), self.api_get(&url2));
 
         let mut embed_list: Vec<CreateEmbed> = Vec::new();
 
@@ -571,10 +580,7 @@ impl Handler {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_backtest_embed(&symbol, data);
                         let _ = command
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new().embed(embed),
-                            )
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
                             .await;
                     }
                     Err(e) => {

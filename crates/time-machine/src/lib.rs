@@ -9,8 +9,8 @@ pub mod scenarios;
 pub mod scoring;
 
 pub use replay::{
-    DaySnapshot, ReplayEngine, ReplayState, SessionConfig, TimeMachineSession, UserDecision,
-    TradeAction, BarData,
+    BarData, DaySnapshot, ReplayEngine, ReplayState, SessionConfig, TimeMachineSession,
+    TradeAction, UserDecision,
 };
 pub use scenarios::{Difficulty, Scenario, ScenarioLibrary};
-pub use scoring::{DecisionScore, ScoreCard, SessionScorer, Leaderboard, LeaderboardEntry};
+pub use scoring::{DecisionScore, Leaderboard, LeaderboardEntry, ScoreCard, SessionScorer};

@@ -38,6 +38,9 @@ services:
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-120}
       - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
       - ML_SIGNAL_MODELS_URL=http://signal-models:8004
+      - ML_EARNINGS_NLP_URL=http://earnings-nlp:8005
+      - ML_SOCIAL_SENTIMENT_URL=http://social-sentiment:8006
+      - POLYGON_WS_ENABLED=${POLYGON_WS_ENABLED:-false}
     secrets:
       - polygon_api_key
       - alpaca_api_key
@@ -81,6 +84,62 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8004/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  earnings-nlp:
+    build:
+      context: ./ml-services
+      dockerfile: Dockerfile
+    container_name: investiq-earnings-nlp
+    ports:
+      - "8005:8005"
+    env_file:
+      - .env
+    environment:
+      - SERVICE=earnings_nlp
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - earnings  # docker compose --profile earnings up
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8005/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  social-sentiment:
+    build:
+      context: ./ml-services
+      dockerfile: Dockerfile
+    container_name: investiq-social-sentiment
+    ports:
+      - "8006:8006"
+    env_file:
+      - .env
+    environment:
+      - SERVICE=social_sentiment
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - social
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8006/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -136,6 +195,26 @@ services:
     restart: unless-stopped
     profiles:
       - discord  # Only start if explicitly requested
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # Jaeger for distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: investiq-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - investiq-network
+    restart: unless-stopped
+    profiles:
+      - tracing  # docker compose --profile tracing up
     logging:
       driver: json-file
       options:

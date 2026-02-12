@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use analysis_core::UnifiedAnalysis;
-use anyhow::Result;
 use crate::metrics::AgentMetrics;
 use crate::types::{GateDecision, TradingSignal};
+use analysis_core::UnifiedAnalysis;
+use anyhow::Result;
 
 /// Persistent state manager for the trading agent (P8).
 /// Stores key-value state and trade entry context for post-trade analysis.
@@ -105,11 +105,21 @@ impl StateManager {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_atc2_pending ON agent_trade_context_v2(pending_trade_id)")
             .execute(&self.db_pool).await.ok();
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_atc2_symbol ON agent_trade_context_v2(symbol)")
-            .execute(&self.db_pool).await.ok();
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_atc2_outcome ON agent_trade_context_v2(outcome)")
-            .execute(&self.db_pool).await.ok();
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_atc2_created ON agent_trade_context_v2(created_at)")
-            .execute(&self.db_pool).await.ok();
+            .execute(&self.db_pool)
+            .await
+            .ok();
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_atc2_outcome ON agent_trade_context_v2(outcome)",
+        )
+        .execute(&self.db_pool)
+        .await
+        .ok();
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_atc2_created ON agent_trade_context_v2(created_at)",
+        )
+        .execute(&self.db_pool)
+        .await
+        .ok();
 
         Ok(())
     }
@@ -130,11 +140,10 @@ impl StateManager {
 
     /// Load a state value by key.
     pub async fn load_state(&self, key: &str) -> Result<Option<String>> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM agent_state WHERE key = ?")
-                .bind(key)
-                .fetch_optional(&self.db_pool)
-                .await?;
+        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM agent_state WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.db_pool)
+            .await?;
         Ok(row.map(|(v,)| v))
     }
 
@@ -156,7 +165,8 @@ impl StateManager {
             .as_ref()
             .map(|f| serde_json::to_string(f).unwrap_or_default());
 
-        let adjustments_json = serde_json::to_string(&signal.signal_adjustments).unwrap_or_default();
+        let adjustments_json =
+            serde_json::to_string(&signal.signal_adjustments).unwrap_or_default();
 
         let supp_json = analysis
             .supplementary_signals
@@ -242,6 +252,7 @@ impl StateManager {
     }
 
     /// Record a trade rejection in context.
+    #[allow(dead_code)]
     pub async fn record_trade_rejected(&self, pending_trade_id: i64) -> Result<()> {
         sqlx::query(
             "UPDATE agent_trade_context_v2

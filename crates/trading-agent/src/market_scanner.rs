@@ -1,9 +1,9 @@
-use anyhow::Result;
 use crate::config::AgentConfig;
-use chrono::{Utc, Timelike, Datelike, Weekday};
-use polygon_client::PolygonClient;
-use multi_timeframe::Timeframe;
+use anyhow::Result;
+use chrono::{Datelike, Timelike, Utc, Weekday};
 use market_regime_detector::MarketRegime;
+use multi_timeframe::Timeframe;
+use polygon_client::PolygonClient;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -47,7 +47,10 @@ impl MarketScanner {
 
         // Single API call: fetch snapshots for the entire US stock market
         let all_snapshots = self.polygon_client.get_all_snapshots().await?;
-        tracing::info!("Fetched {} ticker snapshots from Polygon", all_snapshots.len());
+        tracing::info!(
+            "Fetched {} ticker snapshots from Polygon",
+            all_snapshots.len()
+        );
 
         let min_volume = if self.is_extended_hours() {
             self.config.extended_hours_min_volume
@@ -72,7 +75,8 @@ impl MarketScanner {
                 continue;
             }
 
-            let current_price = snap.last_trade
+            let current_price = snap
+                .last_trade
                 .as_ref()
                 .and_then(|t| t.p)
                 .or_else(|| snap.day.as_ref().and_then(|d| d.c));
@@ -89,7 +93,11 @@ impl MarketScanner {
                 let high = day.h.unwrap_or(0.0);
                 let low = day.l.unwrap_or(0.0);
                 let close = day.c.unwrap_or(1.0);
-                if close > 0.0 { (high - low) / close } else { 0.0 }
+                if close > 0.0 {
+                    (high - low) / close
+                } else {
+                    0.0
+                }
             } else {
                 0.0
             };
@@ -145,7 +153,8 @@ impl MarketScanner {
 
         // Sort movers by absolute price change — biggest movers first
         mover_candidates.sort_by(|a, b| {
-            b.price_change_percent.abs()
+            b.price_change_percent
+                .abs()
                 .partial_cmp(&a.price_change_percent.abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });

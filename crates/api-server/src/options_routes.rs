@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::{get_default_analysis, ApiResponse, AppError, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct OptionsAnalysis {
     pub symbol: String,
     pub available: bool,
@@ -28,7 +28,7 @@ pub struct OptionsAnalysis {
     pub message: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct UnusualActivity {
     pub contract: String,
     pub contract_type: String,
@@ -41,20 +41,31 @@ pub struct UnusualActivity {
 }
 
 pub fn options_routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/options/:symbol", get(get_options))
+    Router::new().route("/api/options/:symbol", get(get_options))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/options/{symbol}",
+    params(("symbol" = String, Path, description = "Stock ticker symbol")),
+    responses((status = 200, description = "Options analysis with IV, put/call ratio, unusual activity")),
+    tag = "Market Data"
+)]
 async fn get_options(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Result<Json<ApiResponse<OptionsAnalysis>>, AppError> {
-    let contracts = state.orchestrator.get_options_snapshot(&symbol).await.unwrap_or_default();
+    let contracts = state
+        .orchestrator
+        .get_options_snapshot(&symbol)
+        .await
+        .unwrap_or_default();
 
     if contracts.is_empty() {
         // Fallback: use quant analysis for volatility metrics
         let analysis = get_default_analysis(&state, &symbol).await.ok();
-        let quant_metrics = analysis.as_ref()
+        let quant_metrics = analysis
+            .as_ref()
             .and_then(|a| a.quantitative.as_ref())
             .map(|q| q.metrics.clone())
             .unwrap_or_default();
@@ -64,17 +75,29 @@ async fn get_options(
         let beta = quant_metrics.get("beta").and_then(|v| v.as_f64());
 
         // Compute HV rank from bars
-        let bars = state.orchestrator.get_bars(&symbol, analysis_core::Timeframe::Day1, 252).await.ok();
+        let bars = state
+            .orchestrator
+            .get_bars(&symbol, analysis_core::Timeframe::Day1, 252)
+            .await
+            .ok();
         let (hv_proxy, hv_rank) = if let Some(bars) = &bars {
             if bars.len() >= 60 {
                 let mut vols = Vec::new();
                 for i in 20..bars.len() {
                     let slice = &bars[i - 20..i];
-                    let returns: Vec<f64> = slice.windows(2)
-                        .map(|w| if w[0].close > 0.0 { (w[1].close / w[0].close).ln() } else { 0.0 })
+                    let returns: Vec<f64> = slice
+                        .windows(2)
+                        .map(|w| {
+                            if w[0].close > 0.0 {
+                                (w[1].close / w[0].close).ln()
+                            } else {
+                                0.0
+                            }
+                        })
                         .collect();
                     let mean = returns.iter().sum::<f64>() / returns.len() as f64;
-                    let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
+                    let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>()
+                        / returns.len() as f64;
                     vols.push(var.sqrt() * (252.0_f64).sqrt() * 100.0);
                 }
                 if let Some(current) = vols.last() {
@@ -124,11 +147,14 @@ async fn get_options(
     let mut iv_sum = 0.0;
     let mut iv_count = 0;
     let mut unusual = Vec::new();
-    let mut strike_pain: std::collections::HashMap<i64, (f64, f64)> = std::collections::HashMap::new();
+    let mut strike_pain: std::collections::HashMap<i64, (f64, f64)> =
+        std::collections::HashMap::new();
 
     for contract in &contracts {
         let details = contract.details.as_ref();
-        let contract_type = details.and_then(|d| d.contract_type.as_deref()).unwrap_or("unknown");
+        let contract_type = details
+            .and_then(|d| d.contract_type.as_deref())
+            .unwrap_or("unknown");
         let strike = details.and_then(|d| d.strike_price).unwrap_or(0.0);
         let volume = contract.day.as_ref().and_then(|d| d.volume).unwrap_or(0);
         let oi = contract.open_interest.unwrap_or(0);
@@ -147,7 +173,9 @@ async fn get_options(
         }
 
         if oi > 0 && volume > 100 && volume as f64 > oi as f64 * 2.0 {
-            let expiration = details.and_then(|d| d.expiration_date.clone()).unwrap_or_default();
+            let expiration = details
+                .and_then(|d| d.expiration_date.clone())
+                .unwrap_or_default();
             let ticker = details.and_then(|d| d.ticker.clone()).unwrap_or_default();
             unusual.push(UnusualActivity {
                 contract: ticker,
@@ -170,7 +198,11 @@ async fn get_options(
         }
     }
 
-    unusual.sort_by(|a, b| b.vol_oi_ratio.partial_cmp(&a.vol_oi_ratio).unwrap_or(std::cmp::Ordering::Equal));
+    unusual.sort_by(|a, b| {
+        b.vol_oi_ratio
+            .partial_cmp(&a.vol_oi_ratio)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     unusual.truncate(10);
 
     let put_call_ratio = if total_call_vol > 0 {
@@ -185,9 +217,7 @@ async fn get_options(
         None
     };
 
-    let iv_rank = avg_iv.map(|iv| {
-        ((iv - 15.0) / (80.0 - 15.0) * 100.0).clamp(0.0, 100.0)
-    });
+    let iv_rank = avg_iv.map(|iv| ((iv - 15.0) / (80.0 - 15.0) * 100.0).clamp(0.0, 100.0));
 
     let max_pain = if !strike_pain.is_empty() {
         let strikes: Vec<i64> = strike_pain.keys().copied().collect();

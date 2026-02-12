@@ -1,6 +1,6 @@
+use crate::error::{MLError, MLResult};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use crate::error::{MLError, MLResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SentimentPrediction {
@@ -78,7 +78,7 @@ impl SentimentClient {
 
         let response = self
             .client
-            .post(&format!("{}/predict", self.base_url))
+            .post(format!("{}/predict", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -109,7 +109,7 @@ impl SentimentClient {
 
         let response = self
             .client
-            .post(&format!("{}/analyze-news", self.base_url))
+            .post(format!("{}/analyze-news", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -129,7 +129,7 @@ impl SentimentClient {
     pub async fn health(&self) -> MLResult<bool> {
         let response = self
             .client
-            .get(&format!("{}/health", self.base_url))
+            .get(format!("{}/health", self.base_url))
             .send()
             .await?;
 

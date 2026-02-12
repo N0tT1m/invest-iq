@@ -7,14 +7,14 @@ mod tests {
     #[test]
     fn test_mask_api_key() {
         let key = "abcd1234efgh5678";
-        let masked = mask_api_key(&key);
+        let masked = mask_api_key(key);
         assert_eq!(masked, "abcd...5678");
     }
 
     #[test]
     fn test_mask_short_api_key() {
         let key = "short";
-        let masked = mask_api_key(&key);
+        let masked = mask_api_key(key);
         assert_eq!(masked, "****");
     }
 

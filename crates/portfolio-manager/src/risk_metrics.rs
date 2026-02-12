@@ -41,7 +41,11 @@ impl RiskCalculator {
                 }
             })
             .collect();
-        holding_weights.sort_by(|a, b| b.weight_percent.partial_cmp(&a.weight_percent).unwrap_or(std::cmp::Ordering::Equal));
+        holding_weights.sort_by(|a, b| {
+            b.weight_percent
+                .partial_cmp(&a.weight_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let weights_frac: Vec<f64> = holding_weights
             .iter()
@@ -104,10 +108,7 @@ impl RiskCalculator {
             .iter()
             .map(|s| s.total_value.to_f64().unwrap_or(0.0))
             .collect();
-        let dates: Vec<String> = snapshots
-            .iter()
-            .map(|s| s.snapshot_date.clone())
-            .collect();
+        let dates: Vec<String> = snapshots.iter().map(|s| s.snapshot_date.clone()).collect();
 
         let first = values[0];
         let last = values[values.len() - 1];
@@ -208,7 +209,7 @@ fn ytd_return(dates: &[String], values: &[f64]) -> Option<f64> {
     }
     let current_year = dates
         .last()?
-        .split(|c| c == '-' || c == 'T')
+        .split(['-', 'T'])
         .next()?
         .parse::<i32>()
         .ok()?;
@@ -216,7 +217,7 @@ fn ytd_return(dates: &[String], values: &[f64]) -> Option<f64> {
     // Find first value of the current year
     for (i, date) in dates.iter().enumerate() {
         let year: i32 = date
-            .split(|c| c == '-' || c == 'T')
+            .split(['-', 'T'])
             .next()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
@@ -266,14 +267,23 @@ mod tests {
             market_value: Decimal::from_f64(mv).unwrap_or_default(),
             cost_basis: Decimal::from_f64(cost).unwrap_or_default(),
             unrealized_pnl: Decimal::from_f64(mv - cost).unwrap_or_default(),
-            unrealized_pnl_percent: if cost > 0.0 { (mv - cost) / cost * 100.0 } else { 0.0 },
+            unrealized_pnl_percent: if cost > 0.0 {
+                (mv - cost) / cost * 100.0
+            } else {
+                0.0
+            },
         }
     }
 
     #[test]
     fn test_risk_metrics_basic() {
         let snapshots: Vec<PortfolioSnapshot> = (0..30)
-            .map(|i| make_snapshot(10000.0 + (i as f64 * 50.0), &format!("2025-01-{:02}", i + 1)))
+            .map(|i| {
+                make_snapshot(
+                    10000.0 + (i as f64 * 50.0),
+                    &format!("2025-01-{:02}", i + 1),
+                )
+            })
             .collect();
         let positions = vec![
             make_position("AAPL", 10.0, 150.0, 160.0),
@@ -295,7 +305,12 @@ mod tests {
     #[test]
     fn test_performance_analytics() {
         let snapshots: Vec<PortfolioSnapshot> = (0..60)
-            .map(|i| make_snapshot(10000.0 + (i as f64 * 30.0), &format!("2025-{:02}-{:02}", i / 28 + 1, (i % 28) + 1)))
+            .map(|i| {
+                make_snapshot(
+                    10000.0 + (i as f64 * 30.0),
+                    &format!("2025-{:02}-{:02}", i / 28 + 1, (i % 28) + 1),
+                )
+            })
             .collect();
         let positions = vec![make_position("AAPL", 10.0, 150.0, 160.0)];
 

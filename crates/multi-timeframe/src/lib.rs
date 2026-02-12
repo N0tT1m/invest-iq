@@ -1,10 +1,10 @@
-use analysis_core::{Bar, AnalysisError};
+use analysis_core::{AnalysisError, Bar};
 use anyhow::Result;
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Duration, Utc};
+use log::debug;
 use polygon_client::PolygonClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use log::debug;
 
 /// Supported trading timeframes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -47,11 +47,11 @@ impl Timeframe {
     /// Get the number of bars to fetch for a given lookback period
     pub fn bars_for_lookback(&self, days: i64) -> i64 {
         match self {
-            Timeframe::Min5 => days * 78,    // ~6.5 hours * 12 bars/hour
-            Timeframe::Min15 => days * 26,   // ~6.5 hours * 4 bars/hour
-            Timeframe::Hour1 => days * 7,    // ~6.5 hours/day
-            Timeframe::Hour4 => days * 2,    // ~2 bars per day
-            Timeframe::Daily => days,         // 1 bar per day
+            Timeframe::Min5 => days * 78,  // ~6.5 hours * 12 bars/hour
+            Timeframe::Min15 => days * 26, // ~6.5 hours * 4 bars/hour
+            Timeframe::Hour1 => days * 7,  // ~6.5 hours/day
+            Timeframe::Hour4 => days * 2,  // ~2 bars per day
+            Timeframe::Daily => days,      // 1 bar per day
         }
     }
 
@@ -137,10 +137,7 @@ impl MultiTimeframeAnalyzer {
     }
 
     /// Fetch data for all timeframes concurrently using join_all
-    pub async fn fetch_all_timeframes(
-        &self,
-        symbol: &str,
-    ) -> Result<MultiTimeframeData> {
+    pub async fn fetch_all_timeframes(&self, symbol: &str) -> Result<MultiTimeframeData> {
         let to = Utc::now();
         let from = to - Duration::days(self.lookback_days);
 
@@ -153,7 +150,10 @@ impl MultiTimeframeAnalyzer {
                 let (multiplier, timespan) = timeframe.to_polygon_params();
                 async move {
                     debug!("Fetching {} data for {}", timeframe.name(), symbol);
-                    match client.get_aggregates(&symbol, multiplier, timespan, from, to).await {
+                    match client
+                        .get_aggregates(&symbol, multiplier, timespan, from, to)
+                        .await
+                    {
                         Ok(bars) if !bars.is_empty() => Some((timeframe, bars)),
                         Ok(_) => {
                             debug!("No data for {} on {}", symbol, timeframe.name());
@@ -194,7 +194,10 @@ impl MultiTimeframeAnalyzer {
                 let symbol = symbol.to_string();
                 let (multiplier, timespan) = timeframe.to_polygon_params();
                 async move {
-                    match client.get_aggregates(&symbol, multiplier, timespan, from, to).await {
+                    match client
+                        .get_aggregates(&symbol, multiplier, timespan, from, to)
+                        .await
+                    {
                         Ok(bars) if !bars.is_empty() => Some((timeframe, bars)),
                         Ok(_) => None,
                         Err(e) => {
@@ -217,10 +220,7 @@ impl MultiTimeframeAnalyzer {
     }
 
     /// Analyze trend alignment across timeframes
-    pub fn analyze_trend_alignment(
-        &self,
-        mtf_data: &MultiTimeframeData,
-    ) -> Result<TrendAlignment> {
+    pub fn analyze_trend_alignment(&self, mtf_data: &MultiTimeframeData) -> Result<TrendAlignment> {
         let mut trends = HashMap::new();
 
         for (timeframe, bars) in &mtf_data.data {
@@ -296,10 +296,12 @@ impl MultiTimeframeAnalyzer {
         let alignment = self.analyze_trend_alignment(mtf_data)?;
 
         // Get primary timeframe data
-        let primary_bars = mtf_data.data.get(&primary_timeframe)
-            .ok_or_else(|| AnalysisError::InvalidData(
-                format!("No data for primary timeframe: {}", primary_timeframe.name())
-            ))?;
+        let primary_bars = mtf_data.data.get(&primary_timeframe).ok_or_else(|| {
+            AnalysisError::InvalidData(format!(
+                "No data for primary timeframe: {}",
+                primary_timeframe.name()
+            ))
+        })?;
 
         // Determine signal based on primary timeframe and alignment
         let primary_trend = self.detect_trend(primary_bars);
@@ -310,8 +312,11 @@ impl MultiTimeframeAnalyzer {
                 (
                     SignalType::Buy,
                     conf,
-                    format!("Strong buy: {} timeframes aligned bullish ({:.0}% alignment)",
-                        alignment.trends.len(), alignment.alignment_score * 100.0)
+                    format!(
+                        "Strong buy: {} timeframes aligned bullish ({:.0}% alignment)",
+                        alignment.trends.len(),
+                        alignment.alignment_score * 100.0
+                    ),
                 )
             }
             (SignalType::Sell, false) => {
@@ -319,24 +324,23 @@ impl MultiTimeframeAnalyzer {
                 (
                     SignalType::Sell,
                     conf,
-                    format!("Strong sell: {} timeframes aligned bearish ({:.0}% alignment)",
-                        alignment.trends.len(), alignment.alignment_score * 100.0)
+                    format!(
+                        "Strong sell: {} timeframes aligned bearish ({:.0}% alignment)",
+                        alignment.trends.len(),
+                        alignment.alignment_score * 100.0
+                    ),
                 )
             }
-            (SignalType::Buy, false) | (SignalType::Sell, true) => {
-                (
-                    SignalType::Neutral,
-                    0.3,
-                    "Conflicting signals between timeframes".to_string()
-                )
-            }
-            _ => {
-                (
-                    SignalType::Neutral,
-                    0.5,
-                    "Neutral market conditions".to_string()
-                )
-            }
+            (SignalType::Buy, false) | (SignalType::Sell, true) => (
+                SignalType::Neutral,
+                0.3,
+                "Conflicting signals between timeframes".to_string(),
+            ),
+            _ => (
+                SignalType::Neutral,
+                0.5,
+                "Neutral market conditions".to_string(),
+            ),
         };
 
         Ok(MultiTimeframeSignal {
@@ -350,10 +354,7 @@ impl MultiTimeframeAnalyzer {
     }
 
     /// Find the best timeframe to trade based on trend strength
-    pub fn find_best_timeframe(
-        &self,
-        mtf_data: &MultiTimeframeData,
-    ) -> Option<Timeframe> {
+    pub fn find_best_timeframe(&self, mtf_data: &MultiTimeframeData) -> Option<Timeframe> {
         let mut best_timeframe = None;
         let mut best_score = 0.0;
 

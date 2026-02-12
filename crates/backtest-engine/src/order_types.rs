@@ -3,15 +3,14 @@ use rust_decimal::Decimal;
 use crate::models::{PendingLimitOrder, Signal};
 
 /// Manages pending limit orders.
+#[derive(Default)]
 pub struct LimitOrderManager {
     pub pending: Vec<PendingLimitOrder>,
 }
 
 impl LimitOrderManager {
     pub fn new() -> Self {
-        Self {
-            pending: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Add a new limit order from a signal.
@@ -27,15 +26,16 @@ impl LimitOrderManager {
     /// Check pending limit orders against current bar.
     /// Returns signals that should execute (limit price was reached).
     /// Decrements bars_remaining and removes expired orders.
-    pub fn check_and_expire(&mut self, bar_low: Decimal, bar_high: Decimal) -> Vec<(Signal, String)> {
+    pub fn check_and_expire(
+        &mut self,
+        bar_low: Decimal,
+        bar_high: Decimal,
+    ) -> Vec<(Signal, String)> {
         let mut triggered = Vec::new();
         let mut remaining = Vec::new();
 
         for mut order in self.pending.drain(..) {
-            let limit_price = order
-                .signal
-                .limit_price
-                .unwrap_or(order.signal.price);
+            let limit_price = order.signal.limit_price.unwrap_or(order.signal.price);
 
             let is_buy = order.direction == "buy";
             let is_triggered = if is_buy {

@@ -74,7 +74,9 @@ pub fn run_optimized_walk_forward(
                 is_config.end_date = train_end.clone();
 
                 let mut engine = BacktestEngine::new(is_config);
-                let sharpe = if let Ok(result) = engine.run(fold.train_data.clone(), fold.train_signals.clone()) {
+                let sharpe = if let Ok(result) =
+                    engine.run(fold.train_data.clone(), fold.train_signals.clone())
+                {
                     result.sharpe_ratio.unwrap_or(f64::NEG_INFINITY)
                 } else {
                     f64::NEG_INFINITY
@@ -173,10 +175,7 @@ pub fn run_optimized_walk_forward(
     }
 
     // Aggregate WF metrics
-    let avg_is = fold_results
-        .iter()
-        .map(|f| f.in_sample_return)
-        .sum::<f64>()
+    let avg_is = fold_results.iter().map(|f| f.in_sample_return).sum::<f64>()
         / fold_results.len().max(1) as f64;
     let avg_oos = fold_results
         .iter()
@@ -248,9 +247,7 @@ pub fn run_optimized_walk_forward(
 }
 
 /// Generate a parameter grid from the search space, capped at ~100 combos.
-fn generate_param_grid(
-    space: &ParamSearchSpace,
-) -> Vec<(f64, f64, Option<f64>, Option<f64>)> {
+fn generate_param_grid(space: &ParamSearchSpace) -> Vec<(f64, f64, Option<f64>, Option<f64>)> {
     let conf = if space.confidence_thresholds.is_empty() {
         vec![0.5]
     } else {
@@ -269,7 +266,11 @@ fn generate_param_grid(
     let tp = if space.take_profit_percents.is_empty() {
         vec![None]
     } else {
-        space.take_profit_percents.iter().map(|v| Some(*v)).collect()
+        space
+            .take_profit_percents
+            .iter()
+            .map(|v| Some(*v))
+            .collect()
     };
 
     let max_combos = 100;

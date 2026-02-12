@@ -1,5 +1,5 @@
-use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 
 /// Market impact modeling using the square root model.
 ///
@@ -14,7 +14,7 @@ use rust_decimal::prelude::*;
 /// - Gamma: market impact coefficient (typically 0.1-0.3 for liquid stocks)
 /// - OrderSize: number of shares in the order
 /// - ADV: average daily volume over recent period
-
+///
 /// Configuration for market impact calculation.
 #[derive(Debug, Clone)]
 pub struct MarketImpactConfig {
@@ -109,7 +109,7 @@ pub fn compute_market_impact(
             let p0 = w[0].to_f64().unwrap_or(1.0);
             let p1 = w[1].to_f64().unwrap_or(1.0);
             if p0 > 0.0 && p1 > 0.0 {
-                (p1 / p0).ln()  // Correct log return formula
+                (p1 / p0).ln() // Correct log return formula
             } else {
                 0.0
             }
@@ -121,11 +121,8 @@ pub fn compute_market_impact(
     }
 
     let mean_ret = returns.iter().sum::<f64>() / returns.len() as f64;
-    let variance = returns
-        .iter()
-        .map(|r| (r - mean_ret).powi(2))
-        .sum::<f64>()
-        / returns.len().max(1) as f64;
+    let variance =
+        returns.iter().map(|r| (r - mean_ret).powi(2)).sum::<f64>() / returns.len().max(1) as f64;
     let daily_vol = variance.sqrt();
     let annualized_vol = daily_vol * 252.0_f64.sqrt();
 
@@ -180,6 +177,7 @@ pub fn apply_market_impact(base_price: Decimal, is_buy: bool, impact: &MarketImp
 ///
 /// Permanent impact persists across bars, so subsequent trades face higher/lower
 /// prices depending on prior order flow.
+#[derive(Default)]
 pub struct PermanentImpactTracker {
     /// Symbol -> cumulative permanent price shift (as a fraction).
     impacts: std::collections::HashMap<String, f64>,
@@ -187,9 +185,7 @@ pub struct PermanentImpactTracker {
 
 impl PermanentImpactTracker {
     pub fn new() -> Self {
-        Self {
-            impacts: std::collections::HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Record a permanent impact from a trade.
@@ -311,13 +307,11 @@ mod tests {
 
         // Order 1: 5000 shares = 0.5% participation (below 1% threshold)
         let small_order = Decimal::new(5000, 0);
-        let small_impact =
-            compute_market_impact(small_order, &volumes, &prices, &config).unwrap();
+        let small_impact = compute_market_impact(small_order, &volumes, &prices, &config).unwrap();
 
         // Order 2: 20000 shares = 2% participation (above threshold)
         let large_order = Decimal::new(20000, 0);
-        let large_impact =
-            compute_market_impact(large_order, &volumes, &prices, &config).unwrap();
+        let large_impact = compute_market_impact(large_order, &volumes, &prices, &config).unwrap();
 
         // Small order should have proportionally reduced impact
         assert!(small_impact.total_impact < large_impact.total_impact);

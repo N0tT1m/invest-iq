@@ -1,0 +1,56 @@
+{{- if .Values.signalModels.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "investiq.fullname" . }}-signal-models
+  labels:
+    {{- include "investiq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: signal-models
+spec:
+  replicas: {{ .Values.signalModels.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "investiq.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: signal-models
+  template:
+    metadata:
+      labels:
+        {{- include "investiq.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: signal-models
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: signal-models
+          image: "{{ .Values.global.imageRegistry }}{{ .Values.signalModels.image.repository }}:{{ .Values.signalModels.image.tag }}"
+          imagePullPolicy: {{ .Values.signalModels.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8004
+              protocol: TCP
+          env:
+            - name: MODEL_DIR
+              value: {{ .Values.signalModels.env.MODEL_DIR | quote }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.signalModels.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.signalModels.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.signalModels.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.signalModels.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.signalModels.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.signalModels.probes.readiness.periodSeconds }}
+          resources:
+            {{- toYaml .Values.signalModels.resources | nindent 12 }}
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+      volumes:
+        - name: models
+          emptyDir: {}
+{{- end }}

@@ -7,9 +7,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use flow_map::{
-    FlowMapData, RotationDetector, RotationPattern, SectorETF, SectorNode,
-};
+use flow_map::{FlowMapData, RotationDetector, RotationPattern, SectorETF, SectorNode};
 use serde::{Deserialize, Serialize};
 
 use crate::{get_cached_etf_bars, ApiResponse, AppError, AppState};
@@ -66,7 +64,11 @@ fn calc_return(bars: &[analysis_core::Bar], lookback_days: usize) -> f64 {
         Some(b) => b.close,
         None => return 0.0,
     };
-    let start_idx = if bars.len() > lookback_days { bars.len() - lookback_days - 1 } else { 0 };
+    let start_idx = if bars.len() > lookback_days {
+        bars.len() - lookback_days - 1
+    } else {
+        0
+    };
     let start_price = bars[start_idx].close;
     if start_price > 0.0 {
         (end_price - start_price) / start_price * 100.0
@@ -92,7 +94,11 @@ async fn get_sector_flows(
         let bars = get_cached_etf_bars(&state, &etf.symbol, 90, 15).await;
 
         let (perf_1d, perf_1w, perf_1m) = if bars.len() >= 2 {
-            (calc_return(&bars, 1), calc_return(&bars, 5), calc_return(&bars, 21))
+            (
+                calc_return(&bars, 1),
+                calc_return(&bars, 5),
+                calc_return(&bars, 21),
+            )
         } else {
             (0.0, 0.0, 0.0)
         };
@@ -146,14 +152,22 @@ async fn get_sector_flows(
     let strongest = flow_map
         .sectors
         .iter()
-        .max_by(|a, b| a.performance_1w.partial_cmp(&b.performance_1w).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| {
+            a.performance_1w
+                .partial_cmp(&b.performance_1w)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|s| s.name.clone())
         .unwrap_or_default();
 
     let weakest = flow_map
         .sectors
         .iter()
-        .min_by(|a, b| a.performance_1w.partial_cmp(&b.performance_1w).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|a, b| {
+            a.performance_1w
+                .partial_cmp(&b.performance_1w)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|s| s.name.clone())
         .unwrap_or_default();
 
@@ -193,8 +207,7 @@ async fn get_rotations(
 }
 
 /// Get list of sector ETFs being tracked
-async fn get_sector_etfs(
-) -> Result<Json<ApiResponse<Vec<SectorETF>>>, AppError> {
+async fn get_sector_etfs() -> Result<Json<ApiResponse<Vec<SectorETF>>>, AppError> {
     let etfs = SectorETF::standard_sectors();
     Ok(Json(ApiResponse::success(etfs)))
 }

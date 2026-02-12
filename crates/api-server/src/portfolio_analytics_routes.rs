@@ -83,10 +83,7 @@ pub fn portfolio_analytics_routes() -> Router<AppState> {
             "/api/portfolio/allocations",
             get(get_allocations).post(set_allocation),
         )
-        .route(
-            "/api/portfolio/allocations/:id",
-            delete(delete_allocation),
-        )
+        .route("/api/portfolio/allocations/:id", delete(delete_allocation))
         .route("/api/portfolio/rebalance", get(get_rebalance_proposal))
         .route("/api/portfolio/drift", get(get_drift))
         // Tax
@@ -237,39 +234,47 @@ async fn reconcile_positions(
     Json(req): Json<ReconcileRequest>,
 ) -> Result<Json<ApiResponse<ReconciliationResult>>, AppError> {
     let pm = get_portfolio_manager(&state)?;
-    let alpaca_client = state
-        .alpaca_client
+    let broker = state
+        .broker_client
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Alpaca client not initialized"))?;
+        .ok_or_else(|| anyhow::anyhow!("Broker not initialized"))?;
 
     // Fetch broker positions
-    let broker_positions = alpaca_client.get_positions().await?;
+    let broker_positions = broker.get_positions().await?;
     let broker: Vec<BrokerPosition> = broker_positions
         .iter()
-        .map(|p| {
-            BrokerPosition {
-                symbol: p.symbol.clone(),
-                shares: p.qty.parse::<f64>()
-                    .ok()
-                    .and_then(rust_decimal::Decimal::from_f64)
-                    .unwrap_or_default(),
-                avg_entry_price: p.avg_entry_price.parse::<f64>()
-                    .ok()
-                    .and_then(rust_decimal::Decimal::from_f64)
-                    .unwrap_or_default(),
-                market_value: p.market_value.parse::<f64>()
-                    .ok()
-                    .and_then(rust_decimal::Decimal::from_f64)
-                    .unwrap_or_default(),
-                current_price: p.current_price.parse::<f64>()
-                    .ok()
-                    .and_then(rust_decimal::Decimal::from_f64)
-                    .unwrap_or_default(),
-                unrealized_pnl: p.unrealized_pl.parse::<f64>()
-                    .ok()
-                    .and_then(rust_decimal::Decimal::from_f64)
-                    .unwrap_or_default(),
-            }
+        .map(|p| BrokerPosition {
+            symbol: p.symbol.clone(),
+            shares: p
+                .qty
+                .parse::<f64>()
+                .ok()
+                .and_then(rust_decimal::Decimal::from_f64)
+                .unwrap_or_default(),
+            avg_entry_price: p
+                .avg_entry_price
+                .parse::<f64>()
+                .ok()
+                .and_then(rust_decimal::Decimal::from_f64)
+                .unwrap_or_default(),
+            market_value: p
+                .market_value
+                .parse::<f64>()
+                .ok()
+                .and_then(rust_decimal::Decimal::from_f64)
+                .unwrap_or_default(),
+            current_price: p
+                .current_price
+                .parse::<f64>()
+                .ok()
+                .and_then(rust_decimal::Decimal::from_f64)
+                .unwrap_or_default(),
+            unrealized_pnl: p
+                .unrealized_pl
+                .parse::<f64>()
+                .ok()
+                .and_then(rust_decimal::Decimal::from_f64)
+                .unwrap_or_default(),
         })
         .collect();
 
@@ -316,9 +321,7 @@ async fn set_allocation(
         updated_at: None,
     };
     let id = pm.set_target_allocation(target).await?;
-    Ok(Json(ApiResponse::success(
-        serde_json::json!({ "id": id }),
-    )))
+    Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
 }
 
 async fn delete_allocation(
@@ -339,10 +342,7 @@ async fn get_rebalance_proposal(
     let positions = build_positions_with_pnl(&state).await?;
     let targets = pm.get_target_allocations().await?;
 
-    let total_value: rust_decimal::Decimal = positions
-        .iter()
-        .map(|p| p.market_value)
-        .sum();
+    let total_value: rust_decimal::Decimal = positions.iter().map(|p| p.market_value).sum();
 
     // Get current prices
     let prices: HashMap<String, f64> = positions
@@ -368,10 +368,7 @@ async fn get_drift(
     let positions = build_positions_with_pnl(&state).await?;
     let targets = pm.get_target_allocations().await?;
 
-    let total_value: rust_decimal::Decimal = positions
-        .iter()
-        .map(|p| p.market_value)
-        .sum();
+    let total_value: rust_decimal::Decimal = positions.iter().map(|p| p.market_value).sum();
 
     let sector_map: HashMap<String, String> = HashMap::new();
     let drift = RebalanceCalculator::compute_drift(&positions, &targets, total_value, &sector_map);
@@ -415,8 +412,13 @@ async fn estimate_tax_impact(
     let trades = tl.get_all_trades(None).await?;
     let jurisdiction = parse_jurisdiction(req.jurisdiction.as_deref().unwrap_or("US"));
 
-    let estimate =
-        TaxBridge::estimate_tax_impact(&trades, &req.symbol.to_uppercase(), req.shares, req.price, jurisdiction);
+    let estimate = TaxBridge::estimate_tax_impact(
+        &trades,
+        &req.symbol.to_uppercase(),
+        req.shares,
+        req.price,
+        jurisdiction,
+    );
     Ok(Json(ApiResponse::success(estimate)))
 }
 

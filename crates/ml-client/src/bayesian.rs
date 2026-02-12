@@ -1,7 +1,7 @@
+use crate::error::{MLError, MLResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use crate::error::{MLError, MLResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyStats {
@@ -87,7 +87,7 @@ impl BayesianClient {
 
         let response = self
             .client
-            .post(&format!("{}/update", self.base_url))
+            .post(format!("{}/update", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -106,7 +106,7 @@ impl BayesianClient {
     pub async fn get_weights(&self, normalize: bool) -> MLResult<HashMap<String, f64>> {
         let response = self
             .client
-            .get(&format!("{}/weights", self.base_url))
+            .get(format!("{}/weights", self.base_url))
             .query(&[("normalize", normalize)])
             .send()
             .await?;
@@ -135,7 +135,7 @@ impl BayesianClient {
 
         let response = self
             .client
-            .post(&format!("{}/thompson-sampling", self.base_url))
+            .post(format!("{}/thompson-sampling", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -158,7 +158,10 @@ impl BayesianClient {
     ) -> MLResult<RecommendationResponse> {
         let response = self
             .client
-            .get(&format!("{}/recommendation/{}", self.base_url, strategy_name))
+            .get(format!(
+                "{}/recommendation/{}",
+                self.base_url, strategy_name
+            ))
             .send()
             .await?;
 
@@ -174,13 +177,10 @@ impl BayesianClient {
     }
 
     /// Get statistics for a specific strategy
-    pub async fn get_strategy_stats(
-        &self,
-        strategy_name: &str,
-    ) -> MLResult<StrategyStats> {
+    pub async fn get_strategy_stats(&self, strategy_name: &str) -> MLResult<StrategyStats> {
         let response = self
             .client
-            .get(&format!("{}/strategy/{}", self.base_url, strategy_name))
+            .get(format!("{}/strategy/{}", self.base_url, strategy_name))
             .query(&[("include_ci", true)])
             .send()
             .await?;
@@ -200,7 +200,7 @@ impl BayesianClient {
     pub async fn sync_from_database(&self, days: i32) -> MLResult<()> {
         let response = self
             .client
-            .post(&format!("{}/sync-from-database", self.base_url))
+            .post(format!("{}/sync-from-database", self.base_url))
             .query(&[("days", days)])
             .send()
             .await?;
@@ -219,7 +219,7 @@ impl BayesianClient {
     pub async fn health(&self) -> MLResult<bool> {
         let response = self
             .client
-            .get(&format!("{}/health", self.base_url))
+            .get(format!("{}/health", self.base_url))
             .send()
             .await?;
 

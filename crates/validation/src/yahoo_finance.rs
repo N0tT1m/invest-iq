@@ -85,21 +85,25 @@ impl YahooFinanceClient {
         let json: serde_json::Value = response.json().await?;
 
         // Parse the response
-        let quote_response = json.get("quoteResponse")
+        let quote_response = json
+            .get("quoteResponse")
             .and_then(|v| v.get("result"))
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
             .ok_or_else(|| anyhow!("No quote data found for {}", symbol))?;
 
-        let price = quote_response.get("regularMarketPrice")
+        let price = quote_response
+            .get("regularMarketPrice")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        let change = quote_response.get("regularMarketChange")
+        let change = quote_response
+            .get("regularMarketChange")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        let change_percent = quote_response.get("regularMarketChangePercent")
+        let change_percent = quote_response
+            .get("regularMarketChangePercent")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
@@ -108,7 +112,9 @@ impl YahooFinanceClient {
             price,
             change,
             change_percent,
-            volume: quote_response.get("regularMarketVolume").and_then(|v| v.as_u64()),
+            volume: quote_response
+                .get("regularMarketVolume")
+                .and_then(|v| v.as_u64()),
             market_cap: quote_response.get("marketCap").and_then(|v| v.as_f64()),
             pe_ratio: quote_response.get("trailingPE").and_then(|v| v.as_f64()),
             dividend_yield: quote_response.get("dividendYield").and_then(|v| v.as_f64()),
@@ -123,7 +129,8 @@ impl YahooFinanceClient {
         let response = self.client.get(&url).send().await?;
         let json: serde_json::Value = response.json().await?;
 
-        let data = json.get("quoteResponse")
+        let data = json
+            .get("quoteResponse")
             .and_then(|v| v.get("result"))
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
@@ -167,8 +174,8 @@ impl YahooFinanceClient {
     pub async fn get_historical_data(
         &self,
         symbol: &str,
-        period1: i64,  // Unix timestamp
-        period2: i64,  // Unix timestamp
+        period1: i64,   // Unix timestamp
+        period2: i64,   // Unix timestamp
         interval: &str, // 1d, 1h, etc.
     ) -> Result<Vec<YahooHistoricalData>> {
         let url = format!(
@@ -179,39 +186,47 @@ impl YahooFinanceClient {
         let response = self.client.get(&url).send().await?;
         let json: serde_json::Value = response.json().await?;
 
-        let chart = json.get("chart")
+        let chart = json
+            .get("chart")
             .and_then(|v| v.get("result"))
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
             .ok_or_else(|| anyhow!("No chart data found"))?;
 
-        let timestamps = chart.get("timestamp")
+        let timestamps = chart
+            .get("timestamp")
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow!("No timestamps found"))?;
 
-        let quotes = chart.get("indicators")
+        let quotes = chart
+            .get("indicators")
             .and_then(|v| v.get("quote"))
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
             .ok_or_else(|| anyhow!("No quote data found"))?;
 
-        let opens = quotes.get("open")
+        let opens = quotes
+            .get("open")
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow!("No open prices"))?;
 
-        let highs = quotes.get("high")
+        let highs = quotes
+            .get("high")
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow!("No high prices"))?;
 
-        let lows = quotes.get("low")
+        let lows = quotes
+            .get("low")
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow!("No low prices"))?;
 
-        let closes = quotes.get("close")
+        let closes = quotes
+            .get("close")
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow!("No close prices"))?;
 
-        let volumes = quotes.get("volume")
+        let volumes = quotes
+            .get("volume")
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow!("No volumes"))?;
 

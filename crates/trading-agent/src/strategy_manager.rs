@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use analysis_core::{SignalStrength, Timeframe};
 use analysis_core::UnifiedAnalysis;
+use analysis_core::{SignalStrength, Timeframe};
 use analysis_orchestrator::AnalysisOrchestrator;
 use anyhow::Result;
 
@@ -159,15 +159,13 @@ impl StrategyManager {
                 if let Some(iv_pct) = options.get("iv_percentile").and_then(|v| v.as_f64()) {
                     if iv_pct > 80.0 && action == "BUY" {
                         confidence = (confidence - 0.03).max(0.05);
-                        adjustments
-                            .push(format!("high_iv_penalty(-0.03, iv_pct={:.0})", iv_pct));
+                        adjustments.push(format!("high_iv_penalty(-0.03, iv_pct={:.0})", iv_pct));
                     }
                 }
                 if let Some(pcr) = options.get("put_call_ratio").and_then(|v| v.as_f64()) {
                     if pcr > 1.5 && action == "BUY" {
                         confidence = (confidence - 0.03).max(0.05);
-                        adjustments
-                            .push(format!("high_put_call_penalty(-0.03, pcr={:.2})", pcr));
+                        adjustments.push(format!("high_put_call_penalty(-0.03, pcr={:.2})", pcr));
                     }
                 }
             }
@@ -232,7 +230,11 @@ fn compute_atr_stops(
             for i in (bars.len() - 14)..bars.len() {
                 let high = bars[i].high;
                 let low = bars[i].low;
-                let prev_close = if i > 0 { bars[i - 1].close } else { bars[i].open };
+                let prev_close = if i > 0 {
+                    bars[i - 1].close
+                } else {
+                    bars[i].open
+                };
                 let tr = (high - low)
                     .max((high - prev_close).abs())
                     .max((low - prev_close).abs());

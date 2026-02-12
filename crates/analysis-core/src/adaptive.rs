@@ -1,10 +1,10 @@
-/// Adaptive threshold utilities for data-driven signal generation.
-///
-/// Instead of hardcoded thresholds (e.g., "RSI > 70 = overbought"), these functions
-/// derive thresholds from the data's own distribution using percentile ranks and z-scores.
-/// This makes signals self-calibrating: a stock with naturally high RSI won't constantly
-/// trigger overbought, and a low-volatility stock won't be penalized by thresholds
-/// designed for high-vol names.
+//! Adaptive threshold utilities for data-driven signal generation.
+//!
+//! Instead of hardcoded thresholds (e.g., "RSI > 70 = overbought"), these functions
+//! derive thresholds from the data's own distribution using percentile ranks and z-scores.
+//! This makes signals self-calibrating: a stock with naturally high RSI won't constantly
+//! trigger overbought, and a low-volatility stock won't be penalized by thresholds
+//! designed for high-vol names.
 
 /// Compute the mean of a data slice.
 pub fn mean(data: &[f64]) -> f64 {
@@ -31,7 +31,10 @@ pub fn percentile_rank(value: f64, data: &[f64]) -> f64 {
         return 0.5;
     }
     let count_below = data.iter().filter(|&&x| x < value).count();
-    let count_equal = data.iter().filter(|&&x| (x - value).abs() < f64::EPSILON).count();
+    let count_equal = data
+        .iter()
+        .filter(|&&x| (x - value).abs() < f64::EPSILON)
+        .count();
     (count_below as f64 + 0.5 * count_equal as f64) / data.len() as f64
 }
 
@@ -52,7 +55,12 @@ pub fn z_score_of(value: f64, data: &[f64]) -> f64 {
 /// Values below neutral_low scale linearly to -100.
 ///
 /// If `invert` is true, the sign is flipped (high percentile = bearish).
-pub fn percentile_to_signal(percentile: f64, neutral_low: f64, neutral_high: f64, invert: bool) -> f64 {
+pub fn percentile_to_signal(
+    percentile: f64,
+    neutral_low: f64,
+    neutral_high: f64,
+    invert: bool,
+) -> f64 {
     let raw = if percentile > neutral_high {
         ((percentile - neutral_high) / (1.0 - neutral_high)) * 100.0
     } else if percentile < neutral_low {
@@ -60,7 +68,11 @@ pub fn percentile_to_signal(percentile: f64, neutral_low: f64, neutral_high: f64
     } else {
         0.0
     };
-    if invert { -raw } else { raw }
+    if invert {
+        -raw
+    } else {
+        raw
+    }
 }
 
 /// Convert a z-score to a signal weight (1-4).

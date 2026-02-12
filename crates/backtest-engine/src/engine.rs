@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::NaiveDate;
 use rust_decimal::prelude::*;
 
+use crate::advanced_risk;
 use crate::circuit_breaker::CircuitBreaker;
 use crate::commission::compute_tiered_commission;
 use crate::data_quality::check_data_quality;
@@ -11,14 +12,13 @@ use crate::factor_attribution::compute_factor_attribution;
 use crate::margin::MarginTracker;
 use crate::models::*;
 use crate::order_types::LimitOrderManager;
+use crate::overfitting;
 use crate::regime_risk::{detect_regime, regime_size_multiplier, Regime};
 use crate::short_selling;
 use crate::statistical::bootstrap_confidence_intervals;
 use crate::tear_sheet::generate_tear_sheet;
-use crate::trailing_stop::TrailingStopManager;
 use crate::trade_analysis;
-use crate::advanced_risk;
-use crate::overfitting;
+use crate::trailing_stop::TrailingStopManager;
 
 /// Production-grade backtesting engine with next-bar execution, directional
 /// slippage, volume participation limits, portfolio-equity sizing, stop-loss,
@@ -88,11 +88,11 @@ impl BacktestEngine {
         let mut trailing_stop_mgr = self
             .config
             .trailing_stop_percent
-            .map(|pct| TrailingStopManager::new(pct));
+            .map(TrailingStopManager::new);
         let mut circuit_breaker = self
             .config
             .max_drawdown_halt_percent
-            .map(|pct| CircuitBreaker::new(pct));
+            .map(CircuitBreaker::new);
         let mut limit_order_mgr = LimitOrderManager::new();
         let regime_config = self.config.regime_config.clone().unwrap_or_default();
         let mut current_regime = Regime::Normal;
@@ -155,8 +155,11 @@ impl BacktestEngine {
                     .unwrap_or(pos.entry_price);
 
                 if pos.direction == "short" {
-                    short_value_at_open +=
-                        short_selling::short_position_mtm(pos.entry_price, current_price, pos.shares);
+                    short_value_at_open += short_selling::short_position_mtm(
+                        pos.entry_price,
+                        current_price,
+                        pos.shares,
+                    );
                 } else {
                     long_value_at_open += current_price * pos.shares;
                 }
@@ -173,7 +176,8 @@ impl BacktestEngine {
             let total_equity = cash + positions_value_at_open;
 
             // Margin utilization tracking
-            margin_tracker.update_utilization(long_value_at_open + short_value_at_open, total_equity);
+            margin_tracker
+                .update_utilization(long_value_at_open + short_value_at_open, total_equity);
 
             // 1. Rebalancing: periodically close all positions at today's open
             if let Some(interval) = rebalance_interval {
@@ -188,7 +192,12 @@ impl BacktestEngine {
                                 .unwrap_or(pos.entry_price);
 
                             let (trade, exit_comm, exit_slip) = Self::close_position(
-                                pos, &sym, date, raw_price, commission_dec, slippage_dec,
+                                pos,
+                                &sym,
+                                date,
+                                raw_price,
+                                commission_dec,
+                                slippage_dec,
                                 "rebalance",
                             );
                             if trade.direction.as_deref() == Some("short") {
@@ -210,7 +219,10 @@ impl BacktestEngine {
             }
 
             // 1.5 Regime detection (every 20 bars)
-            if self.config.regime_config.is_some() && total_bars % 20 == 0 && !daily_returns_for_regime.is_empty() {
+            if self.config.regime_config.is_some()
+                && total_bars.is_multiple_of(20)
+                && !daily_returns_for_regime.is_empty()
+            {
                 current_regime = detect_regime(&daily_returns_for_regime, &regime_config);
             }
 
@@ -224,7 +236,7 @@ impl BacktestEngine {
             if !trading_halted {
                 let mut limit_triggered = Vec::new();
                 // Check all symbols' bars for limit order fills
-                for (_symbol, bars_map) in &bars_by_symbol_date {
+                for bars_map in bars_by_symbol_date.values() {
                     if let Some(bar) = bars_map.get(date) {
                         let triggered = limit_order_mgr.check_and_expire(bar.low, bar.high);
                         limit_triggered.extend(triggered);
@@ -240,7 +252,7 @@ impl BacktestEngine {
 
             // 2. Execute pending signals from previous date at today's OPEN
             if !trading_halted {
-                let signals_to_execute: Vec<&Signal> = pending_signals.drain(..).collect();
+                let signals_to_execute: Vec<&Signal> = std::mem::take(&mut pending_signals);
                 for signal in signals_to_execute {
                     if signal.confidence < self.config.confidence_threshold {
                         continue;
@@ -249,7 +261,11 @@ impl BacktestEngine {
                     // Route limit orders to the limit order manager
                     if signal.order_type == Some(OrderType::Limit) && signal.limit_price.is_some() {
                         let action = signal.signal_type.to_lowercase();
-                        let direction = if action.contains("buy") { "buy" } else { "sell" };
+                        let direction = if action.contains("buy") {
+                            "buy"
+                        } else {
+                            "sell"
+                        };
                         limit_order_mgr.add_order(signal.clone(), direction);
                         continue;
                     }
@@ -272,8 +288,13 @@ impl BacktestEngine {
                                 let pos = positions.remove(&signal.symbol).unwrap();
                                 let raw_price = bar.open;
                                 let (trade, exit_comm, exit_slip) = Self::close_position(
-                                    pos, &signal.symbol, date, raw_price,
-                                    commission_dec, slippage_dec, "signal_cover",
+                                    pos,
+                                    &signal.symbol,
+                                    date,
+                                    raw_price,
+                                    commission_dec,
+                                    slippage_dec,
+                                    "signal_cover",
                                 );
                                 // Buy-to-cover: pay exit price + commission
                                 cash -= trade.exit_price * trade.shares + exit_comm;
@@ -305,10 +326,12 @@ impl BacktestEngine {
                             .copied()
                             .unwrap_or(self.config.position_size_percent / 100.0);
                         let adjusted_weight = weight * regime_mult;
-                        let weight_dec = Decimal::from_f64(adjusted_weight).unwrap_or(Decimal::ZERO);
+                        let weight_dec =
+                            Decimal::from_f64(adjusted_weight).unwrap_or(Decimal::ZERO);
 
                         // Margin-adjusted buying power
-                        let buying_power = margin_tracker.buying_power(cash) + (total_equity - cash);
+                        let buying_power =
+                            margin_tracker.buying_power(cash) + (total_equity - cash);
                         let position_value = buying_power * weight_dec;
 
                         if position_value < fill_price {
@@ -341,7 +364,8 @@ impl BacktestEngine {
                         }
 
                         // If cost exceeds available cash, reduce to affordable size
-                        let initial_cost = fill_price * shares + fill_price * shares * commission_dec;
+                        let initial_cost =
+                            fill_price * shares + fill_price * shares * commission_dec;
                         let available = margin_tracker.buying_power(cash);
                         if initial_cost > available {
                             let denom = fill_price * (Decimal::ONE + commission_dec);
@@ -415,8 +439,13 @@ impl BacktestEngine {
                                 let pos = positions.remove(&signal.symbol).unwrap();
                                 let raw_price = bar.open;
                                 let (trade, exit_comm, exit_slip) = Self::close_position(
-                                    pos, &signal.symbol, date, raw_price,
-                                    commission_dec, slippage_dec, "signal",
+                                    pos,
+                                    &signal.symbol,
+                                    date,
+                                    raw_price,
+                                    commission_dec,
+                                    slippage_dec,
+                                    "signal",
                                 );
                                 cash += trade.exit_price * trade.shares - exit_comm;
                                 if let Some(ref mut ts) = trailing_stop_mgr {
@@ -431,7 +460,8 @@ impl BacktestEngine {
                         } else if allow_short {
                             // Open short position
                             let raw_price = bar.open;
-                            let fill_price = short_selling::short_entry_fill(raw_price, slippage_dec);
+                            let fill_price =
+                                short_selling::short_entry_fill(raw_price, slippage_dec);
 
                             let regime_mult = if self.config.regime_config.is_some() {
                                 regime_size_multiplier(current_regime, &regime_config)
@@ -444,7 +474,8 @@ impl BacktestEngine {
                                 .copied()
                                 .unwrap_or(self.config.position_size_percent / 100.0);
                             let adjusted_weight = weight * regime_mult;
-                            let weight_dec = Decimal::from_f64(adjusted_weight).unwrap_or(Decimal::ZERO);
+                            let weight_dec =
+                                Decimal::from_f64(adjusted_weight).unwrap_or(Decimal::ZERO);
                             let position_value = total_equity * weight_dec;
 
                             if position_value < fill_price {
@@ -491,9 +522,10 @@ impl BacktestEngine {
                             let stop_loss_price = self.config.stop_loss_percent.and_then(|pct| {
                                 Decimal::from_f64(1.0 + pct).map(|d| fill_price * d)
                             });
-                            let take_profit_price = self.config.take_profit_percent.and_then(|pct| {
-                                Decimal::from_f64(1.0 - pct).map(|d| fill_price * d)
-                            });
+                            let take_profit_price =
+                                self.config.take_profit_percent.and_then(|pct| {
+                                    Decimal::from_f64(1.0 - pct).map(|d| fill_price * d)
+                                });
 
                             let display_signal = Self::capitalize(&signal.signal_type);
                             short_trade_count += 1;
@@ -528,16 +560,14 @@ impl BacktestEngine {
                             // Short SL/TP (inverted)
                             if let Some(sl) = pos.stop_loss_price {
                                 if short_selling::short_stop_loss_triggered(bar.high, sl) {
-                                    let raw_fill =
-                                        short_selling::short_sl_fill_price(bar.open, sl);
+                                    let raw_fill = short_selling::short_sl_fill_price(bar.open, sl);
                                     to_close.push((symbol.clone(), raw_fill, "stop_loss"));
                                     continue;
                                 }
                             }
                             if let Some(tp) = pos.take_profit_price {
                                 if short_selling::short_take_profit_triggered(bar.low, tp) {
-                                    let raw_fill =
-                                        short_selling::short_tp_fill_price(bar.open, tp);
+                                    let raw_fill = short_selling::short_tp_fill_price(bar.open, tp);
                                     to_close.push((symbol.clone(), raw_fill, "take_profit"));
                                 }
                             }
@@ -577,7 +607,13 @@ impl BacktestEngine {
             for (symbol, raw_exit_price, reason) in to_close {
                 if let Some(pos) = positions.remove(&symbol) {
                     let (trade, exit_comm, exit_slip) = Self::close_position(
-                        pos, &symbol, date, raw_exit_price, commission_dec, slippage_dec, reason,
+                        pos,
+                        &symbol,
+                        date,
+                        raw_exit_price,
+                        commission_dec,
+                        slippage_dec,
+                        reason,
                     );
                     // For shorts: close_position handles cash adjustment internally
                     if trade.direction.as_deref() == Some("short") {
@@ -616,8 +652,11 @@ impl BacktestEngine {
                     .unwrap_or(pos.entry_price);
 
                 if pos.direction == "short" {
-                    positions_value +=
-                        short_selling::short_position_mtm(pos.entry_price, current_price, pos.shares);
+                    positions_value += short_selling::short_position_mtm(
+                        pos.entry_price,
+                        current_price,
+                        pos.shares,
+                    );
                 } else {
                     positions_value += current_price * pos.shares;
                 }
@@ -639,7 +678,7 @@ impl BacktestEngine {
             }
 
             // Track daily returns for regime detection
-            if equity_curve.len() > 0 {
+            if !equity_curve.is_empty() {
                 let prev_equity = equity_curve.last().unwrap().equity.to_f64().unwrap_or(1.0);
                 if prev_equity > 0.0 {
                     daily_returns_for_regime.push(equity_f64 / prev_equity - 1.0);
@@ -663,7 +702,12 @@ impl BacktestEngine {
                 .unwrap_or(pos.entry_price);
 
             let (trade, exit_comm, exit_slip) = Self::close_position(
-                pos, &symbol, &last_date, last_price, commission_dec, slippage_dec,
+                pos,
+                &symbol,
+                &last_date,
+                last_price,
+                commission_dec,
+                slippage_dec,
                 "end_of_backtest",
             );
             if trade.direction.as_deref() == Some("short") {
@@ -733,9 +777,7 @@ impl BacktestEngine {
         let (sharpe, sortino) = Self::compute_risk_ratios(&equity_curve);
 
         let avg_trade_return = if !trades.is_empty() {
-            Some(
-                trades.iter().map(|t| t.profit_loss_percent).sum::<f64>() / trades.len() as f64,
-            )
+            Some(trades.iter().map(|t| t.profit_loss_percent).sum::<f64>() / trades.len() as f64)
         } else {
             None
         };
@@ -753,12 +795,16 @@ impl BacktestEngine {
             .iter()
             .map(|t| t.profit_loss)
             .filter(|p| *p > Decimal::ZERO)
-            .fold(None, |a: Option<Decimal>, p| Some(a.map_or(p, |v| v.max(p))));
+            .fold(None, |a: Option<Decimal>, p| {
+                Some(a.map_or(p, |v| v.max(p)))
+            });
         let largest_loss = trades
             .iter()
             .map(|t| t.profit_loss)
             .filter(|p| *p < Decimal::ZERO)
-            .fold(None, |a: Option<Decimal>, p| Some(a.map_or(p, |v| v.min(p))));
+            .fold(None, |a: Option<Decimal>, p| {
+                Some(a.map_or(p, |v| v.min(p)))
+            });
         let (max_con_wins, max_con_losses) = Self::max_consecutive_streaks(&trades);
         let avg_holding = if !trades.is_empty() {
             Some(
@@ -839,7 +885,12 @@ impl BacktestEngine {
         };
 
         // 12. Advanced analytics (institutional-grade)
-        let advanced_analytics = self.compute_advanced_analytics(&equity_curve, &trades, sharpe, extended_metrics.as_ref());
+        let advanced_analytics = self.compute_advanced_analytics(
+            &equity_curve,
+            &trades,
+            sharpe,
+            extended_metrics.as_ref(),
+        );
 
         let mut result = BacktestResult {
             id: None,
@@ -1156,42 +1207,45 @@ impl BacktestEngine {
         let spy_alpha = strategy_return - spy_return;
 
         // Information ratio: alpha / tracking error
-        let information_ratio =
-            if strategy_equity.len() > 1 && spy_curve.len() == strategy_equity.len() {
-                let diffs: Vec<f64> = strategy_equity
-                    .windows(2)
-                    .zip(spy_curve.windows(2))
-                    .map(|(s, b)| {
-                        let s0 = s[0].equity.to_f64().unwrap_or(1.0);
-                        let s1 = s[1].equity.to_f64().unwrap_or(1.0);
-                        let b0 = b[0].equity.to_f64().unwrap_or(1.0);
-                        let b1 = b[1].equity.to_f64().unwrap_or(1.0);
-                        let s_ret = (s1 / s0) - 1.0;
-                        let b_ret = (b1 / b0) - 1.0;
-                        s_ret - b_ret
-                    })
-                    .collect();
-                if diffs.len() > 1 {
-                    let mean = diffs.iter().sum::<f64>() / diffs.len() as f64;
-                    let var = diffs.iter().map(|d| (d - mean).powi(2)).sum::<f64>()
-                        / (diffs.len() - 1) as f64;
-                    let tracking_error = var.sqrt() * 252.0_f64.sqrt();
-                    if tracking_error > 0.0 {
-                        Some(
-                            (spy_alpha / 100.0 * 252.0 / all_dates.len() as f64)
-                                / (tracking_error),
-                        )
-                    } else {
-                        None
-                    }
+        let information_ratio = if strategy_equity.len() > 1
+            && spy_curve.len() == strategy_equity.len()
+        {
+            let diffs: Vec<f64> = strategy_equity
+                .windows(2)
+                .zip(spy_curve.windows(2))
+                .map(|(s, b)| {
+                    let s0 = s[0].equity.to_f64().unwrap_or(1.0);
+                    let s1 = s[1].equity.to_f64().unwrap_or(1.0);
+                    let b0 = b[0].equity.to_f64().unwrap_or(1.0);
+                    let b1 = b[1].equity.to_f64().unwrap_or(1.0);
+                    let s_ret = (s1 / s0) - 1.0;
+                    let b_ret = (b1 / b0) - 1.0;
+                    s_ret - b_ret
+                })
+                .collect();
+            if diffs.len() > 1 {
+                let mean = diffs.iter().sum::<f64>() / diffs.len() as f64;
+                let var = diffs.iter().map(|d| (d - mean).powi(2)).sum::<f64>()
+                    / (diffs.len() - 1) as f64;
+                let tracking_error = var.sqrt() * 252.0_f64.sqrt();
+                if tracking_error > 0.0 {
+                    Some((spy_alpha / 100.0 * 252.0 / all_dates.len() as f64) / (tracking_error))
                 } else {
                     None
                 }
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
-        (Some(spy_return), Some(spy_alpha), spy_curve, information_ratio)
+        (
+            Some(spy_return),
+            Some(spy_alpha),
+            spy_curve,
+            information_ratio,
+        )
     }
 
     // --- Per-Symbol Results ---
@@ -1206,7 +1260,10 @@ impl BacktestEngine {
             .iter()
             .map(|sym| {
                 let (pnl, wins, total) =
-                    symbol_pnl.get(sym).copied().unwrap_or((Decimal::ZERO, 0, 0));
+                    symbol_pnl
+                        .get(sym)
+                        .copied()
+                        .unwrap_or((Decimal::ZERO, 0, 0));
                 let w = weights.get(sym).copied().unwrap_or(0.0);
                 let w_dec = Decimal::from_f64(w).unwrap_or(Decimal::ZERO);
                 let invested = self.config.initial_capital * w_dec;
@@ -1360,56 +1417,65 @@ impl BacktestEngine {
         let regime_payoffs = if regime_payoffs_raw.is_empty() {
             None
         } else {
-            Some(regime_payoffs_raw.into_iter().map(|rp| RegimePayoff {
-                regime_name: rp.regime_name,
-                num_trades: rp.num_trades,
-                win_rate: rp.win_rate,
-                avg_win: rp.avg_win,
-                avg_loss: rp.avg_loss,
-                payoff_ratio: rp.payoff_ratio,
-                expectancy: rp.expectancy,
-            }).collect())
+            Some(
+                regime_payoffs_raw
+                    .into_iter()
+                    .map(|rp| RegimePayoff {
+                        regime_name: rp.regime_name,
+                        num_trades: rp.num_trades,
+                        win_rate: rp.win_rate,
+                        avg_win: rp.avg_win,
+                        avg_loss: rp.avg_loss,
+                        payoff_ratio: rp.payoff_ratio,
+                        expectancy: rp.expectancy,
+                    })
+                    .collect(),
+            )
         };
 
         // Time-in-market analysis
-        let time_in_market = trade_analysis::analyze_time_in_market(trades).map(|t| TimeInMarketAnalysis {
-            time_in_market_percent: t.time_in_market_percent,
-            avg_concurrent_positions: t.avg_concurrent_positions,
-            max_concurrent_positions: t.max_concurrent_positions,
-            active_trading_days: t.active_trading_days,
-            total_calendar_days: t.total_calendar_days,
-        });
+        let time_in_market =
+            trade_analysis::analyze_time_in_market(trades).map(|t| TimeInMarketAnalysis {
+                time_in_market_percent: t.time_in_market_percent,
+                avg_concurrent_positions: t.avg_concurrent_positions,
+                max_concurrent_positions: t.max_concurrent_positions,
+                active_trading_days: t.active_trading_days,
+                total_calendar_days: t.total_calendar_days,
+            });
 
         // Drawdown recovery analysis
-        let drawdown_recovery = advanced_risk::drawdown_recovery_analysis(equity_curve).map(|r| DrawdownRecoveryStats {
-            avg_recovery_days: r.avg_recovery_days,
-            max_recovery_days: r.max_recovery_days,
-            num_recovered: r.num_recovered,
-            num_ongoing: r.num_ongoing,
-            time_in_drawdown_percent: r.time_in_drawdown_percent,
+        let drawdown_recovery = advanced_risk::drawdown_recovery_analysis(equity_curve).map(|r| {
+            DrawdownRecoveryStats {
+                avg_recovery_days: r.avg_recovery_days,
+                max_recovery_days: r.max_recovery_days,
+                num_recovered: r.num_recovered,
+                num_ongoing: r.num_ongoing,
+                time_in_drawdown_percent: r.time_in_drawdown_percent,
+            }
         });
 
         // Overfitting detection
-        let overfitting_analysis = sharpe.and_then(|sr| {
+        let overfitting_analysis = sharpe.map(|sr| {
             // Use skewness and kurtosis if available
             let (skew, kurt) = extended_metrics
-                .and_then(|e| Some((e.skewness?, e.kurtosis?)))
+                .and_then(|e| e.skewness.zip(e.kurtosis))
                 .unwrap_or((0.0, 0.0));
 
             let num_observations = equity_curve.len().saturating_sub(1).max(1) as i32;
             let num_trials = 1; // Single strategy (for multi-strategy, pass strategy count)
 
-            let dsr = overfitting::deflated_sharpe_ratio(sr, num_trials, num_observations, skew, kurt);
+            let dsr =
+                overfitting::deflated_sharpe_ratio(sr, num_trials, num_observations, skew, kurt);
 
             // Minimum backtest length recommendation
             let min_length = overfitting::minimum_backtest_length(sr.max(0.1), 0.95, 0.80);
 
-            Some(OverfittingAnalysis {
+            OverfittingAnalysis {
                 deflated_sharpe: dsr.deflated_sharpe,
                 sharpe_p_value: dsr.p_value,
                 expected_max_sharpe_null: dsr.expected_max_sharpe_null,
                 min_backtest_length: min_length,
-            })
+            }
         });
 
         Some(AdvancedAnalytics {
@@ -1503,10 +1569,7 @@ impl WalkForwardRunner {
             });
         }
 
-        let avg_is = fold_results
-            .iter()
-            .map(|f| f.in_sample_return)
-            .sum::<f64>()
+        let avg_is = fold_results.iter().map(|f| f.in_sample_return).sum::<f64>()
             / fold_results.len() as f64;
         let avg_oos = fold_results
             .iter()

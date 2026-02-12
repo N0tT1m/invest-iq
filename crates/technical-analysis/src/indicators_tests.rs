@@ -7,8 +7,8 @@ mod tests {
     // Helper function to create sample price data
     fn sample_prices() -> Vec<f64> {
         vec![
-            44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08,
-            45.89, 46.03, 45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22, 45.64,
+            44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08, 45.89, 46.03,
+            45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22, 45.64,
         ]
     }
 
@@ -115,7 +115,7 @@ mod tests {
         assert!(!result.is_empty());
         // RSI should be between 0 and 100
         for &value in &result {
-            assert!(value >= 0.0 && value <= 100.0);
+            assert!((0.0..=100.0).contains(&value));
         }
     }
 
@@ -304,10 +304,10 @@ mod tests {
 
         // %K and %D should be between 0 and 100
         for &value in &result.k {
-            assert!(value >= 0.0 && value <= 100.0);
+            assert!((0.0..=100.0).contains(&value));
         }
         for &value in &result.d {
-            assert!(value >= 0.0 && value <= 100.0);
+            assert!((0.0..=100.0).contains(&value));
         }
     }
 

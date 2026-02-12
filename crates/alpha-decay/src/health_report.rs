@@ -42,12 +42,11 @@ impl HealthStatus {
     }
 
     pub fn from_decay_metrics(metrics: &DecayMetrics) -> Self {
-        if metrics.current_sharpe < 0.0 {
+        if metrics.current_sharpe < 0.0
+            || metrics.decay_from_peak_pct >= 50.0
+            || metrics.days_to_breakeven.map(|d| d < 30).unwrap_or(false)
+        {
             HealthStatus::Critical
-        } else if metrics.decay_from_peak_pct > 50.0 || metrics.days_to_breakeven.map(|d| d < 30).unwrap_or(false) {
-            HealthStatus::Critical
-        } else if metrics.is_decaying && metrics.decay_from_peak_pct > 25.0 {
-            HealthStatus::Degrading
         } else if metrics.is_decaying {
             HealthStatus::Degrading
         } else {
@@ -96,10 +95,10 @@ impl CusumTrend {
 
         // Look at recent CUSUM values
         let recent_start = n - (n / 5).max(5);
-        let recent_upper_avg: f64 = result.upper_cusum[recent_start..].iter().sum::<f64>()
-            / (n - recent_start) as f64;
-        let recent_lower_avg: f64 = result.lower_cusum[recent_start..].iter().sum::<f64>()
-            / (n - recent_start) as f64;
+        let recent_upper_avg: f64 =
+            result.upper_cusum[recent_start..].iter().sum::<f64>() / (n - recent_start) as f64;
+        let recent_lower_avg: f64 =
+            result.lower_cusum[recent_start..].iter().sum::<f64>() / (n - recent_start) as f64;
 
         let threshold = result.threshold;
 
@@ -245,7 +244,15 @@ impl HealthReportBuilder {
         // Penalty for imminent breakeven
         let breakeven_penalty = metrics
             .days_to_breakeven
-            .map(|d| if d < 30 { 20.0 } else if d < 90 { 10.0 } else { 0.0 })
+            .map(|d| {
+                if d < 30 {
+                    20.0
+                } else if d < 90 {
+                    10.0
+                } else {
+                    0.0
+                }
+            })
             .unwrap_or(0.0);
 
         (base_score + sharpe_bonus - decay_penalty - breakeven_penalty).clamp(0.0, 100.0)
@@ -341,18 +348,28 @@ impl HealthReportBuilder {
         alerts
     }
 
-    fn generate_recommendations(&self, metrics: &DecayMetrics, status: &HealthStatus) -> Vec<String> {
+    fn generate_recommendations(
+        &self,
+        metrics: &DecayMetrics,
+        status: &HealthStatus,
+    ) -> Vec<String> {
         let mut recs = Vec::new();
 
         match status {
             HealthStatus::Healthy => {
                 recs.push("Strategy is performing well. Continue monitoring.".to_string());
                 if metrics.current_sharpe > metrics.avg_sharpe * 1.2 {
-                    recs.push("Performance is above historical average - consider increasing allocation.".to_string());
+                    recs.push(
+                        "Performance is above historical average - consider increasing allocation."
+                            .to_string(),
+                    );
                 }
             }
             HealthStatus::Degrading => {
-                recs.push("Performance is declining. Monitor closely for further degradation.".to_string());
+                recs.push(
+                    "Performance is declining. Monitor closely for further degradation."
+                        .to_string(),
+                );
                 recs.push("Consider reducing position sizes to limit exposure.".to_string());
                 if metrics.decay_from_peak_pct > 30.0 {
                     recs.push("Review strategy parameters for potential optimization.".to_string());
@@ -361,9 +378,13 @@ impl HealthReportBuilder {
             HealthStatus::Critical => {
                 recs.push("Strategy requires immediate attention.".to_string());
                 recs.push("Consider pausing new trades until performance stabilizes.".to_string());
-                recs.push("Evaluate whether market conditions have changed fundamentally.".to_string());
+                recs.push(
+                    "Evaluate whether market conditions have changed fundamentally.".to_string(),
+                );
                 if metrics.days_to_breakeven.map(|d| d < 30).unwrap_or(false) {
-                    recs.push("URGENT: Strategy may become unprofitable within 30 days.".to_string());
+                    recs.push(
+                        "URGENT: Strategy may become unprofitable within 30 days.".to_string(),
+                    );
                 }
             }
             HealthStatus::Retired => {
@@ -394,7 +415,10 @@ mod tests {
             days_to_breakeven: None,
             is_decaying: false,
         };
-        assert_eq!(HealthStatus::from_decay_metrics(&healthy), HealthStatus::Healthy);
+        assert_eq!(
+            HealthStatus::from_decay_metrics(&healthy),
+            HealthStatus::Healthy
+        );
 
         let degrading = DecayMetrics {
             strategy_name: "test".to_string(),
@@ -407,7 +431,10 @@ mod tests {
             days_to_breakeven: Some(80),
             is_decaying: true,
         };
-        assert_eq!(HealthStatus::from_decay_metrics(&degrading), HealthStatus::Critical);
+        assert_eq!(
+            HealthStatus::from_decay_metrics(&degrading),
+            HealthStatus::Critical
+        );
 
         let critical = DecayMetrics {
             strategy_name: "test".to_string(),
@@ -420,7 +447,10 @@ mod tests {
             days_to_breakeven: None,
             is_decaying: true,
         };
-        assert_eq!(HealthStatus::from_decay_metrics(&critical), HealthStatus::Critical);
+        assert_eq!(
+            HealthStatus::from_decay_metrics(&critical),
+            HealthStatus::Critical
+        );
     }
 
     #[test]

@@ -1,11 +1,27 @@
 """FinBERT Sentiment Analysis Model."""
 import torch
 import torch.nn as nn
+import transformers
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from typing import List, Dict, Tuple
 import numpy as np
 from pathlib import Path
 from loguru import logger
+
+
+def _load_model_quiet(cls, *args, **kwargs):
+    """Load a transformers model with noisy warnings suppressed.
+
+    Newer transformers removed position_ids from BERT's buffers, but older
+    checkpoints (like ProsusAI/finbert) still ship it.  The resulting
+    "UNEXPECTED" key warning is harmless — silence it here.
+    """
+    prev = transformers.logging.get_verbosity()
+    transformers.logging.set_verbosity_error()
+    try:
+        return cls.from_pretrained(*args, **kwargs)
+    finally:
+        transformers.logging.set_verbosity(prev)
 
 
 class FinBERTSentiment:
@@ -39,8 +55,9 @@ class FinBERTSentiment:
             cache_dir=str(self.cache_dir)
         )
 
-        # Load model
-        self.model = AutoModelForSequenceClassification.from_pretrained(
+        # Load model (suppress position_ids UNEXPECTED warning from older checkpoints)
+        self.model = _load_model_quiet(
+            AutoModelForSequenceClassification,
             model_name,
             cache_dir=str(self.cache_dir)
         )
@@ -53,7 +70,8 @@ class FinBERTSentiment:
                 load_in_8bit=True,
                 llm_int8_threshold=6.0
             )
-            self.model = AutoModelForSequenceClassification.from_pretrained(
+            self.model = _load_model_quiet(
+                AutoModelForSequenceClassification,
                 model_name,
                 cache_dir=str(self.cache_dir),
                 quantization_config=quantization_config,
@@ -218,7 +236,7 @@ class FinBERTSentiment:
         """Load fine-tuned model."""
         logger.info(f"Loading model from {path}")
         self.tokenizer = AutoTokenizer.from_pretrained(path)
-        self.model = AutoModelForSequenceClassification.from_pretrained(path)
+        self.model = _load_model_quiet(AutoModelForSequenceClassification, path)
         self.model = self.model.to(self.device)
         self.model.eval()
         logger.info("Model loaded successfully")

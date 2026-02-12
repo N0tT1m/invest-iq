@@ -7,13 +7,13 @@ use serde::Serialize;
 
 use crate::{get_cached_etf_bars, ApiResponse, AppError, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct RollingCorrelationPoint {
     pub date: String,
     pub correlation: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CorrelationData {
     pub symbol: String,
     pub correlations: Vec<CorrelationPair>,
@@ -25,7 +25,7 @@ pub struct CorrelationData {
     pub rolling_correlation_spy: Vec<RollingCorrelationPoint>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 pub struct CorrelationPair {
     pub benchmark: String,
     pub correlation: f64,
@@ -33,8 +33,7 @@ pub struct CorrelationPair {
 }
 
 pub fn correlation_routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/correlation/:symbol", get(get_correlations))
+    Router::new().route("/api/correlation/:symbol", get(get_correlations))
 }
 
 fn calculate_returns(bars: &[analysis_core::Bar]) -> Vec<f64> {
@@ -45,7 +44,9 @@ fn calculate_returns(bars: &[analysis_core::Bar]) -> Vec<f64> {
 
 fn pearson_correlation(a: &[f64], b: &[f64]) -> f64 {
     let n = a.len().min(b.len());
-    if n < 2 { return 0.0; }
+    if n < 2 {
+        return 0.0;
+    }
 
     let a = &a[..n];
     let b = &b[..n];
@@ -66,12 +67,18 @@ fn pearson_correlation(a: &[f64], b: &[f64]) -> f64 {
     }
 
     let denom = (var_a * var_b).sqrt();
-    if denom == 0.0 { 0.0 } else { cov / denom }
+    if denom == 0.0 {
+        0.0
+    } else {
+        cov / denom
+    }
 }
 
 fn calculate_beta(stock_returns: &[f64], benchmark_returns: &[f64]) -> f64 {
     let n = stock_returns.len().min(benchmark_returns.len());
-    if n < 2 { return 1.0; }
+    if n < 2 {
+        return 1.0;
+    }
 
     let sr = &stock_returns[..n];
     let br = &benchmark_returns[..n];
@@ -87,7 +94,11 @@ fn calculate_beta(stock_returns: &[f64], benchmark_returns: &[f64]) -> f64 {
         var_b += db * db;
     }
 
-    if var_b == 0.0 { 1.0 } else { cov / var_b }
+    if var_b == 0.0 {
+        1.0
+    } else {
+        cov / var_b
+    }
 }
 
 fn compute_rolling_correlation(
@@ -97,7 +108,9 @@ fn compute_rolling_correlation(
     window: usize,
 ) -> Vec<RollingCorrelationPoint> {
     let n = stock_returns.len().min(benchmark_returns.len());
-    if n < window { return vec![]; }
+    if n < window {
+        return vec![];
+    }
 
     let mut points = Vec::new();
     // bars has one more element than returns (returns = bars.windows(2))
@@ -118,6 +131,13 @@ fn compute_rolling_correlation(
     points
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/correlation/{symbol}",
+    params(("symbol" = String, Path, description = "Stock ticker symbol")),
+    responses((status = 200, description = "Correlation with benchmarks, beta, rolling correlation")),
+    tag = "Market Data"
+)]
 async fn get_correlations(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
@@ -126,7 +146,9 @@ async fn get_correlations(
 
     // Fetch stock bars directly, ETF bars from cache
     let (stock_bars, spy_bars, qqq_bars, dia_bars, iwm_bars) = tokio::join!(
-        state.orchestrator.get_bars(&symbol, analysis_core::Timeframe::Day1, days_back),
+        state
+            .orchestrator
+            .get_bars(&symbol, analysis_core::Timeframe::Day1, days_back),
         get_cached_etf_bars(&state, "SPY", days_back, 15),
         get_cached_etf_bars(&state, "QQQ", days_back, 15),
         get_cached_etf_bars(&state, "DIA", days_back, 15),
@@ -167,7 +189,9 @@ async fn get_correlations(
     ];
 
     for (name, etf_bars) in &benchmarks {
-        if etf_bars.is_empty() { continue; }
+        if etf_bars.is_empty() {
+            continue;
+        }
         let etf_returns = calculate_returns(etf_bars);
         let corr = pearson_correlation(&stock_returns, &etf_returns);
         correlations.push(CorrelationPair {
@@ -178,7 +202,8 @@ async fn get_correlations(
 
         if *name == "SPY" {
             beta_spy = Some((calculate_beta(&stock_returns, &etf_returns) * 100.0).round() / 100.0);
-            rolling_correlation_spy = compute_rolling_correlation(&stock_returns, &etf_returns, &stock_bars, 30);
+            rolling_correlation_spy =
+                compute_rolling_correlation(&stock_returns, &etf_returns, &stock_bars, 30);
         }
         if *name == "QQQ" {
             beta_qqq = Some((calculate_beta(&stock_returns, &etf_returns) * 100.0).round() / 100.0);
@@ -187,17 +212,33 @@ async fn get_correlations(
 
     // Diversification score: lower correlation = better diversification (0-100)
     let avg_corr = if !correlations.is_empty() {
-        correlations.iter().map(|c| c.correlation.abs()).sum::<f64>() / correlations.len() as f64
+        correlations
+            .iter()
+            .map(|c| c.correlation.abs())
+            .sum::<f64>()
+            / correlations.len() as f64
     } else {
         0.5
     };
     let diversification_score = Some(((1.0 - avg_corr) * 100.0).clamp(0.0, 100.0));
 
-    let highest_correlation = correlations.iter()
-        .max_by(|a, b| a.correlation.abs().partial_cmp(&b.correlation.abs()).unwrap_or(std::cmp::Ordering::Equal))
+    let highest_correlation = correlations
+        .iter()
+        .max_by(|a, b| {
+            a.correlation
+                .abs()
+                .partial_cmp(&b.correlation.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .cloned();
-    let lowest_correlation = correlations.iter()
-        .min_by(|a, b| a.correlation.abs().partial_cmp(&b.correlation.abs()).unwrap_or(std::cmp::Ordering::Equal))
+    let lowest_correlation = correlations
+        .iter()
+        .min_by(|a, b| {
+            a.correlation
+                .abs()
+                .partial_cmp(&b.correlation.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .cloned();
 
     Ok(Json(ApiResponse {

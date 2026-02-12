@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Configuration for a backtest run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,7 +10,7 @@ pub struct BacktestConfig {
     pub start_date: String,
     pub end_date: String,
     pub initial_capital: Decimal,
-    pub position_size_percent: f64, // 0-100
+    pub position_size_percent: f64,     // 0-100
     pub stop_loss_percent: Option<f64>, // as decimal, e.g. 0.05 = 5%
     pub take_profit_percent: Option<f64>,
     pub confidence_threshold: f64,
@@ -306,18 +306,13 @@ pub struct MonteCarloResult {
 // =============================================================================
 
 /// Order type for signals.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderType {
+    #[default]
     Market,
     Limit,
     StopLimit,
-}
-
-impl Default for OrderType {
-    fn default() -> Self {
-        OrderType::Market
-    }
 }
 
 /// Tiered commission model.
@@ -361,11 +356,21 @@ pub struct RegimeConfig {
     pub low_vol_threshold: f64,
 }
 
-fn default_regime_lookback() -> usize { 60 }
-fn default_high_vol_multiplier() -> f64 { 0.5 }
-fn default_low_vol_multiplier() -> f64 { 1.5 }
-fn default_high_vol_threshold() -> f64 { 0.30 }
-fn default_low_vol_threshold() -> f64 { 0.15 }
+fn default_regime_lookback() -> usize {
+    60
+}
+fn default_high_vol_multiplier() -> f64 {
+    0.5
+}
+fn default_low_vol_multiplier() -> f64 {
+    1.5
+}
+fn default_high_vol_threshold() -> f64 {
+    0.30
+}
+fn default_low_vol_threshold() -> f64 {
+    0.15
+}
 
 impl Default for RegimeConfig {
     fn default() -> Self {
@@ -550,8 +555,12 @@ pub struct MonteCarloConfig {
     pub parameter_uncertainty: bool,
 }
 
-fn default_mc_simulations() -> i32 { 1000 }
-fn default_block_size() -> usize { 1 }
+fn default_mc_simulations() -> i32 {
+    1000
+}
+fn default_block_size() -> usize {
+    1
+}
 
 /// Combinatorially Purged Cross-Validation result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -684,10 +693,18 @@ pub struct MarketImpactConfig {
     pub permanent_impact_fraction: f64,
 }
 
-fn default_gamma() -> f64 { 0.2 }
-fn default_adv_lookback() -> usize { 20 }
-fn default_vol_lookback() -> usize { 20 }
-fn default_permanent_fraction() -> f64 { 0.6 }
+fn default_gamma() -> f64 {
+    0.2
+}
+fn default_adv_lookback() -> usize {
+    20
+}
+fn default_vol_lookback() -> usize {
+    20
+}
+fn default_permanent_fraction() -> f64 {
+    0.6
+}
 
 impl Default for MarketImpactConfig {
     fn default() -> Self {

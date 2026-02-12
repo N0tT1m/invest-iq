@@ -59,17 +59,9 @@ pub fn compute_factor_attribution(
     };
 
     // Tracking error: std dev of (strategy - benchmark) returns, annualized
-    let diffs: Vec<f64> = r
-        .iter()
-        .zip(b.iter())
-        .map(|(ri, bi)| ri - bi)
-        .collect();
+    let diffs: Vec<f64> = r.iter().zip(b.iter()).map(|(ri, bi)| ri - bi).collect();
     let mean_diff = diffs.iter().sum::<f64>() / nf;
-    let var_diff = diffs
-        .iter()
-        .map(|d| (d - mean_diff).powi(2))
-        .sum::<f64>()
-        / (nf - 1.0);
+    let var_diff = diffs.iter().map(|d| (d - mean_diff).powi(2)).sum::<f64>() / (nf - 1.0);
     let tracking_error = var_diff.sqrt() * 252.0_f64.sqrt();
 
     // Residual risk: std dev of residuals, annualized

@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod risk_manager_tests {
     use crate::manager::RiskManager;
 
     async fn setup_test_db() -> RiskManager {
@@ -30,16 +30,22 @@ mod tests {
                 halt_reason TEXT,
                 halted_at TEXT,
                 updated_at TEXT DEFAULT (datetime('now'))
-            )"
-        ).execute(&pool).await.unwrap();
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS portfolio_peak (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 peak_value REAL NOT NULL,
                 peak_date TEXT NOT NULL DEFAULT (datetime('now'))
-            )"
-        ).execute(&pool).await.unwrap();
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS trades (
@@ -49,8 +55,11 @@ mod tests {
                 shares REAL NOT NULL,
                 price REAL NOT NULL,
                 timestamp TEXT DEFAULT (datetime('now'))
-            )"
-        ).execute(&pool).await.unwrap();
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS active_risk_positions (
@@ -69,8 +78,11 @@ mod tests {
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT DEFAULT (datetime('now')),
                 closed_at TEXT
-            )"
-        ).execute(&pool).await.unwrap();
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         RiskManager::new(pool)
     }
@@ -85,7 +97,9 @@ mod tests {
         // Check circuit breakers
         let check = rm.check_circuit_breakers(100_000.0, 0.0).await.unwrap();
         assert!(!check.can_trade);
-        assert!(check.breakers_triggered.contains(&"manual_halt".to_string()));
+        assert!(check
+            .breakers_triggered
+            .contains(&"manual_halt".to_string()));
     }
 
     #[tokio::test]
@@ -111,16 +125,22 @@ mod tests {
         // (negative P&L: sell at price lower than buy, but the query just checks
         //  the computed pnl column)
         for i in 0..4 {
-            sqlx::query("INSERT INTO trades (symbol, action, shares, price) VALUES (?, 'sell', 10.0, ?)")
-                .bind(format!("LOSS{}", i))
-                .bind(-50.0) // negative price = loss in the query's calculation
-                .execute(rm.pool())
-                .await
-                .unwrap();
+            sqlx::query(
+                "INSERT INTO trades (symbol, action, shares, price) VALUES (?, 'sell', 10.0, ?)",
+            )
+            .bind(format!("LOSS{}", i))
+            .bind(-50.0) // negative price = loss in the query's calculation
+            .execute(rm.pool())
+            .await
+            .unwrap();
         }
 
         let count = rm.get_consecutive_losses().await.unwrap();
-        assert!(count >= 4, "Expected >= 4 consecutive losses, got {}", count);
+        assert!(
+            count >= 4,
+            "Expected >= 4 consecutive losses, got {}",
+            count
+        );
     }
 
     #[tokio::test]
@@ -133,6 +153,10 @@ mod tests {
 
         // Now drop to 85k = 15% drawdown
         let dd = rm.check_drawdown_from_peak(85_000.0).await.unwrap();
-        assert!((dd - 15.0).abs() < 0.1, "Expected ~15% drawdown, got {}", dd);
+        assert!(
+            (dd - 15.0).abs() < 0.1,
+            "Expected ~15% drawdown, got {}",
+            dd
+        );
     }
 }

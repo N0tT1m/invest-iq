@@ -78,8 +78,8 @@ fn make_weekly_bar(bars: &[&HistoricalBar]) -> Option<HistoricalBar> {
 /// Get the ISO week number from a "YYYY-MM-DD" date string.
 /// Returns year * 100 + week to handle year boundaries.
 fn iso_week_number(date_str: &str) -> u32 {
-    use chrono::NaiveDate;
     use chrono::Datelike;
+    use chrono::NaiveDate;
 
     NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
         .map(|d| d.iso_week().year() as u32 * 100 + d.iso_week().week())

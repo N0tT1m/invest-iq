@@ -9,10 +9,7 @@ pub struct TaxBridge;
 impl TaxBridge {
     /// Build TaxLots from trade history (FIFO).
     #[allow(unused_variables)]
-    pub fn build_tax_lots(
-        trades: &[Trade],
-        prices: &HashMap<String, f64>,
-    ) -> Vec<TaxLot> {
+    pub fn build_tax_lots(trades: &[Trade], prices: &HashMap<String, f64>) -> Vec<TaxLot> {
         let mut lots = Vec::new();
         // Group trades by symbol, sorted by date ascending
         let mut by_symbol: HashMap<String, Vec<&Trade>> = HashMap::new();
@@ -104,7 +101,10 @@ impl TaxBridge {
             let current_price = if lot.is_closed {
                 lot.sale_price_per_share.unwrap_or(0.0)
             } else {
-                prices.get(&lot.symbol).copied().unwrap_or(lot.cost_basis_per_share)
+                prices
+                    .get(&lot.symbol)
+                    .copied()
+                    .unwrap_or(lot.cost_basis_per_share)
             };
 
             let current_value = lot.shares * current_price;
@@ -143,8 +143,8 @@ impl TaxBridge {
 
         let net_short = short_term_gains - short_term_losses;
         let net_long = long_term_gains - long_term_losses;
-        let estimated_tax =
-            (net_short.max(0.0) * rules.short_term_rate) + (net_long.max(0.0) * rules.long_term_rate);
+        let estimated_tax = (net_short.max(0.0) * rules.short_term_rate)
+            + (net_long.max(0.0) * rules.long_term_rate);
 
         TaxSummary {
             jurisdiction: jurisdiction.to_string(),
@@ -202,11 +202,7 @@ impl TaxBridge {
         } else {
             rules.short_term_rate
         };
-        let tax = if gain_loss > 0.0 {
-            gain_loss * rate
-        } else {
-            gain_loss * rate // Negative = tax savings
-        };
+        let tax = gain_loss * rate;
 
         TaxImpactEstimate {
             symbol: symbol.to_string(),
@@ -224,11 +220,7 @@ impl TaxBridge {
     }
 
     /// Check if buying a symbol within 30 days of a loss sale would trigger wash sale.
-    pub fn check_wash_sale_risk(
-        trades: &[Trade],
-        symbol: &str,
-        proposed_buy_date: &str,
-    ) -> bool {
+    pub fn check_wash_sale_risk(trades: &[Trade], symbol: &str, proposed_buy_date: &str) -> bool {
         let proposed = NaiveDate::parse_from_str(proposed_buy_date, "%Y-%m-%d")
             .unwrap_or_else(|_| chrono::Utc::now().date_naive());
 
@@ -236,9 +228,7 @@ impl TaxBridge {
             if trade.symbol != symbol || trade.action != "sell" {
                 continue;
             }
-            if let Ok(sell_date) =
-                NaiveDate::parse_from_str(&trade.trade_date, "%Y-%m-%d")
-            {
+            if let Ok(sell_date) = NaiveDate::parse_from_str(&trade.trade_date, "%Y-%m-%d") {
                 let days_diff = (proposed - sell_date).num_days().abs();
                 if days_diff <= 30 {
                     // Check if it was a loss sale
@@ -306,7 +296,15 @@ mod tests {
         let mut trades = vec![make_trade("AAPL", "sell", 10.0, 90.0, "2025-01-15")];
         trades[0].profit_loss = Some(-100.0); // Loss sale
 
-        assert!(TaxBridge::check_wash_sale_risk(&trades, "AAPL", "2025-01-20"));
-        assert!(!TaxBridge::check_wash_sale_risk(&trades, "AAPL", "2025-03-01"));
+        assert!(TaxBridge::check_wash_sale_risk(
+            &trades,
+            "AAPL",
+            "2025-01-20"
+        ));
+        assert!(!TaxBridge::check_wash_sale_risk(
+            &trades,
+            "AAPL",
+            "2025-03-01"
+        ));
     }
 }

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use analysis_orchestrator::AnalysisOrchestrator;
 use alpaca_broker::AlpacaClient;
+use analysis_orchestrator::AnalysisOrchestrator;
 use anyhow::Result;
 use chrono::Timelike;
 use risk_manager::RiskManager;
@@ -10,16 +10,16 @@ use tokio::signal::unix::SignalKind;
 use tokio::time;
 
 mod config;
-mod types;
-mod ml_gate;
+mod discord_notifier;
 mod market_scanner;
+mod metrics;
+mod ml_gate;
+mod portfolio_guard;
+mod position_manager;
+mod state_manager;
 mod strategy_manager;
 mod trade_executor;
-mod position_manager;
-mod portfolio_guard;
-mod discord_notifier;
-mod metrics;
-mod state_manager;
+mod types;
 
 use config::AgentConfig;
 use discord_notifier::{DailyReport, DiscordNotifier};
@@ -71,9 +71,17 @@ async fn main() -> Result<()> {
     tracing::info!("  Max position size: ${}", config.max_position_size);
     tracing::info!("  Scan interval: {} seconds", config.scan_interval_seconds);
     tracing::info!("  Min confidence: {:.0}%", config.min_confidence * 100.0);
-    tracing::info!("  Position limit: dynamic (min ${}/position, hard cap {})", config.min_position_value, config.max_open_positions);
+    tracing::info!(
+        "  Position limit: dynamic (min ${}/position, hard cap {})",
+        config.min_position_value,
+        config.max_open_positions
+    );
     tracing::info!("  Order timeout: {}s", config.order_timeout_seconds);
-    tracing::info!("  Auto-execute: {} (max {} concurrent)", config.auto_execute, config.max_concurrent_executions);
+    tracing::info!(
+        "  Auto-execute: {} (max {} concurrent)",
+        config.auto_execute,
+        config.max_concurrent_executions
+    );
 
     // 3. Initialize Alpaca (paper trading)
     let alpaca = Arc::new(AlpacaClient::new(
@@ -96,7 +104,10 @@ async fn main() -> Result<()> {
             );
             std::process::exit(1);
         }
-        tracing::warn!("LIVE TRADING MODE — REAL MONEY AT RISK ({})", alpaca.base_url());
+        tracing::warn!(
+            "LIVE TRADING MODE — REAL MONEY AT RISK ({})",
+            alpaca.base_url()
+        );
     } else {
         tracing::info!("Paper trading mode ({})", alpaca.base_url());
     }
@@ -121,7 +132,10 @@ async fn main() -> Result<()> {
 
     // 7. Initialize ML gate (P1: now takes orchestrator for SPY/VIX features)
     let ml_gate = MLTradeGate::new(&config.ml_signal_models_url, Arc::clone(&orchestrator));
-    tracing::info!("ML trade gate initialized ({})", config.ml_signal_models_url);
+    tracing::info!(
+        "ML trade gate initialized ({})",
+        config.ml_signal_models_url
+    );
 
     // 8. Initialize remaining components
     let scanner = MarketScanner::new(config.clone()).await?;
@@ -168,7 +182,9 @@ async fn main() -> Result<()> {
     tracing::info!("Startup check: database OK");
 
     // Alpaca check (also provides account info)
-    let account = alpaca.get_account().await
+    let account = alpaca
+        .get_account()
+        .await
         .map_err(|e| anyhow::anyhow!("Alpaca connectivity check failed: {}", e))?;
     tracing::info!("Startup check: Alpaca OK");
 
@@ -294,7 +310,7 @@ async fn main() -> Result<()> {
                 // Heartbeat: periodic Discord status so the user knows the bot is alive
                 if heartbeat_interval_cycles > 0
                     && agent_metrics.cycles_run > 0
-                    && agent_metrics.cycles_run % heartbeat_interval_cycles == 0
+                    && agent_metrics.cycles_run.is_multiple_of(heartbeat_interval_cycles)
                 {
                     let positions = alpaca.get_positions().await.map(|p| p.len()).unwrap_or(0);
                     notifier
@@ -350,6 +366,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_trading_cycle(
     scanner: &MarketScanner,
     strategy_manager: &StrategyManager,
@@ -368,17 +385,26 @@ async fn run_trading_cycle(
     // 1. Manage existing positions (check stop losses, take profits)
     let position_actions = position_manager.check_positions().await?;
     for action in &position_actions {
-        tracing::info!("Position action: {} {} @ ${:.2}", action.action_type, action.symbol, action.price);
+        tracing::info!(
+            "Position action: {} {} @ ${:.2}",
+            action.action_type,
+            action.symbol,
+            action.price
+        );
 
         if let Err(e) = executor.execute_position_action(action).await {
-            tracing::error!("Failed to execute position action for {}: {}", action.symbol, e);
+            tracing::error!(
+                "Failed to execute position action for {}: {}",
+                action.symbol,
+                e
+            );
         } else {
             metrics.record_trade_result(action.pnl);
 
             // Record exit in trade context
             let pending_id: Option<(i64,)> = sqlx::query_as(
                 "SELECT id FROM pending_trades WHERE symbol = ? AND status = 'executed'
-                 ORDER BY proposed_at DESC LIMIT 1"
+                 ORDER BY proposed_at DESC LIMIT 1",
             )
             .bind(&action.symbol)
             .fetch_optional(&state_manager.db_pool)
@@ -387,15 +413,22 @@ async fn run_trading_cycle(
             .flatten();
 
             if let Some((trade_id,)) = pending_id {
-                let regime = state_manager.load_state("current_regime").await.ok().flatten();
-                if let Err(e) = state_manager.record_trade_exit(
-                    trade_id,
-                    &action.action_type,
-                    action.price,
-                    action.pnl,
-                    0.0,
-                    regime.as_deref(),
-                ).await {
+                let regime = state_manager
+                    .load_state("current_regime")
+                    .await
+                    .ok()
+                    .flatten();
+                if let Err(e) = state_manager
+                    .record_trade_exit(
+                        trade_id,
+                        &action.action_type,
+                        action.price,
+                        action.pnl,
+                        0.0,
+                        regime.as_deref(),
+                    )
+                    .await
+                {
                     tracing::debug!("Failed to record trade exit context: {}", e);
                 }
             }
@@ -416,7 +449,10 @@ async fn run_trading_cycle(
 
     if opportunities.is_empty() {
         metrics.finish_cycle(cycle_start);
-        tracing::info!("Cycle #{} complete (no opportunities found)", metrics.cycles_run);
+        tracing::info!(
+            "Cycle #{} complete (no opportunities found)",
+            metrics.cycles_run
+        );
         return Ok(());
     }
 
@@ -425,24 +461,36 @@ async fn run_trading_cycle(
     let signal_results = strategy_manager.generate_signals(&opportunities).await?;
     metrics.record_analysis_duration(analysis_start);
     metrics.signals_generated += signal_results.len() as u64;
-    tracing::info!("Generated {} signals from orchestrator", signal_results.len());
+    tracing::info!(
+        "Generated {} signals from orchestrator",
+        signal_results.len()
+    );
 
     // Save current regime from first signal
     if let Some(first) = signal_results.first() {
         if let Some(regime) = &first.signal.regime {
-            state_manager.save_state("current_regime", regime).await.ok();
+            state_manager
+                .save_state("current_regime", regime)
+                .await
+                .ok();
         }
     }
 
     // 4. Filter by config thresholds
     if !signal_results.is_empty() {
         // Log confidence distribution so we can tune thresholds
-        let mut confidences: Vec<f64> = signal_results.iter().map(|sr| sr.signal.confidence).collect();
+        let mut confidences: Vec<f64> = signal_results
+            .iter()
+            .map(|sr| sr.signal.confidence)
+            .collect();
         confidences.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
         let max_conf = confidences.first().copied().unwrap_or(0.0);
         let min_conf = confidences.last().copied().unwrap_or(0.0);
         let median_conf = confidences[confidences.len() / 2];
-        let above_threshold = confidences.iter().filter(|&&c| c >= config.min_confidence).count();
+        let above_threshold = confidences
+            .iter()
+            .filter(|&&c| c >= config.min_confidence)
+            .count();
         tracing::info!(
             "Signal confidence distribution: max={:.1}%, median={:.1}%, min={:.1}% ({} of {} >= {:.0}% threshold)",
             max_conf * 100.0, median_conf * 100.0, min_conf * 100.0,
@@ -450,10 +498,17 @@ async fn run_trading_cycle(
         );
         // Log top 5 signals for visibility
         for sr in signal_results.iter().take(5) {
-            let wr = sr.signal.historical_win_rate.map(|w| format!("{:.1}%", w * 100.0)).unwrap_or_else(|| "N/A".to_string());
+            let wr = sr
+                .signal
+                .historical_win_rate
+                .map(|w| format!("{:.1}%", w * 100.0))
+                .unwrap_or_else(|| "N/A".to_string());
             tracing::info!(
                 "  Top signal: {} {} conf={:.1}% win_rate={}",
-                sr.signal.action, sr.signal.symbol, sr.signal.confidence * 100.0, wr
+                sr.signal.action,
+                sr.signal.symbol,
+                sr.signal.confidence * 100.0,
+                wr
             );
         }
     }
@@ -462,17 +517,17 @@ async fn run_trading_cycle(
         .into_iter()
         .filter(|sr| {
             sr.signal.confidence >= config.min_confidence
-                && sr
-                    .signal
-                    .historical_win_rate
-                    .unwrap_or(config.min_win_rate)
+                && sr.signal.historical_win_rate.unwrap_or(config.min_win_rate)
                     >= config.min_win_rate
         })
         .collect();
 
     let filtered_count = filtered.len();
     metrics.signals_filtered += filtered_count as u64;
-    tracing::info!("{} signals passed confidence/win-rate filter", filtered_count);
+    tracing::info!(
+        "{} signals passed confidence/win-rate filter",
+        filtered_count
+    );
 
     // 5. Check if market is open (for logging only — signals still go to pending review)
     let market_open = scanner.is_market_open();
@@ -533,7 +588,8 @@ async fn run_trading_cycle(
             if pending_symbols.contains(&sr.signal.symbol) {
                 tracing::info!(
                     "Skipping {} {} — already has a pending trade awaiting review",
-                    sr.signal.action, sr.signal.symbol
+                    sr.signal.action,
+                    sr.signal.symbol
                 );
                 false
             } else {
@@ -555,7 +611,9 @@ async fn run_trading_cycle(
     }
 
     // Concurrent execution via semaphore
-    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_executions));
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        config.max_concurrent_executions,
+    ));
     let mut handles = Vec::new();
 
     for (sr, decision) in &approved_signals {
@@ -575,14 +633,21 @@ async fn run_trading_cycle(
                         Ok(exec) => {
                             tracing::info!(
                                 "Executed {} {} x{} @ ${:.2} (order {})",
-                                exec.action, exec.symbol, exec.quantity, exec.price, exec.order_id
+                                exec.action,
+                                exec.symbol,
+                                exec.quantity,
+                                exec.price,
+                                exec.order_id
                             );
                             let msg = format!(
                                 "**Trade Executed**\n\
                                  **{} {}** — {} shares @ ${:.2}\n\
                                  Confidence: {:.1}% | ML P(win): {:.1}%\n\
                                  Order: {}",
-                                exec.action, exec.symbol, exec.quantity, exec.price,
+                                exec.action,
+                                exec.symbol,
+                                exec.quantity,
+                                exec.price,
                                 signal.confidence * 100.0,
                                 decision_probability * 100.0,
                                 exec.order_id,
@@ -590,7 +655,12 @@ async fn run_trading_cycle(
                             (true, signal.symbol.clone(), Some(msg))
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to execute {} {}: {}", signal.action, signal.symbol, e);
+                            tracing::warn!(
+                                "Failed to execute {} {}: {}",
+                                signal.action,
+                                signal.symbol,
+                                e
+                            );
                             (false, signal.symbol.clone(), None)
                         }
                     }
@@ -603,32 +673,34 @@ async fn run_trading_cycle(
                 async move {
                     let _permit = sem.acquire().await.unwrap();
                     match executor.propose_signal(&signal, &decision_reasoning).await {
-                        Ok(proposal) => {
-                            match executor.save_pending_trade(&proposal).await {
-                                Ok(trade_id) => {
-                                    let msg = format!(
-                                        "**Trade Pending Review** (#{trade_id})\n\
+                        Ok(proposal) => match executor.save_pending_trade(&proposal).await {
+                            Ok(trade_id) => {
+                                let msg = format!(
+                                    "**Trade Pending Review** (#{trade_id})\n\
                                          **{action} {symbol}** — {shares} shares @ ~${price:.2}\n\
                                          Confidence: {conf:.1}% | ML P(win): {ml:.1}%\n\
                                          {reason}\n\
                                          _Approve or reject in the Agent Trades tab._",
-                                        trade_id = trade_id,
-                                        action = proposal.action.to_uppercase(),
-                                        symbol = proposal.symbol,
-                                        shares = proposal.shares,
-                                        price = proposal.entry_price,
-                                        conf = proposal.confidence * 100.0,
-                                        ml = decision_probability * 100.0,
-                                        reason = proposal.reason,
-                                    );
-                                    (true, signal.symbol.clone(), Some(msg))
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to save pending trade for {}: {}", signal.symbol, e);
-                                    (false, signal.symbol.clone(), None)
-                                }
+                                    trade_id = trade_id,
+                                    action = proposal.action.to_uppercase(),
+                                    symbol = proposal.symbol,
+                                    shares = proposal.shares,
+                                    price = proposal.entry_price,
+                                    conf = proposal.confidence * 100.0,
+                                    ml = decision_probability * 100.0,
+                                    reason = proposal.reason,
+                                );
+                                (true, signal.symbol.clone(), Some(msg))
                             }
-                        }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to save pending trade for {}: {}",
+                                    signal.symbol,
+                                    e
+                                );
+                                (false, signal.symbol.clone(), None)
+                            }
+                        },
                         Err(e) => {
                             tracing::warn!("Skipped {} {}: {}", signal.action, signal.symbol, e);
                             (false, signal.symbol.clone(), None)
@@ -682,15 +754,16 @@ async fn run_trading_cycle(
     // Save trade context for all approved signals (fire-and-forget)
     for (sr, decision) in &approved_signals {
         if let Ok(Some((trade_id,))) = sqlx::query_as::<_, (i64,)>(
-            "SELECT id FROM pending_trades WHERE symbol = ? ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM pending_trades WHERE symbol = ? ORDER BY id DESC LIMIT 1",
         )
         .bind(&sr.signal.symbol)
         .fetch_optional(&state_manager.db_pool)
         .await
         {
-            state_manager.save_trade_context_v2(
-                trade_id, &sr.signal, &sr.analysis, decision
-            ).await.ok();
+            state_manager
+                .save_trade_context_v2(trade_id, &sr.signal, &sr.analysis, decision)
+                .await
+                .ok();
         }
     }
 
@@ -766,9 +839,15 @@ async fn send_daily_report(
         .await
         .unwrap_or((None, None));
 
-    let best_trade_symbol = best.as_ref().map(|(s, _)| s.clone()).unwrap_or_else(|| "N/A".to_string());
+    let best_trade_symbol = best
+        .as_ref()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_else(|| "N/A".to_string());
     let best_trade_pnl = best.map(|(_, p)| p).unwrap_or(0.0);
-    let worst_trade_symbol = worst.as_ref().map(|(s, _)| s.clone()).unwrap_or_else(|| "N/A".to_string());
+    let worst_trade_symbol = worst
+        .as_ref()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_else(|| "N/A".to_string());
     let worst_trade_pnl = worst.map(|(_, p)| p).unwrap_or(0.0);
 
     // Load regime

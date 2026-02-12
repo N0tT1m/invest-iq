@@ -11,10 +11,9 @@ use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tax_optimizer::{
-    HarvestOpportunity, HarvestResult, HarvestSummary, HarvestingEngine,
-    SubstituteFinder, SubstituteSecurity, TaxCalculator, TaxJurisdiction, TaxLot, TaxRules,
-    WashSaleCalendar, WashSaleMonitor, WashSaleSummary, WashSaleViolation, WashSaleWindow,
-    YearEndSummary,
+    HarvestOpportunity, HarvestResult, HarvestSummary, HarvestingEngine, SubstituteFinder,
+    SubstituteSecurity, TaxCalculator, TaxJurisdiction, TaxLot, TaxRules, WashSaleCalendar,
+    WashSaleMonitor, WashSaleSummary, WashSaleViolation, WashSaleWindow, YearEndSummary,
 };
 
 use crate::{get_default_analysis, ApiResponse, AppError, AppState};
@@ -89,15 +88,24 @@ pub fn tax_routes() -> Router<AppState> {
         .route("/api/tax/settings", get(get_tax_settings))
         .route("/api/tax/rules/:jurisdiction", get(get_jurisdiction_rules))
         // Harvest opportunities
-        .route("/api/tax/harvest-opportunities", get(get_harvest_opportunities))
-        .route("/api/tax/harvest-opportunities/:symbol", get(get_symbol_opportunities))
+        .route(
+            "/api/tax/harvest-opportunities",
+            get(get_harvest_opportunities),
+        )
+        .route(
+            "/api/tax/harvest-opportunities/:symbol",
+            get(get_symbol_opportunities),
+        )
         .route("/api/tax/execute-harvest", post(execute_harvest))
         // Substitutes
         .route("/api/tax/substitutes/:symbol", get(get_substitutes))
         // Wash sales
         .route("/api/tax/wash-sales", get(get_wash_sales))
         .route("/api/tax/wash-sales/:symbol", get(get_symbol_wash_sales))
-        .route("/api/tax/wash-sale-calendar/:symbol", get(get_wash_sale_calendar))
+        .route(
+            "/api/tax/wash-sale-calendar/:symbol",
+            get(get_wash_sale_calendar),
+        )
         // Tax lots
         .route("/api/tax/lots", get(get_tax_lots))
         .route("/api/tax/lots", post(add_tax_lot))
@@ -177,7 +185,7 @@ async fn get_harvest_opportunities(
     // Get current prices
     let mut prices = HashMap::new();
     for lot in &lots {
-        if let Ok(analysis) = get_default_analysis(&state,&lot.symbol).await {
+        if let Ok(analysis) = get_default_analysis(&state, &lot.symbol).await {
             if let Some(price) = analysis.current_price {
                 prices.insert(lot.symbol.clone(), price);
             }
@@ -225,7 +233,7 @@ async fn get_symbol_opportunities(
 
     // Get current price
     let mut prices = HashMap::new();
-    if let Ok(analysis) = get_default_analysis(&state,&symbol).await {
+    if let Ok(analysis) = get_default_analysis(&state, &symbol).await {
         if let Some(price) = analysis.current_price {
             prices.insert(symbol.clone(), price);
         }
@@ -275,7 +283,7 @@ async fn execute_harvest(
     let mut prices = HashMap::new();
     prices.insert(request.symbol.clone(), current_price);
 
-    let opportunities = engine.find_opportunities(&[lot.clone()], &prices);
+    let opportunities = engine.find_opportunities(std::slice::from_ref(lot), &prices);
     let opportunity = opportunities
         .first()
         .ok_or_else(|| anyhow::anyhow!("No harvest opportunity found for this lot"))?;
@@ -439,9 +447,9 @@ async fn get_portfolio_lots(state: &AppState) -> Result<Vec<TaxLot>, AppError> {
     let mut lots: Vec<TaxLot> = Vec::new();
     let mut seen_symbols = std::collections::HashSet::new();
 
-    // Try Alpaca positions first (has real cost basis data)
-    if let Some(alpaca) = &state.alpaca_client {
-        if let Ok(positions) = alpaca.get_positions().await {
+    // Try broker positions first (has real cost basis data)
+    if let Some(broker) = &state.broker_client {
+        if let Ok(positions) = broker.get_positions().await {
             for pos in &positions {
                 let qty = pos.qty.parse::<f64>().unwrap_or(0.0);
                 let entry_price = pos.avg_entry_price.parse::<f64>().unwrap_or(0.0);
@@ -471,7 +479,9 @@ async fn get_portfolio_lots(state: &AppState) -> Result<Vec<TaxLot>, AppError> {
                         pos.shares.to_f64().unwrap_or(0.0),
                         pos.entry_price.to_f64().unwrap_or(0.0),
                         chrono::NaiveDate::parse_from_str(&pos.entry_date, "%Y-%m-%d")
-                            .unwrap_or_else(|_| chrono::Utc::now().date_naive() - chrono::Duration::days(180)),
+                            .unwrap_or_else(|_| {
+                                chrono::Utc::now().date_naive() - chrono::Duration::days(180)
+                            }),
                     ));
                 }
             }

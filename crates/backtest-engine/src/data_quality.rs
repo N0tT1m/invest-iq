@@ -79,8 +79,7 @@ pub fn check_data_quality(
 
             // Gap detection (missing dates)
             if i > 0 {
-                let prev_date =
-                    NaiveDate::parse_from_str(&bars[i - 1].date, "%Y-%m-%d").ok();
+                let prev_date = NaiveDate::parse_from_str(&bars[i - 1].date, "%Y-%m-%d").ok();
                 let curr_date = NaiveDate::parse_from_str(&bar.date, "%Y-%m-%d").ok();
                 if let (Some(pd), Some(cd)) = (prev_date, curr_date) {
                     let gap = (cd - pd).num_days();
@@ -94,7 +93,9 @@ pub fn check_data_quality(
                             warning_type: "date_gap".to_string(),
                             message: format!(
                                 "{}-day gap between {} and {}",
-                                gap, bars[i - 1].date, bar.date
+                                gap,
+                                bars[i - 1].date,
+                                bar.date
                             ),
                         });
                     }

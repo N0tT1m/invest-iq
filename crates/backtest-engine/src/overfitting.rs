@@ -39,10 +39,7 @@ pub struct PboResult {
 ///
 /// # Returns
 /// PboResult with overfitting probability and diagnostics.
-pub fn compute_pbo(
-    equity_curves: &[Vec<EquityPoint>],
-    num_splits: usize,
-) -> Option<PboResult> {
+pub fn compute_pbo(equity_curves: &[Vec<EquityPoint>], num_splits: usize) -> Option<PboResult> {
     if equity_curves.len() < 4 || num_splits < 4 {
         return None;
     }
@@ -274,9 +271,7 @@ pub fn deflated_sharpe_ratio(
     // Adjust for non-Gaussianity (skewness and kurtosis)
     // Sharpe standard error: SE(SR) = sqrt((1 + SR²/2 - skew*SR + (kurt-1)*SR²/4) / T)
     let sr2 = observed_sharpe.powi(2);
-    let se_adjustment = (1.0 + sr2 / 2.0 - skewness * observed_sharpe
-        + (kurtosis) * sr2 / 4.0)
-        / t;
+    let se_adjustment = (1.0 + sr2 / 2.0 - skewness * observed_sharpe + (kurtosis) * sr2 / 4.0) / t;
     let se = se_adjustment.max(1.0 / t).sqrt();
 
     // Deflated Sharpe: z-score
@@ -355,11 +350,7 @@ pub fn compute_oos_degradation(
 /// - Z_α: significance level (e.g., 1.96 for 95% confidence)
 /// - Z_β: power level (e.g., 0.84 for 80% power)
 /// - SR*: expected Sharpe ratio
-pub fn minimum_backtest_length(
-    expected_sharpe: f64,
-    confidence_level: f64,
-    power: f64,
-) -> i32 {
+pub fn minimum_backtest_length(expected_sharpe: f64, confidence_level: f64, power: f64) -> i32 {
     let z_alpha = inverse_normal_cdf(1.0 - (1.0 - confidence_level) / 2.0);
     let z_beta = inverse_normal_cdf(power);
 
@@ -388,8 +379,8 @@ fn inverse_normal_cdf(p: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_decimal::Decimal;
     use rust_decimal::prelude::FromPrimitive;
+    use rust_decimal::Decimal;
 
     fn mock_curve(returns: &[f64]) -> Vec<EquityPoint> {
         let mut equity = 100000.0;
@@ -470,7 +461,7 @@ mod tests {
 
         // Formula: [(1.96 + 0.84) / 1.0]^2 = 2.8^2 = 7.84 → 8
         // (using approximate z-values)
-        assert!(min_len >= 7 && min_len <= 10);
+        assert!((7..=10).contains(&min_len));
 
         // For Sharpe = 0.5, need 4x more data
         let min_len_low = minimum_backtest_length(0.5, 0.95, 0.80);
@@ -482,7 +473,11 @@ mod tests {
         // Create 4+ strategies with varying IS/OOS performance (need at least 4)
         let strategy1 = mock_curve(&vec![0.01; 100]); // Consistent positive
         let strategy2 = mock_curve(&vec![-0.005; 100]); // Consistent negative
-        let strategy3 = mock_curve(&(0..100).map(|i| if i % 2 == 0 { 0.02 } else { -0.01 }).collect::<Vec<_>>()); // Volatile
+        let strategy3 = mock_curve(
+            &(0..100)
+                .map(|i| if i % 2 == 0 { 0.02 } else { -0.01 })
+                .collect::<Vec<_>>(),
+        ); // Volatile
         let strategy4 = mock_curve(&vec![0.005; 100]); // Modest positive
 
         let curves = vec![strategy1, strategy2, strategy3, strategy4];

@@ -1,4 +1,6 @@
-use analysis_core::{adaptive, AnalysisError, AnalysisResult, NewsArticle, SentimentAnalyzer, SignalStrength};
+use analysis_core::{
+    adaptive, AnalysisError, AnalysisResult, NewsArticle, SentimentAnalyzer, SignalStrength,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
@@ -11,9 +13,25 @@ pub use velocity::{
 };
 
 const NEGATION_WORDS: &[&str] = &[
-    "not", "no", "never", "don't", "doesn't", "didn't", "isn't", "aren't",
-    "wasn't", "weren't", "won't", "wouldn't", "couldn't", "shouldn't", "hardly",
-    "barely", "neither", "nor", "without",
+    "not",
+    "no",
+    "never",
+    "don't",
+    "doesn't",
+    "didn't",
+    "isn't",
+    "aren't",
+    "wasn't",
+    "weren't",
+    "won't",
+    "wouldn't",
+    "couldn't",
+    "shouldn't",
+    "hardly",
+    "barely",
+    "neither",
+    "nor",
+    "without",
 ];
 
 const NEGATION_WINDOW: usize = 3;
@@ -21,15 +39,15 @@ const NEGATION_WINDOW: usize = 3;
 /// News event type with importance weight for signal generation
 #[derive(Debug, Clone, Copy)]
 enum NewsEventType {
-    Earnings,       // Earnings reports, guidance
-    MergersAcq,     // M&A, buyouts, spinoffs
-    Regulatory,     // FDA, SEC, antitrust
-    AnalystAction,  // Upgrades, downgrades, initiations
-    Management,     // CEO changes, board reshuffles
-    Product,        // Product launches, recalls
-    Legal,          // Lawsuits, settlements
-    Macro,          // Fed, economic data
-    General,        // Catch-all
+    Earnings,      // Earnings reports, guidance
+    MergersAcq,    // M&A, buyouts, spinoffs
+    Regulatory,    // FDA, SEC, antitrust
+    AnalystAction, // Upgrades, downgrades, initiations
+    Management,    // CEO changes, board reshuffles
+    Product,       // Product launches, recalls
+    Legal,         // Lawsuits, settlements
+    Macro,         // Fed, economic data
+    General,       // Catch-all
 }
 
 impl NewsEventType {
@@ -51,30 +69,69 @@ impl NewsEventType {
 fn classify_event(title: &str, description: Option<&str>) -> NewsEventType {
     let text = format!("{} {}", title, description.unwrap_or("")).to_lowercase();
 
-    if text.contains("earnings") || text.contains("quarterly") || text.contains("guidance")
-        || text.contains("revenue") && (text.contains("beat") || text.contains("miss") || text.contains("report"))
-        || text.contains("eps") || text.contains("profit") && text.contains("quarter") {
+    if text.contains("earnings")
+        || text.contains("quarterly")
+        || text.contains("guidance")
+        || text.contains("revenue")
+            && (text.contains("beat") || text.contains("miss") || text.contains("report"))
+        || text.contains("eps")
+        || text.contains("profit") && text.contains("quarter")
+    {
         NewsEventType::Earnings
-    } else if text.contains("acqui") || text.contains("merger") || text.contains("buyout")
-        || text.contains("takeover") || text.contains("spinoff") || text.contains("spin-off") {
+    } else if text.contains("acqui")
+        || text.contains("merger")
+        || text.contains("buyout")
+        || text.contains("takeover")
+        || text.contains("spinoff")
+        || text.contains("spin-off")
+    {
         NewsEventType::MergersAcq
-    } else if text.contains("fda") || text.contains("sec ") || text.contains("regulat")
-        || text.contains("approval") || text.contains("antitrust") || text.contains("compliance") {
+    } else if text.contains("fda")
+        || text.contains("sec ")
+        || text.contains("regulat")
+        || text.contains("approval")
+        || text.contains("antitrust")
+        || text.contains("compliance")
+    {
         NewsEventType::Regulatory
-    } else if text.contains("upgrade") || text.contains("downgrade") || text.contains("price target")
-        || text.contains("initiat") || text.contains("analyst") || text.contains("rating") {
+    } else if text.contains("upgrade")
+        || text.contains("downgrade")
+        || text.contains("price target")
+        || text.contains("initiat")
+        || text.contains("analyst")
+        || text.contains("rating")
+    {
         NewsEventType::AnalystAction
-    } else if text.contains("ceo") || text.contains("cfo") || text.contains("board")
-        || text.contains("executive") || text.contains("resign") || text.contains("appoint") {
+    } else if text.contains("ceo")
+        || text.contains("cfo")
+        || text.contains("board")
+        || text.contains("executive")
+        || text.contains("resign")
+        || text.contains("appoint")
+    {
         NewsEventType::Management
-    } else if text.contains("launch") || text.contains("product") || text.contains("recall")
-        || text.contains("patent") || text.contains("innovation") {
+    } else if text.contains("launch")
+        || text.contains("product")
+        || text.contains("recall")
+        || text.contains("patent")
+        || text.contains("innovation")
+    {
         NewsEventType::Product
-    } else if text.contains("lawsuit") || text.contains("litigation") || text.contains("settlement")
-        || text.contains("sued") || text.contains("court") || text.contains("indictment") {
+    } else if text.contains("lawsuit")
+        || text.contains("litigation")
+        || text.contains("settlement")
+        || text.contains("sued")
+        || text.contains("court")
+        || text.contains("indictment")
+    {
         NewsEventType::Legal
-    } else if text.contains("fed ") || text.contains("federal reserve") || text.contains("interest rate")
-        || text.contains("inflation") || text.contains("gdp") || text.contains("unemployment") {
+    } else if text.contains("fed ")
+        || text.contains("federal reserve")
+        || text.contains("interest rate")
+        || text.contains("inflation")
+        || text.contains("gdp")
+        || text.contains("unemployment")
+    {
         NewsEventType::Macro
     } else {
         NewsEventType::General
@@ -98,26 +155,95 @@ impl SentimentAnalysisEngine {
 
         Self {
             positive_words: vec![
-                "bullish", "rally", "surge", "gain", "profit", "growth", "beat",
-                "upgrade", "outperform", "strong", "positive", "rise", "increase",
-                "breakthrough", "innovation", "success", "exceed", "momentum",
-                "buy", "recommend", "optimistic", "record", "high", "advance",
+                "bullish",
+                "rally",
+                "surge",
+                "gain",
+                "profit",
+                "growth",
+                "beat",
+                "upgrade",
+                "outperform",
+                "strong",
+                "positive",
+                "rise",
+                "increase",
+                "breakthrough",
+                "innovation",
+                "success",
+                "exceed",
+                "momentum",
+                "buy",
+                "recommend",
+                "optimistic",
+                "record",
+                "high",
+                "advance",
                 // Financial-specific terms
-                "dividend", "buyback", "repurchase", "accretive", "upside",
-                "recovery", "rebound", "expansion", "robust", "accelerating",
-                "overweight", "raised", "guidance", "upgraded", "initiated",
-                "reiterated", "outpacing", "tailwind",
+                "dividend",
+                "buyback",
+                "repurchase",
+                "accretive",
+                "upside",
+                "recovery",
+                "rebound",
+                "expansion",
+                "robust",
+                "accelerating",
+                "overweight",
+                "raised",
+                "guidance",
+                "upgraded",
+                "initiated",
+                "reiterated",
+                "outpacing",
+                "tailwind",
             ],
             negative_words: vec![
-                "bearish", "decline", "loss", "fall", "plunge", "crash", "miss",
-                "downgrade", "underperform", "weak", "negative", "drop", "decrease",
-                "concern", "risk", "fail", "disappoint", "slump", "sell",
-                "warning", "pessimistic", "low", "retreat", "fear", "trouble",
+                "bearish",
+                "decline",
+                "loss",
+                "fall",
+                "plunge",
+                "crash",
+                "miss",
+                "downgrade",
+                "underperform",
+                "weak",
+                "negative",
+                "drop",
+                "decrease",
+                "concern",
+                "risk",
+                "fail",
+                "disappoint",
+                "slump",
+                "sell",
+                "warning",
+                "pessimistic",
+                "low",
+                "retreat",
+                "fear",
+                "trouble",
                 // Financial-specific terms
-                "dilution", "dilutive", "headwind", "lawsuit", "litigation",
-                "recall", "investigation", "probe", "default", "bankruptcy",
-                "restructuring", "layoff", "downside", "overvalued", "bubble",
-                "underweight", "lowered", "suspended",
+                "dilution",
+                "dilutive",
+                "headwind",
+                "lawsuit",
+                "litigation",
+                "recall",
+                "investigation",
+                "probe",
+                "default",
+                "bankruptcy",
+                "restructuring",
+                "layoff",
+                "downside",
+                "overvalued",
+                "bubble",
+                "underweight",
+                "lowered",
+                "suspended",
             ],
             finbert_client,
         }
@@ -127,7 +253,9 @@ impl SentimentAnalysisEngine {
         let text_lower = text.to_lowercase();
         // Split into words, stripping common punctuation
         let words: Vec<&str> = text_lower
-            .split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == '.' || c == '!' || c == '?')
+            .split(|c: char| {
+                c.is_whitespace() || c == ',' || c == ';' || c == '.' || c == '!' || c == '?'
+            })
             .filter(|w| !w.is_empty())
             .collect();
 
@@ -154,9 +282,9 @@ impl SentimentAnalysisEngine {
             }
 
             // Check if any negation word is within NEGATION_WINDOW before this word
-            let negated = negation_positions.iter().any(|&neg_pos| {
-                neg_pos < i && (i - neg_pos) <= NEGATION_WINDOW
-            });
+            let negated = negation_positions
+                .iter()
+                .any(|&neg_pos| neg_pos < i && (i - neg_pos) <= NEGATION_WINDOW);
 
             if is_positive {
                 score += if negated { -1 } else { 1 };
@@ -193,9 +321,7 @@ impl SentimentAnalysisEngine {
         let age_hours = (now - article.published_utc).num_hours();
 
         // Exponential decay: news older than 24 hours gets less weight
-        if age_hours < 0 {
-            1.0
-        } else if age_hours < 24 {
+        if age_hours < 24 {
             1.0
         } else if age_hours < 48 {
             0.7
@@ -211,7 +337,10 @@ impl SentimentAnalysisEngine {
     /// target symbol in their tickers list are weighted more heavily.
     fn calculate_entity_weight(&self, article: &NewsArticle, symbol: &str) -> f64 {
         let sym_upper = symbol.to_uppercase();
-        let is_primary = article.tickers.iter().any(|t| t.to_uppercase() == sym_upper);
+        let is_primary = article
+            .tickers
+            .iter()
+            .any(|t| t.to_uppercase() == sym_upper);
 
         if is_primary {
             // Check if it's the *only* ticker (highly relevant) or one of many
@@ -231,9 +360,20 @@ impl SentimentAnalysisEngine {
         let titles: Vec<String> = news.iter().map(|a| a.title.clone()).collect();
         match client.predict(titles, None).await {
             Ok(response) => {
-                let scores: Vec<f64> = response.predictions.iter().map(|p| {
-                    p.score * if p.label == "positive" { 1.0 } else if p.label == "negative" { -1.0 } else { 0.0 }
-                }).collect();
+                let scores: Vec<f64> = response
+                    .predictions
+                    .iter()
+                    .map(|p| {
+                        p.score
+                            * if p.label == "positive" {
+                                1.0
+                            } else if p.label == "negative" {
+                                -1.0
+                            } else {
+                                0.0
+                            }
+                    })
+                    .collect();
                 tracing::info!("FinBERT scored {} articles", scores.len());
                 Some(scores)
             }
@@ -251,19 +391,30 @@ impl SentimentAnalysisEngine {
             return (0.0, false);
         }
         let now = Utc::now();
-        let last_24h = news.iter().filter(|a| (now - a.published_utc).num_hours() < 24).count();
-        let last_48h = news.iter().filter(|a| (now - a.published_utc).num_hours() < 48).count();
+        let last_24h = news
+            .iter()
+            .filter(|a| (now - a.published_utc).num_hours() < 24)
+            .count();
+        let last_48h = news
+            .iter()
+            .filter(|a| (now - a.published_utc).num_hours() < 48)
+            .count();
         let older = news.len().saturating_sub(last_48h);
 
         // Buzz ratio: articles in last 24h vs expected daily rate
         let expected_daily = if older > 0 {
             // Approximate daily rate from older articles
-            let older_days = news.iter()
+            let older_days = news
+                .iter()
                 .filter(|a| (now - a.published_utc).num_hours() >= 48)
                 .map(|a| (now - a.published_utc).num_days())
                 .max()
                 .unwrap_or(7) as f64;
-            if older_days > 0.0 { older as f64 / older_days } else { 1.0 }
+            if older_days > 0.0 {
+                older as f64 / older_days
+            } else {
+                1.0
+            }
         } else {
             1.0
         };
@@ -307,7 +458,8 @@ impl SentimentAnalysisEngine {
 
         // Compute adaptive recency decay based on data span
         let now = Utc::now();
-        let max_age_hours = news.iter()
+        let max_age_hours = news
+            .iter()
             .map(|a| (now - a.published_utc).num_hours() as f64)
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or(24.0)
@@ -341,7 +493,9 @@ impl SentimentAnalysisEngine {
             // Event classification: weight by importance
             let event_type = classify_event(&article.title, article.description.as_deref());
             let event_weight = event_type.importance_weight();
-            *event_counts.entry(format!("{:?}", event_type)).or_insert(0u32) += 1;
+            *event_counts
+                .entry(format!("{:?}", event_type))
+                .or_insert(0u32) += 1;
 
             let combined_weight = recency_weight * entity_weight * event_weight;
             total_score += sentiment_score * combined_weight;
@@ -379,17 +533,28 @@ impl SentimentAnalysisEngine {
         let signal = SignalStrength::from_score(normalized_score as i32);
 
         // Adaptive buzz detection using z-score
-        let last_24h = news.iter().filter(|a| (now - a.published_utc).num_hours() < 24).count();
-        let last_48h = news.iter().filter(|a| (now - a.published_utc).num_hours() < 48).count();
+        let last_24h = news
+            .iter()
+            .filter(|a| (now - a.published_utc).num_hours() < 24)
+            .count();
+        let last_48h = news
+            .iter()
+            .filter(|a| (now - a.published_utc).num_hours() < 48)
+            .count();
         let older = news.len().saturating_sub(last_48h);
 
         let expected_daily = if older > 0 {
-            let older_days = news.iter()
+            let older_days = news
+                .iter()
                 .filter(|a| (now - a.published_utc).num_hours() >= 48)
                 .map(|a| (now - a.published_utc).num_days())
                 .max()
                 .unwrap_or(7) as f64;
-            if older_days > 0.0 { older as f64 / older_days } else { 1.0 }
+            if older_days > 0.0 {
+                older as f64 / older_days
+            } else {
+                1.0
+            }
         } else {
             1.0
         };
@@ -406,32 +571,42 @@ impl SentimentAnalysisEngine {
         // --- Sentiment Momentum (Acceleration/Deceleration) ---
         // Compare recent sentiment (last 24h) vs prior period (24-48h ago)
         let (sentiment_momentum, sentiment_acceleration) = if news.len() >= 2 {
-            let last_24h_articles: Vec<&NewsArticle> = news.iter()
+            let last_24h_articles: Vec<&NewsArticle> = news
+                .iter()
                 .filter(|a| (now - a.published_utc).num_hours() < 24)
                 .collect();
-            let prev_24h_articles: Vec<&NewsArticle> = news.iter()
+            let prev_24h_articles: Vec<&NewsArticle> = news
+                .iter()
                 .filter(|a| {
                     let hours = (now - a.published_utc).num_hours();
-                    hours >= 24 && hours < 48
+                    (24..48).contains(&hours)
                 })
                 .collect();
 
             if !last_24h_articles.is_empty() && !prev_24h_articles.is_empty() {
                 // Compute average sentiment for each period
-                let recent_sent: f64 = last_24h_articles.iter()
+                let recent_sent: f64 = last_24h_articles
+                    .iter()
                     .enumerate()
                     .map(|(i, _)| article_scores.get(i).copied().unwrap_or(0.0))
-                    .sum::<f64>() / last_24h_articles.len() as f64;
+                    .sum::<f64>()
+                    / last_24h_articles.len() as f64;
 
-                let prev_sent: f64 = prev_24h_articles.iter()
+                let prev_sent: f64 = prev_24h_articles
+                    .iter()
                     .enumerate()
                     .skip(last_24h_articles.len())
                     .take(prev_24h_articles.len())
                     .map(|(i, _)| article_scores.get(i).copied().unwrap_or(0.0))
-                    .sum::<f64>() / prev_24h_articles.len() as f64;
+                    .sum::<f64>()
+                    / prev_24h_articles.len() as f64;
 
                 let momentum = recent_sent - prev_sent;
-                let accel = if prev_sent != 0.0 { momentum / prev_sent.abs() } else { 0.0 };
+                let accel = if prev_sent != 0.0 {
+                    momentum / prev_sent.abs()
+                } else {
+                    0.0
+                };
 
                 (Some(momentum), Some(accel))
             } else {
@@ -466,7 +641,8 @@ impl SentimentAnalysisEngine {
         let news_fatigue = if news.len() >= 10 && abnormal_buzz {
             // Check if sentiment is declining over time despite high volume
             if let Some(accel) = sentiment_acceleration {
-                if accel < -0.2 && neutral_count > positive_count && neutral_count > negative_count {
+                if accel < -0.2 && neutral_count > positive_count && neutral_count > negative_count
+                {
                     Some(true)
                 } else {
                     Some(false)
@@ -487,7 +663,8 @@ impl SentimentAnalysisEngine {
             0.0
         };
         let finbert_bonus = if using_finbert { 0.1 } else { 0.0 };
-        let confidence = (article_count_confidence * 0.4 + consistency * 0.4 + finbert_bonus + 0.1).min(0.95);
+        let confidence =
+            (article_count_confidence * 0.4 + consistency * 0.4 + finbert_bonus + 0.1).min(0.95);
 
         // Adaptive sentiment labels using z-score
         let sent_z = adaptive::z_score_of(avg_sentiment, &article_scores);
@@ -521,12 +698,26 @@ impl SentimentAnalysisEngine {
         }
 
         let buzz_label = if abnormal_buzz { " [HIGH BUZZ]" } else { "" };
-        let fatigue_label = if news_fatigue == Some(true) { " [NEWS FATIGUE]" } else { "" };
-        let contradiction_label = if contradictory_signal.is_some() { " [MIXED SIGNALS]" } else { "" };
+        let fatigue_label = if news_fatigue == Some(true) {
+            " [NEWS FATIGUE]"
+        } else {
+            ""
+        };
+        let contradiction_label = if contradictory_signal.is_some() {
+            " [MIXED SIGNALS]"
+        } else {
+            ""
+        };
 
         let reason = format!(
             "{} news sentiment ({} positive, {} negative, {} neutral){}{}{}",
-            sentiment_label, positive_count, negative_count, neutral_count, buzz_label, fatigue_label, contradiction_label
+            sentiment_label,
+            positive_count,
+            negative_count,
+            neutral_count,
+            buzz_label,
+            fatigue_label,
+            contradiction_label
         );
 
         let metrics = json!({

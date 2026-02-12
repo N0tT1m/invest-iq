@@ -32,7 +32,11 @@ pub fn compute_tiered_commission(
         .map(|t| t.per_share_rate)
         .unwrap_or_else(|| {
             // If no tier matches, use the first tier's rate
-            model.tiers.first().map(|t| t.per_share_rate).unwrap_or(0.005)
+            model
+                .tiers
+                .first()
+                .map(|t| t.per_share_rate)
+                .unwrap_or(0.005)
         });
 
     let raw_commission = shares_f64 * per_share_rate;

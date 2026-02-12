@@ -3,8 +3,8 @@
 //! Multi-dimensional risk analysis for portfolios and individual positions.
 //! Provides a comprehensive view of risk across multiple dimensions.
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Multi-dimensional risk profile
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -222,10 +222,18 @@ impl RiskProfile {
 
         let checks = [
             ("Market Risk", current.market_risk, target.market_risk),
-            ("Volatility", current.volatility_risk, target.volatility_risk),
+            (
+                "Volatility",
+                current.volatility_risk,
+                target.volatility_risk,
+            ),
             ("Liquidity", current.liquidity_risk, target.liquidity_risk),
             ("Event Risk", current.event_risk, target.event_risk),
-            ("Concentration", current.concentration_risk, target.concentration_risk),
+            (
+                "Concentration",
+                current.concentration_risk,
+                target.concentration_risk,
+            ),
             ("Sentiment", current.sentiment_risk, target.sentiment_risk),
         ];
 
@@ -357,8 +365,8 @@ impl RiskRadarCalculator {
 
         // Diversification (inverted - fewer positions = higher risk)
         // < 5 = 100, > 20 = 0
-        let diversity_score = ((20 - num_positions as i32).max(0) as f64 / 15.0 * 100.0)
-            .clamp(0.0, 100.0);
+        let diversity_score =
+            ((20 - num_positions as i32).max(0) as f64 / 15.0 * 100.0).clamp(0.0, 100.0);
 
         position_score * 0.4 + sector_score * 0.3 + diversity_score * 0.3
     }
@@ -399,7 +407,10 @@ mod tests {
         };
 
         let score = radar.overall_score();
-        assert!(score > 40.0 && score < 60.0, "Score should be moderate range");
+        assert!(
+            score > 40.0 && score < 60.0,
+            "Score should be moderate range"
+        );
     }
 
     #[test]

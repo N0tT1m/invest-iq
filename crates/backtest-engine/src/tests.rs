@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
 
-use crate::models::*;
 use crate::engine::BacktestEngine;
+use crate::models::*;
 
 /// Helper: create a HistoricalBar with the given OHLCV data.
 fn bar(date: &str, open: f64, high: f64, low: f64, close: f64, volume: f64) -> HistoricalBar {
@@ -96,9 +96,7 @@ fn test_next_bar_execution() {
     ];
 
     // Buy signal on day 1 (close=103) → should execute at day 2's open (104)
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -195,9 +193,7 @@ fn test_volume_participation_limit() {
         bar("2024-01-04", 107.0, 110.0, 105.0, 109.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -262,7 +258,7 @@ fn test_equity_based_sizing() {
         stop_loss_percent: None,
         take_profit_percent: None,
         confidence_threshold: 0.5,
-        commission_rate: Some(0.0),   // Zero costs to isolate sizing
+        commission_rate: Some(0.0), // Zero costs to isolate sizing
         slippage_rate: Some(0.0),
         max_volume_participation: None,
         benchmark_bars: None,
@@ -329,9 +325,7 @@ fn test_stop_loss_gap_through() {
         bar("2024-01-04", 85.0, 88.0, 83.0, 86.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -373,9 +367,7 @@ fn test_take_profit_gap_through() {
         bar("2024-01-04", 130.0, 135.0, 128.0, 132.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -418,17 +410,23 @@ fn test_cagr_calculation() {
 
     for i in 0..255 {
         let price = start_price + daily_increment * i as f64;
-        let date = format!("2024-{:02}-{:02}",
+        let date = format!(
+            "2024-{:02}-{:02}",
             (i / 30 + 1).min(12),
             (i % 30 + 1).min(28)
         );
-        bars.push(bar(&date, price - 0.5, price + 1.0, price - 1.0, price, 1_000_000.0));
+        bars.push(bar(
+            &date,
+            price - 0.5,
+            price + 1.0,
+            price - 1.0,
+            price,
+            1_000_000.0,
+        ));
     }
 
     // Buy on day 0, hold until end
-    let signals = vec![
-        buy_signal(&bars[0].date, "AAPL", start_price, 0.8),
-    ];
+    let signals = vec![buy_signal(&bars[0].date, "AAPL", start_price, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -461,9 +459,7 @@ fn test_sharpe_sample_std_dev() {
         bar("2024-01-05", 104.0, 108.0, 103.0, 103.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 100.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 100.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -496,9 +492,7 @@ fn test_sortino_zero_downside() {
         bar("2024-01-05", 106.0, 111.0, 105.0, 110.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 101.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 101.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -532,13 +526,9 @@ fn test_sortino_zero_downside() {
 #[test]
 fn test_no_same_bar_execution() {
     // Only 1 bar — signal generated on it should NOT execute (no next bar)
-    let bars = vec![
-        bar("2024-01-02", 100.0, 105.0, 99.0, 103.0, 1_000_000.0),
-    ];
+    let bars = vec![bar("2024-01-02", 100.0, 105.0, 99.0, 103.0, 1_000_000.0)];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -659,7 +649,10 @@ fn test_confidence_filter() {
     let mut engine = BacktestEngine::new(config);
     let result = engine.run(data, signals).unwrap();
 
-    assert_eq!(result.total_trades, 0, "Low-confidence signals should be filtered");
+    assert_eq!(
+        result.total_trades, 0,
+        "Low-confidence signals should be filtered"
+    );
 }
 
 // =============================================================================
@@ -750,7 +743,11 @@ fn test_short_selling_basic() {
     // Short at day 3 open (104), cover at day 5 open (90)
     // Profit = (104 - 90) * shares > 0
     let pnl = trade.profit_loss.to_f64().unwrap();
-    assert!(pnl > 0.0, "Short on declining price should profit, got {:.2}", pnl);
+    assert!(
+        pnl > 0.0,
+        "Short on declining price should profit, got {:.2}",
+        pnl
+    );
 
     // short_trades count should be 1
     assert_eq!(result.short_trades, Some(1));
@@ -792,7 +789,11 @@ fn test_short_selling_loss() {
 
     // Short at 104, cover at 115 → loss
     let pnl = trade.profit_loss.to_f64().unwrap();
-    assert!(pnl < 0.0, "Short on rising price should lose, got {:.2}", pnl);
+    assert!(
+        pnl < 0.0,
+        "Short on rising price should lose, got {:.2}",
+        pnl
+    );
 }
 
 // =============================================================================
@@ -807,9 +808,7 @@ fn test_short_selling_disabled() {
         bar("2024-01-04", 95.0, 98.0, 93.0, 96.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        sell_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![sell_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -818,7 +817,10 @@ fn test_short_selling_disabled() {
     let mut engine = BacktestEngine::new(config);
     let result = engine.run(data, signals).unwrap();
 
-    assert_eq!(result.total_trades, 0, "No shorts when short selling disabled");
+    assert_eq!(
+        result.total_trades, 0,
+        "No shorts when short selling disabled"
+    );
 }
 
 // =============================================================================
@@ -834,9 +836,7 @@ fn test_short_stop_loss() {
         bar("2024-01-04", 110.0, 120.0, 109.0, 115.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        sell_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![sell_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -858,7 +858,11 @@ fn test_short_stop_loss() {
     // Short entry at 104, SL at 104 * 1.05 = 109.2
     // Day 4 opens at 110 > SL → fill at open (110, gap-through)
     let exit = trade.exit_price.to_f64().unwrap();
-    assert!(exit >= 109.0, "Short SL should trigger near 109-110, got {:.2}", exit);
+    assert!(
+        exit >= 109.0,
+        "Short SL should trigger near 109-110, got {:.2}",
+        exit
+    );
 }
 
 // =============================================================================
@@ -874,9 +878,7 @@ fn test_short_take_profit() {
         bar("2024-01-04", 80.0, 82.0, 78.0, 81.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        sell_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![sell_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -914,9 +916,7 @@ fn test_trailing_stop() {
         bar("2024-01-08", 108.0, 109.0, 105.0, 106.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -932,13 +932,20 @@ fn test_trailing_stop() {
 
     // Trailing stop should have triggered
     let has_sl_trade = result.trades.iter().any(|t| t.exit_reason == "stop_loss");
-    assert!(has_sl_trade, "Trailing stop should trigger a stop_loss exit");
+    assert!(
+        has_sl_trade,
+        "Trailing stop should trigger a stop_loss exit"
+    );
 
     // The trailing stop should be based on the peak high (116)
     // Trailing SL = 116 * 0.95 = 110.2. Day 6 low=105, bar open=108 < 110.2 → fill at open=108
     if let Some(trade) = result.trades.iter().find(|t| t.exit_reason == "stop_loss") {
         let exit = trade.exit_price.to_f64().unwrap();
-        assert!(exit <= 110.5, "Trailing stop should fill near open, got {:.2}", exit);
+        assert!(
+            exit <= 110.5,
+            "Trailing stop should fill near open, got {:.2}",
+            exit
+        );
     }
 }
 
@@ -978,7 +985,9 @@ fn test_circuit_breaker() {
     // The first trade should go through, but after the large drawdown,
     // the circuit breaker should prevent new entries
     // We expect at most 1 completed round-trip (buy+sell)
-    let buy_entries: Vec<_> = result.trades.iter()
+    let buy_entries: Vec<_> = result
+        .trades
+        .iter()
         .filter(|t| t.direction.as_deref() != Some("short"))
         .collect();
     // After the circuit breaker trips, the buy_signal on day 5 should be blocked
@@ -1043,9 +1052,7 @@ fn test_fractional_shares() {
         bar("2024-01-04", 3550.0, 3650.0, 3450.0, 3600.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -1131,9 +1138,7 @@ fn test_margin_multiplier() {
         bar("2024-01-04", 52.0, 56.0, 50.0, 54.0, 1_000_000.0),
     ];
 
-    let signals = vec![
-        buy_signal("2024-01-02", "AAPL", 103.0, 0.8),
-    ];
+    let signals = vec![buy_signal("2024-01-02", "AAPL", 103.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars);
@@ -1159,7 +1164,10 @@ fn test_margin_multiplier() {
     );
 
     // margin_used_peak should be tracked
-    assert!(result.margin_used_peak.is_some(), "Margin peak should be tracked");
+    assert!(
+        result.margin_used_peak.is_some(),
+        "Margin peak should be tracked"
+    );
 }
 
 // =============================================================================
@@ -1176,19 +1184,31 @@ fn test_regime_sizing() {
         let date = format!("2024-01-{:02}", (i % 28) + 1);
         // Alternating volatile moves to trigger high-vol regime
         let price = 100.0 + if i % 2 == 0 { 5.0 } else { -5.0 };
-        bars.push(bar(&date, price - 1.0, price + 3.0, price - 3.0, price, 1_000_000.0));
+        bars.push(bar(
+            &date,
+            price - 1.0,
+            price + 3.0,
+            price - 3.0,
+            price,
+            1_000_000.0,
+        ));
     }
     // Deduplicate dates by using unique date
     let mut bars_unique = Vec::new();
     for i in 0..30 {
         let date = format!("2024-{:02}-{:02}", (i / 28) + 1, (i % 28) + 1);
         let price = 100.0 + if i % 2 == 0 { 5.0 } else { -5.0 };
-        bars_unique.push(bar(&date, price - 1.0, price + 3.0, price - 3.0, price, 1_000_000.0));
+        bars_unique.push(bar(
+            &date,
+            price - 1.0,
+            price + 3.0,
+            price - 3.0,
+            price,
+            1_000_000.0,
+        ));
     }
 
-    let signals = vec![
-        buy_signal(&bars_unique[25].date, "AAPL", 100.0, 0.8),
-    ];
+    let signals = vec![buy_signal(&bars_unique[25].date, "AAPL", 100.0, 0.8)];
 
     let mut data = HashMap::new();
     data.insert("AAPL".to_string(), bars_unique);
@@ -1202,7 +1222,7 @@ fn test_regime_sizing() {
     let result = engine.run(data, signals).unwrap();
 
     // Just verify it runs without errors — regime detection is integrated
-    assert!(result.equity_curve.len() > 0, "Should have equity curve");
+    assert!(!result.equity_curve.is_empty(), "Should have equity curve");
 }
 
 // =============================================================================
@@ -1226,7 +1246,10 @@ fn test_data_quality_report() {
     let mut engine = BacktestEngine::new(config);
     let result = engine.run(data, signals).unwrap();
 
-    let dq = result.data_quality_report.as_ref().expect("Should have data quality report");
+    let dq = result
+        .data_quality_report
+        .as_ref()
+        .expect("Should have data quality report");
     assert_eq!(dq.total_bars, 3);
     assert!(dq.zero_volume_bars > 0, "Should detect zero-volume bar");
 }
@@ -1241,7 +1264,14 @@ fn test_extended_metrics() {
     for i in 0..30 {
         let date = format!("2024-{:02}-{:02}", (i / 28) + 1, (i % 28) + 1);
         let price = 100.0 + i as f64 * 0.5;
-        bars.push(bar(&date, price, price + 2.0, price - 2.0, price + 0.3, 1_000_000.0));
+        bars.push(bar(
+            &date,
+            price,
+            price + 2.0,
+            price - 2.0,
+            price + 0.3,
+            1_000_000.0,
+        ));
     }
 
     let signals = vec![
@@ -1261,8 +1291,14 @@ fn test_extended_metrics() {
     let mut engine = BacktestEngine::new(config);
     let result = engine.run(data, signals).unwrap();
 
-    let ext = result.extended_metrics.as_ref().expect("Should have extended metrics");
-    assert!(ext.monthly_returns.len() > 0, "Should have monthly returns");
+    let ext = result
+        .extended_metrics
+        .as_ref()
+        .expect("Should have extended metrics");
+    assert!(
+        !ext.monthly_returns.is_empty(),
+        "Should have monthly returns"
+    );
     // Drawdown events may or may not exist depending on equity curve shape
     let _ = ext.top_drawdown_events.len();
 }
@@ -1277,7 +1313,14 @@ fn test_confidence_intervals() {
     for i in 0..60 {
         let date = format!("2024-{:02}-{:02}", (i / 28) + 1, (i % 28) + 1);
         let price = 100.0 + (i as f64 * 0.1).sin() * 5.0;
-        bars.push(bar(&date, price, price + 2.0, price - 2.0, price + 0.2, 1_000_000.0));
+        bars.push(bar(
+            &date,
+            price,
+            price + 2.0,
+            price - 2.0,
+            price + 0.2,
+            1_000_000.0,
+        ));
     }
 
     // Generate 12 round-trip trades (need >= 10 for CI)
@@ -1298,9 +1341,15 @@ fn test_confidence_intervals() {
     let result = engine.run(data, signals).unwrap();
 
     if result.total_trades >= 10 {
-        let ci = result.confidence_intervals.as_ref().expect("Should have CI with 10+ trades");
+        let ci = result
+            .confidence_intervals
+            .as_ref()
+            .expect("Should have CI with 10+ trades");
         assert!(ci.bootstrap_samples > 0, "Should have bootstrap samples");
-        assert!(ci.win_rate_ci_lower <= ci.win_rate_ci_upper, "CI lower <= upper");
+        assert!(
+            ci.win_rate_ci_lower <= ci.win_rate_ci_upper,
+            "CI lower <= upper"
+        );
     }
 }
 
@@ -1330,9 +1379,18 @@ fn test_tear_sheet() {
     let result = engine.run(data, signals).unwrap();
 
     let sheet = result.tear_sheet.as_ref().expect("Should have tear sheet");
-    assert!(sheet.get("summary").is_some(), "Tear sheet should have summary");
-    assert!(sheet.get("risk_metrics").is_some(), "Tear sheet should have risk metrics");
-    assert!(sheet.get("trade_analysis").is_some(), "Tear sheet should have trade analysis");
+    assert!(
+        sheet.get("summary").is_some(),
+        "Tear sheet should have summary"
+    );
+    assert!(
+        sheet.get("risk_metrics").is_some(),
+        "Tear sheet should have risk metrics"
+    );
+    assert!(
+        sheet.get("trade_analysis").is_some(),
+        "Tear sheet should have trade analysis"
+    );
 }
 
 // =============================================================================
@@ -1345,26 +1403,42 @@ fn test_monte_carlo_basic() {
 
     let trades = vec![
         BacktestTrade {
-            id: None, backtest_id: None, symbol: "AAPL".to_string(),
-            signal: "Buy".to_string(), confidence: 0.7,
+            id: None,
+            backtest_id: None,
+            symbol: "AAPL".to_string(),
+            signal: "Buy".to_string(),
+            confidence: 0.7,
             entry_date: "2024-01-02".to_string(),
             exit_date: "2024-01-05".to_string(),
-            entry_price: Decimal::from(100), exit_price: Decimal::from(110),
-            shares: Decimal::from(10), profit_loss: Decimal::from(100),
-            profit_loss_percent: 10.0, holding_period_days: 3,
-            commission_cost: Decimal::ZERO, slippage_cost: Decimal::ZERO,
-            exit_reason: "signal".to_string(), direction: Some("long".to_string()),
+            entry_price: Decimal::from(100),
+            exit_price: Decimal::from(110),
+            shares: Decimal::from(10),
+            profit_loss: Decimal::from(100),
+            profit_loss_percent: 10.0,
+            holding_period_days: 3,
+            commission_cost: Decimal::ZERO,
+            slippage_cost: Decimal::ZERO,
+            exit_reason: "signal".to_string(),
+            direction: Some("long".to_string()),
         },
         BacktestTrade {
-            id: None, backtest_id: None, symbol: "AAPL".to_string(),
-            signal: "Buy".to_string(), confidence: 0.6,
+            id: None,
+            backtest_id: None,
+            symbol: "AAPL".to_string(),
+            signal: "Buy".to_string(),
+            confidence: 0.6,
             entry_date: "2024-01-08".to_string(),
             exit_date: "2024-01-12".to_string(),
-            entry_price: Decimal::from(105), exit_price: Decimal::from(100),
-            shares: Decimal::from(10), profit_loss: Decimal::from(-50),
-            profit_loss_percent: -4.76, holding_period_days: 4,
-            commission_cost: Decimal::ZERO, slippage_cost: Decimal::ZERO,
-            exit_reason: "signal".to_string(), direction: Some("long".to_string()),
+            entry_price: Decimal::from(105),
+            exit_price: Decimal::from(100),
+            shares: Decimal::from(10),
+            profit_loss: Decimal::from(-50),
+            profit_loss_percent: -4.76,
+            holding_period_days: 4,
+            commission_cost: Decimal::ZERO,
+            slippage_cost: Decimal::ZERO,
+            exit_reason: "signal".to_string(),
+            direction: Some("long".to_string()),
         },
     ];
 
@@ -1380,14 +1454,17 @@ fn test_monte_carlo_basic() {
 
 #[test]
 fn test_monte_carlo_enhanced() {
-    use crate::monte_carlo::run_monte_carlo_enhanced;
     use crate::models::MonteCarloConfig;
+    use crate::monte_carlo::run_monte_carlo_enhanced;
 
     let mut trades = Vec::new();
     for i in 0..20 {
         trades.push(BacktestTrade {
-            id: None, backtest_id: None, symbol: "AAPL".to_string(),
-            signal: "Buy".to_string(), confidence: 0.6,
+            id: None,
+            backtest_id: None,
+            symbol: "AAPL".to_string(),
+            signal: "Buy".to_string(),
+            confidence: 0.6,
             entry_date: format!("2024-01-{:02}", i + 1),
             exit_date: format!("2024-01-{:02}", i + 2),
             entry_price: Decimal::from(100),
@@ -1411,8 +1488,8 @@ fn test_monte_carlo_enhanced() {
 
     let result = run_monte_carlo_enhanced(&trades, Decimal::from(100000), &config);
     assert_eq!(result.simulations, 100);
-    assert!(result.return_distribution.len() > 0);
-    assert!(result.drawdown_distribution.len() > 0);
+    assert!(!result.return_distribution.is_empty());
+    assert!(!result.drawdown_distribution.is_empty());
 }
 
 // =============================================================================
@@ -1469,8 +1546,8 @@ fn test_short_slippage_direction() {
 
 #[test]
 fn test_walk_forward_optimization() {
-    use crate::walk_forward_opt::run_optimized_walk_forward;
     use crate::models::{ParamSearchSpace, WalkForwardFoldData};
+    use crate::walk_forward_opt::run_optimized_walk_forward;
 
     let make_bars = |start: usize, count: usize| -> Vec<HistoricalBar> {
         (0..count)
@@ -1478,7 +1555,14 @@ fn test_walk_forward_optimization() {
                 let idx = start + i;
                 let date = format!("2024-{:02}-{:02}", (idx / 28) + 1, (idx % 28) + 1);
                 let price = 100.0 + (idx as f64 * 0.3);
-                bar(&date, price, price + 2.0, price - 2.0, price + 0.5, 1_000_000.0)
+                bar(
+                    &date,
+                    price,
+                    price + 2.0,
+                    price - 2.0,
+                    price + 0.5,
+                    1_000_000.0,
+                )
             })
             .collect()
     };
@@ -1523,7 +1607,10 @@ fn test_walk_forward_optimization() {
     assert!(result.is_ok(), "Walk-forward optimization should succeed");
 
     let result = result.unwrap();
-    assert!(result.optimized_params.len() > 0, "Should have optimized params");
+    assert!(
+        !result.optimized_params.is_empty(),
+        "Should have optimized params"
+    );
 }
 
 // =============================================================================
@@ -1537,8 +1624,14 @@ fn test_tiered_commission() {
 
     let model = CommissionModel {
         tiers: vec![
-            CommissionTier { volume_threshold: 0.0, per_share_rate: 0.01 },
-            CommissionTier { volume_threshold: 1000.0, per_share_rate: 0.005 },
+            CommissionTier {
+                volume_threshold: 0.0,
+                per_share_rate: 0.01,
+            },
+            CommissionTier {
+                volume_threshold: 1000.0,
+                per_share_rate: 0.005,
+            },
         ],
         min_per_trade: 1.0,
         max_per_trade: 100.0,
@@ -1547,18 +1640,34 @@ fn test_tiered_commission() {
     // Small trade: 10 shares at $50 with low monthly volume — first tier (0.01/share)
     // 10 * 0.01 = $0.10, but min_per_trade = $1 → commission = $1
     let comm1 = compute_tiered_commission(
-        Some(&model), Decimal::from(10), Decimal::from(50), Decimal::from_f64(0.001).unwrap(), 500.0,
+        Some(&model),
+        Decimal::from(10),
+        Decimal::from(50),
+        Decimal::from_f64(0.001).unwrap(),
+        500.0,
     );
     let comm1_f64 = comm1.to_f64().unwrap();
-    assert!(comm1_f64 >= 1.0, "Should hit minimum commission of $1, got {:.2}", comm1_f64);
+    assert!(
+        comm1_f64 >= 1.0,
+        "Should hit minimum commission of $1, got {:.2}",
+        comm1_f64
+    );
 
     // Larger trade: 100 shares at $50 at high monthly volume — second tier (0.005/share)
     // 100 * 0.005 = $0.50, but min_per_trade = $1 → commission = $1
     let comm2 = compute_tiered_commission(
-        Some(&model), Decimal::from(100), Decimal::from(50), Decimal::from_f64(0.001).unwrap(), 1500.0,
+        Some(&model),
+        Decimal::from(100),
+        Decimal::from(50),
+        Decimal::from_f64(0.001).unwrap(),
+        1500.0,
     );
     let comm2_f64 = comm2.to_f64().unwrap();
-    assert!(comm2_f64 >= 1.0 && comm2_f64 <= 100.0, "Should be within min/max, got {:.2}", comm2_f64);
+    assert!(
+        (1.0..=100.0).contains(&comm2_f64),
+        "Should be within min/max, got {:.2}",
+        comm2_f64
+    );
 }
 
 // =============================================================================
@@ -1587,7 +1696,10 @@ fn test_data_quality_ohlc() {
     data.insert("AAPL".to_string(), bars);
 
     let report = check_data_quality(&data);
-    assert!(report.warnings.len() > 0, "Should detect OHLC inconsistency");
+    assert!(
+        !report.warnings.is_empty(),
+        "Should detect OHLC inconsistency"
+    );
 }
 
 // =============================================================================
@@ -1596,8 +1708,8 @@ fn test_data_quality_ohlc() {
 
 #[test]
 fn test_factor_attribution() {
-    use crate::factor_attribution::compute_factor_attribution;
     use crate::extended_metrics::equity_returns;
+    use crate::factor_attribution::compute_factor_attribution;
 
     let strategy_equity: Vec<crate::models::EquityPoint> = (0..30)
         .map(|i| crate::models::EquityPoint {
@@ -1623,7 +1735,11 @@ fn test_factor_attribution() {
 
     let fa = fa.unwrap();
     assert!(fa.beta.is_finite(), "Beta should be finite");
-    assert!(fa.r_squared >= 0.0 && fa.r_squared <= 1.0, "R² should be in [0,1], got {:.4}", fa.r_squared);
+    assert!(
+        fa.r_squared >= 0.0 && fa.r_squared <= 1.0,
+        "R² should be in [0,1], got {:.4}",
+        fa.r_squared
+    );
 }
 
 // =============================================================================
@@ -1637,8 +1753,11 @@ fn test_bootstrap_ci() {
     let mut trades = Vec::new();
     for i in 0..20 {
         trades.push(BacktestTrade {
-            id: None, backtest_id: None, symbol: "AAPL".to_string(),
-            signal: "Buy".to_string(), confidence: 0.65,
+            id: None,
+            backtest_id: None,
+            symbol: "AAPL".to_string(),
+            signal: "Buy".to_string(),
+            confidence: 0.65,
             entry_date: format!("2024-01-{:02}", i + 1),
             exit_date: format!("2024-01-{:02}", i + 2),
             entry_price: Decimal::from(100),
@@ -1658,7 +1777,10 @@ fn test_bootstrap_ci() {
     assert!(ci.is_some(), "Should compute CI with 20 trades");
 
     let ci = ci.unwrap();
-    assert!(ci.win_rate_ci_lower <= ci.win_rate_ci_upper, "Win rate CI should be ordered");
+    assert!(
+        ci.win_rate_ci_lower <= ci.win_rate_ci_upper,
+        "Win rate CI should be ordered"
+    );
     assert!(ci.bootstrap_samples == 500);
 }
 
@@ -1687,8 +1809,16 @@ fn test_weekly_aggregation() {
     // First week: open=100 (Monday open), close=111 (Friday close),
     // high=112 (Friday), low=99 (Monday), volume=10000
     let w1 = &weekly[0];
-    assert_eq!(w1.open.to_f64().unwrap(), 100.0, "Week 1 open = Monday open");
-    assert_eq!(w1.close.to_f64().unwrap(), 111.0, "Week 1 close = Friday close");
+    assert_eq!(
+        w1.open.to_f64().unwrap(),
+        100.0,
+        "Week 1 open = Monday open"
+    );
+    assert_eq!(
+        w1.close.to_f64().unwrap(),
+        111.0,
+        "Week 1 close = Friday close"
+    );
     assert_eq!(w1.high.to_f64().unwrap(), 112.0, "Week 1 high = max");
     assert_eq!(w1.low.to_f64().unwrap(), 99.0, "Week 1 low = min");
     assert_eq!(w1.volume, 10_000.0, "Week 1 volume = sum");
@@ -1753,23 +1883,36 @@ fn test_trade_direction_field() {
 
 #[test]
 fn test_regime_detection() {
-    use crate::regime_risk::{detect_regime, Regime, regime_size_multiplier};
     use crate::models::RegimeConfig;
+    use crate::regime_risk::{detect_regime, regime_size_multiplier, Regime};
 
     let config = RegimeConfig::default();
 
     // Low vol returns
     let low_vol: Vec<f64> = (0..30).map(|_| 0.001).collect();
     let regime = detect_regime(&low_vol, &config);
-    assert!(matches!(regime, Regime::LowVol), "Stable returns should be LowVol");
+    assert!(
+        matches!(regime, Regime::LowVol),
+        "Stable returns should be LowVol"
+    );
 
     // High vol returns
-    let high_vol: Vec<f64> = (0..30).map(|i| if i % 2 == 0 { 0.05 } else { -0.05 }).collect();
+    let high_vol: Vec<f64> = (0..30)
+        .map(|i| if i % 2 == 0 { 0.05 } else { -0.05 })
+        .collect();
     let regime = detect_regime(&high_vol, &config);
-    assert!(matches!(regime, Regime::HighVol), "Volatile returns should be HighVol");
+    assert!(
+        matches!(regime, Regime::HighVol),
+        "Volatile returns should be HighVol"
+    );
 
     // Multipliers
     let hv_mult = regime_size_multiplier(Regime::HighVol, &config);
     let lv_mult = regime_size_multiplier(Regime::LowVol, &config);
-    assert!(hv_mult < lv_mult, "High vol should reduce size ({:.2} < {:.2})", hv_mult, lv_mult);
+    assert!(
+        hv_mult < lv_mult,
+        "High vol should reduce size ({:.2} < {:.2})",
+        hv_mult,
+        lv_mult
+    );
 }

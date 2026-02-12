@@ -1,7 +1,9 @@
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::{ToPrimitive, FromPrimitive};
 
-use crate::models::{BacktestResult, BacktestTrade, BenchmarkComparison, EquityPoint, SymbolResult};
+use crate::models::{
+    BacktestResult, BacktestTrade, BenchmarkComparison, EquityPoint, SymbolResult,
+};
 
 /// Persists backtest results and trades to the database.
 pub struct BacktestDb {
@@ -25,11 +27,15 @@ impl BacktestDb {
 
         let symbols_json = serde_json::to_string(&result.symbols)?;
         let equity_json = serde_json::to_string(&result.equity_curve)?;
-        let benchmark_json = result.benchmark.as_ref()
-            .map(|b| serde_json::to_string(b))
+        let benchmark_json = result
+            .benchmark
+            .as_ref()
+            .map(serde_json::to_string)
             .transpose()?;
-        let per_symbol_json = result.per_symbol_results.as_ref()
-            .map(|r| serde_json::to_string(r))
+        let per_symbol_json = result
+            .per_symbol_results
+            .as_ref()
+            .map(serde_json::to_string)
             .transpose()?;
 
         let (backtest_id,): (i64,) = sqlx::query_as(
@@ -312,20 +318,23 @@ impl BacktestRow {
             avg_holding_period_days: self.avg_holding_period_days,
             exposure_time_percent: self.exposure_time_percent,
             recovery_factor: self.recovery_factor,
-            average_win: self.average_win.and_then(|v| Decimal::from_f64(v)),
-            average_loss: self.average_loss.and_then(|v| Decimal::from_f64(v)),
-            largest_win: self.largest_win.and_then(|v| Decimal::from_f64(v)),
-            largest_loss: self.largest_loss.and_then(|v| Decimal::from_f64(v)),
+            average_win: self.average_win.and_then(Decimal::from_f64),
+            average_loss: self.average_loss.and_then(Decimal::from_f64),
+            largest_win: self.largest_win.and_then(Decimal::from_f64),
+            largest_loss: self.largest_loss.and_then(Decimal::from_f64),
             avg_trade_return_percent: self.avg_trade_return_percent,
-            total_commission_paid: Decimal::from_f64(self.total_commission_paid).unwrap_or_default(),
+            total_commission_paid: Decimal::from_f64(self.total_commission_paid)
+                .unwrap_or_default(),
             total_slippage_cost: Decimal::from_f64(self.total_slippage_cost).unwrap_or_default(),
             equity_curve,
             trades: Vec::new(),
             created_at: self.created_at,
-            benchmark: self.benchmark_json
+            benchmark: self
+                .benchmark_json
                 .as_deref()
                 .and_then(|j| serde_json::from_str::<BenchmarkComparison>(j).ok()),
-            per_symbol_results: self.per_symbol_results_json
+            per_symbol_results: self
+                .per_symbol_results_json
                 .as_deref()
                 .and_then(|j| serde_json::from_str::<Vec<SymbolResult>>(j).ok()),
             short_trades: None,

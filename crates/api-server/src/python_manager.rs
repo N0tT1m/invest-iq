@@ -2,6 +2,8 @@ use crate::embedded_frontend::FrontendAssets;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
@@ -46,12 +48,13 @@ pub struct PythonManager {
 
 impl PythonManager {
     pub fn new() -> anyhow::Result<Self> {
-        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
         let base_dir = home.join(".investiq").join("frontend");
         let (status_tx, status_rx) = watch::channel(FrontendStatus::NotStarted);
 
-        let api_base_url = std::env::var("API_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        let api_base_url =
+            std::env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
         let api_key = std::env::var("API_KEY").ok();
         let dash_port: u16 = std::env::var("DASH_PORT")
             .ok()
@@ -217,21 +220,55 @@ impl PythonManager {
     /// Kill any process currently listening on the given port.
     #[cfg(unix)]
     fn kill_port(port: u16) {
+        let my_pid = std::process::id() as i32;
         let output = std::process::Command::new("lsof")
             .args(["-ti", &format!(":{}", port)])
             .output();
 
         if let Ok(out) = output {
-            let pids = String::from_utf8_lossy(&out.stdout);
-            for pid_str in pids.split_whitespace() {
-                if let Ok(pid) = pid_str.parse::<i32>() {
-                    tracing::info!("Killing stale process on port {} (PID: {})", port, pid);
-                    unsafe { libc::kill(pid, libc::SIGTERM); }
+            let pids: Vec<i32> = String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .filter_map(|s| s.parse::<i32>().ok())
+                .filter(|&pid| pid != my_pid)
+                .collect();
+
+            if pids.is_empty() {
+                return;
+            }
+
+            for &pid in &pids {
+                tracing::info!("Killing stale process on port {} (PID: {})", port, pid);
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
                 }
             }
-            if !pids.trim().is_empty() {
-                std::thread::sleep(std::time::Duration::from_millis(500));
+
+            // Wait up to 2s for processes to die, then SIGKILL
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let check = std::process::Command::new("lsof")
+                    .args(["-ti", &format!(":{}", port)])
+                    .output();
+                let still_alive = check
+                    .map(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .split_whitespace()
+                            .any(|s| s.parse::<i32>().ok().is_some_and(|p| p != my_pid))
+                    })
+                    .unwrap_or(false);
+                if !still_alive {
+                    return;
+                }
             }
+
+            // Escalate to SIGKILL
+            for &pid in &pids {
+                tracing::warn!("SIGKILL on PID {} (port {} still occupied)", pid, port);
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     }
 
@@ -251,9 +288,12 @@ impl PythonManager {
         let mut cmd = if use_gunicorn {
             let mut c = Command::new(&gunicorn);
             c.args([
-                "--bind", &bind,
-                "--workers", &workers.to_string(),
-                "--timeout", "120",
+                "--bind",
+                &bind,
+                "--workers",
+                &workers.to_string(),
+                "--timeout",
+                "120",
                 "app:server",
             ]);
             c
@@ -291,22 +331,27 @@ impl PythonManager {
     }
 
     /// Start the frontend: extract, venv, spawn, and supervise.
-    /// Returns a JoinHandle for the supervisor task. Call `stop()` to shut down.
-    pub fn start(self) -> anyhow::Result<(tokio::task::JoinHandle<()>, watch::Receiver<FrontendStatus>)> {
+    /// Returns a JoinHandle for the supervisor task.
+    /// `child_pid` is written with the current child PID so the shutdown path
+    /// can kill the process group directly.
+    pub fn start(
+        self,
+        child_pid: Arc<AtomicU32>,
+    ) -> anyhow::Result<(tokio::task::JoinHandle<()>, watch::Receiver<FrontendStatus>)> {
         // Extract and install synchronously before spawning
         self.extract_files()?;
         self.ensure_venv()?;
 
         let status_rx = self.status_rx.clone();
         let handle = tokio::spawn(async move {
-            self.supervise_loop().await;
+            self.supervise_loop(child_pid).await;
         });
 
         Ok((handle, status_rx))
     }
 
     /// Supervisor loop: spawn child, wait for exit, restart if crashed.
-    async fn supervise_loop(self) {
+    async fn supervise_loop(self, child_pid: Arc<AtomicU32>) {
         let mut restarts: u32 = 0;
 
         loop {
@@ -323,6 +368,7 @@ impl PythonManager {
             };
 
             let pid = child.id().unwrap_or(0);
+            child_pid.store(pid, Ordering::Release);
             tracing::info!(
                 "Dashboard started (PID: {}) at http://localhost:{}",
                 pid,

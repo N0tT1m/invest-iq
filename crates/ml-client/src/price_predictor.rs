@@ -1,7 +1,7 @@
+use crate::error::{MLError, MLResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use crate::error::{MLError, MLResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceData {
@@ -15,7 +15,7 @@ pub struct PriceData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectionPrediction {
-    pub direction: String,  // "up", "down", or "neutral"
+    pub direction: String, // "up", "down", or "neutral"
     pub confidence: f64,
     pub probabilities: HashMap<String, f64>,
     pub horizon_steps: i32,
@@ -64,7 +64,7 @@ impl PricePredictorClient {
 
         let response = self
             .client
-            .post(&format!("{}/predict", self.base_url))
+            .post(format!("{}/predict", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -85,7 +85,7 @@ impl PricePredictorClient {
     pub async fn health(&self) -> MLResult<bool> {
         let response = self
             .client
-            .get(&format!("{}/health", self.base_url))
+            .get(format!("{}/health", self.base_url))
             .send()
             .await?;
 
@@ -96,7 +96,7 @@ impl PricePredictorClient {
     pub async fn evaluate(&self, symbol: String, days: i32) -> MLResult<HashMap<String, f64>> {
         let response = self
             .client
-            .get(&format!("{}/evaluate/{}", self.base_url, symbol))
+            .get(format!("{}/evaluate/{}", self.base_url, symbol))
             .query(&[("days", days)])
             .send()
             .await?;

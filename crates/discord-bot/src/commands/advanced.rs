@@ -1,11 +1,9 @@
+use super::{get_int_opt, get_string_opt, resolve_subcommand};
 use crate::embeds;
-use crate::Handler;
 use crate::respond_ephemeral;
-use super::{get_string_opt, get_int_opt, resolve_subcommand};
+use crate::Handler;
 
-use serenity::all::{
-    CommandDataOption, CommandInteraction, EditInteractionResponse,
-};
+use serenity::all::{CommandDataOption, CommandInteraction, EditInteractionResponse};
 use serenity::prelude::*;
 
 impl Handler {
@@ -21,7 +19,10 @@ impl Handler {
         };
 
         match sub_name {
-            "walkforward" => self.handle_advanced_walkforward(ctx, command, sub_opt).await,
+            "walkforward" => {
+                self.handle_advanced_walkforward(ctx, command, sub_opt)
+                    .await
+            }
             "montecarlo" => self.handle_advanced_montecarlo(ctx, command, sub_opt).await,
             "strategies" => self.handle_advanced_strategies(ctx, command).await,
             _ => {
@@ -56,23 +57,41 @@ impl Handler {
                     Ok(json) => {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_walkforward_embed(&symbol, data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error ({}): {}", status, &body[..body.len().min(200)]))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!(
+                            "API error ({}): {}",
+                            status,
+                            &body[..body.len().min(200)]
+                        )),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }
@@ -95,41 +114,72 @@ impl Handler {
         // First run backtest to get results, then monte carlo
         let backtest_url = format!("{}/api/backtest/{}?days=365", self.api_base, symbol);
         let backtest_id = match self.api_get(&backtest_url).await {
-            Ok(resp) if resp.status().is_success() => {
-                resp.json::<serde_json::Value>().await.ok()
-                    .and_then(|json| json.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_i64()))
-            }
+            Ok(resp) if resp.status().is_success() => resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|json| {
+                    json.get("data")
+                        .and_then(|d| d.get("id"))
+                        .and_then(|v| v.as_i64())
+                }),
             _ => None,
         };
 
         if let Some(id) = backtest_id {
-            let mc_url = format!("{}/api/backtest/results/{}/monte-carlo?simulations={}", self.api_base, id, sims);
+            let mc_url = format!(
+                "{}/api/backtest/results/{}/monte-carlo?simulations={}",
+                self.api_base, id, sims
+            );
             match self.api_get(&mc_url).await {
                 Ok(resp) if resp.status().is_success() => {
                     match resp.json::<serde_json::Value>().await {
                         Ok(json) => {
                             let data = json.get("data").unwrap_or(&json);
                             let embed = embeds::build_montecarlo_embed(&symbol, data);
-                            let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                            let _ = command
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new().embed(embed),
+                                )
+                                .await;
                         }
                         Err(e) => {
-                            let _ = command.edit_response(&ctx.http,
-                                EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                            let _ = command
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new().content(format!("Error: {}", e)),
+                                )
+                                .await;
                         }
                     }
                 }
                 Ok(resp) => {
-                    let _ = command.edit_response(&ctx.http,
-                        EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                    let _ = command
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new()
+                                .content(format!("API error: {}", resp.status())),
+                        )
+                        .await;
                 }
                 Err(e) => {
-                    let _ = command.edit_response(&ctx.http,
-                        EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                    let _ = command
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content(format!("Error: {}", e)),
+                        )
+                        .await;
                 }
             }
         } else {
-            let _ = command.edit_response(&ctx.http,
-                EditInteractionResponse::new().content("No backtest results found. Run a backtest first.")).await;
+            let _ = command
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new()
+                        .content("No backtest results found. Run a backtest first."),
+                )
+                .await;
         }
     }
 
@@ -143,21 +193,36 @@ impl Handler {
                     Ok(json) => {
                         let data = json.get("data").unwrap_or(&json);
                         let embed = embeds::build_strategies_embed(data);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }

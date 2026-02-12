@@ -1,16 +1,14 @@
-use axum::{
-    extract::Request,
-    http::HeaderValue,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Response};
 
 /// Adds OWASP-recommended security headers to every response.
 pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
-    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
     // Modern approach: CSP replaces XSS protection; setting to 0 disables legacy filter
     headers.insert("x-xss-protection", HeaderValue::from_static("0"));

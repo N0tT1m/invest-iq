@@ -24,7 +24,9 @@ impl PortfolioDb {
     pub async fn new(database_url: &str) -> Result<Self> {
         sqlx::any::install_default_drivers();
 
-        let db_type = if database_url.starts_with("postgres://") || database_url.starts_with("postgresql://") {
+        let db_type = if database_url.starts_with("postgres://")
+            || database_url.starts_with("postgresql://")
+        {
             DbType::Postgres
         } else {
             DbType::Sqlite

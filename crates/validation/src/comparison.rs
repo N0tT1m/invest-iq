@@ -71,9 +71,7 @@ impl ComparisonEngine {
     ) -> Result<IndicatorDifference> {
         let av_data = self.alpha_vantage.get_rsi(symbol, interval, period).await?;
 
-        let their_rsi = av_data.first()
-            .map(|d| d.value)
-            .unwrap_or(0.0);
+        let their_rsi = av_data.first().map(|d| d.value).unwrap_or(0.0);
 
         Ok(Self::calculate_difference(our_rsi, their_rsi, 2.0))
     }
@@ -112,9 +110,7 @@ impl ComparisonEngine {
     ) -> Result<IndicatorDifference> {
         let av_data = self.alpha_vantage.get_sma(symbol, interval, period).await?;
 
-        let their_sma = av_data.first()
-            .map(|d| d.value)
-            .unwrap_or(0.0);
+        let their_sma = av_data.first().map(|d| d.value).unwrap_or(0.0);
 
         Ok(Self::calculate_difference(our_sma, their_sma, 1.0))
     }
@@ -143,17 +139,19 @@ impl ComparisonEngine {
             None
         };
 
-        let margin_diff = if let (Some(our), Some(their)) = (our_profit_margin, yahoo_data.profit_margin) {
-            Some(Self::calculate_difference(our, their * 100.0, 5.0)) // Yahoo returns as decimal
-        } else {
-            None
-        };
+        let margin_diff =
+            if let (Some(our), Some(their)) = (our_profit_margin, yahoo_data.profit_margin) {
+                Some(Self::calculate_difference(our, their * 100.0, 5.0)) // Yahoo returns as decimal
+            } else {
+                None
+            };
 
-        let debt_diff = if let (Some(our), Some(their)) = (our_debt_to_equity, yahoo_data.debt_to_equity) {
-            Some(Self::calculate_difference(our, their, 10.0))
-        } else {
-            None
-        };
+        let debt_diff =
+            if let (Some(our), Some(their)) = (our_debt_to_equity, yahoo_data.debt_to_equity) {
+                Some(Self::calculate_difference(our, their, 10.0))
+            } else {
+                None
+            };
 
         let beta_diff = if let (Some(our), Some(their)) = (our_beta, yahoo_data.beta) {
             Some(Self::calculate_difference(our, their, 0.2))
@@ -166,23 +164,43 @@ impl ComparisonEngine {
         let mut count = 0;
 
         if let Some(diff) = &pe_diff {
-            total_accuracy += if diff.within_tolerance { 100.0 } else { 100.0 - diff.percentage_difference.abs() };
+            total_accuracy += if diff.within_tolerance {
+                100.0
+            } else {
+                100.0 - diff.percentage_difference.abs()
+            };
             count += 1;
         }
         if let Some(diff) = &roe_diff {
-            total_accuracy += if diff.within_tolerance { 100.0 } else { 100.0 - diff.percentage_difference.abs().min(100.0) };
+            total_accuracy += if diff.within_tolerance {
+                100.0
+            } else {
+                100.0 - diff.percentage_difference.abs().min(100.0)
+            };
             count += 1;
         }
         if let Some(diff) = &margin_diff {
-            total_accuracy += if diff.within_tolerance { 100.0 } else { 100.0 - diff.percentage_difference.abs().min(100.0) };
+            total_accuracy += if diff.within_tolerance {
+                100.0
+            } else {
+                100.0 - diff.percentage_difference.abs().min(100.0)
+            };
             count += 1;
         }
         if let Some(diff) = &debt_diff {
-            total_accuracy += if diff.within_tolerance { 100.0 } else { 100.0 - diff.percentage_difference.abs().min(100.0) };
+            total_accuracy += if diff.within_tolerance {
+                100.0
+            } else {
+                100.0 - diff.percentage_difference.abs().min(100.0)
+            };
             count += 1;
         }
         if let Some(diff) = &beta_diff {
-            total_accuracy += if diff.within_tolerance { 100.0 } else { 100.0 - diff.percentage_difference.abs().min(100.0) };
+            total_accuracy += if diff.within_tolerance {
+                100.0
+            } else {
+                100.0 - diff.percentage_difference.abs().min(100.0)
+            };
             count += 1;
         }
 
@@ -203,7 +221,11 @@ impl ComparisonEngine {
     }
 
     /// Helper function to calculate the difference between two values
-    fn calculate_difference(our_value: f64, their_value: f64, tolerance_percent: f64) -> IndicatorDifference {
+    fn calculate_difference(
+        our_value: f64,
+        their_value: f64,
+        tolerance_percent: f64,
+    ) -> IndicatorDifference {
         let absolute_difference = (our_value - their_value).abs();
 
         let percentage_difference = if their_value != 0.0 {
@@ -224,6 +246,7 @@ impl ComparisonEngine {
     }
 
     /// Perform a full comparison
+    #[allow(clippy::too_many_arguments)]
     pub async fn full_comparison(
         &self,
         symbol: &str,
@@ -244,7 +267,9 @@ impl ComparisonEngine {
         };
 
         let macd_diff = if let Some((macd, signal, hist)) = our_macd {
-            self.compare_macd(symbol, macd, signal, hist, "daily").await.ok()
+            self.compare_macd(symbol, macd, signal, hist, "daily")
+                .await
+                .ok()
         } else {
             None
         };
@@ -260,16 +285,28 @@ impl ComparisonEngine {
         let mut tech_count = 0;
 
         if let Some(diff) = &rsi_diff {
-            tech_accuracy += if diff.within_tolerance { 100.0 } else { 100.0 - diff.percentage_difference.abs().min(100.0) };
+            tech_accuracy += if diff.within_tolerance {
+                100.0
+            } else {
+                100.0 - diff.percentage_difference.abs().min(100.0)
+            };
             tech_count += 1;
         }
         if let Some(diff) = &macd_diff {
-            let macd_acc = if diff.macd.within_tolerance { 100.0 } else { 100.0 - diff.macd.percentage_difference.abs().min(100.0) };
+            let macd_acc = if diff.macd.within_tolerance {
+                100.0
+            } else {
+                100.0 - diff.macd.percentage_difference.abs().min(100.0)
+            };
             tech_accuracy += macd_acc;
             tech_count += 1;
         }
         if let Some(diff) = &sma_diff {
-            tech_accuracy += if diff.within_tolerance { 100.0 } else { 100.0 - diff.percentage_difference.abs().min(100.0) };
+            tech_accuracy += if diff.within_tolerance {
+                100.0
+            } else {
+                100.0 - diff.percentage_difference.abs().min(100.0)
+            };
             tech_count += 1;
         }
 
@@ -287,20 +324,25 @@ impl ComparisonEngine {
         };
 
         // Fundamental comparison
-        let fundamental_comparison = self.compare_fundamentals(
-            symbol,
-            our_pe,
-            our_roe,
-            our_profit_margin,
-            our_debt_to_equity,
-            our_beta,
-        ).await?;
+        let fundamental_comparison = self
+            .compare_fundamentals(
+                symbol,
+                our_pe,
+                our_roe,
+                our_profit_margin,
+                our_debt_to_equity,
+                our_beta,
+            )
+            .await?;
 
         // Overall accuracy
-        let overall_accuracy = (overall_technical_accuracy + fundamental_comparison.overall_fundamental_accuracy) / 2.0;
+        let overall_accuracy = (overall_technical_accuracy
+            + fundamental_comparison.overall_fundamental_accuracy)
+            / 2.0;
 
         // Generate summary
-        let differences_summary = Self::generate_summary(&technical_comparison, &fundamental_comparison);
+        let differences_summary =
+            Self::generate_summary(&technical_comparison, &fundamental_comparison);
 
         Ok(ComparisonResult {
             symbol: symbol.to_string(),
@@ -316,19 +358,28 @@ impl ComparisonEngine {
 
         if let Some(diff) = &tech.rsi_difference {
             if !diff.within_tolerance {
-                summary.push(format!("RSI differs by {:.1}%", diff.percentage_difference.abs()));
+                summary.push(format!(
+                    "RSI differs by {:.1}%",
+                    diff.percentage_difference.abs()
+                ));
             }
         }
 
         if let Some(diff) = &tech.macd_difference {
             if !diff.macd.within_tolerance {
-                summary.push(format!("MACD differs by {:.1}%", diff.macd.percentage_difference.abs()));
+                summary.push(format!(
+                    "MACD differs by {:.1}%",
+                    diff.macd.percentage_difference.abs()
+                ));
             }
         }
 
         if let Some(diff) = &fund.pe_ratio_difference {
             if !diff.within_tolerance {
-                summary.push(format!("P/E ratio differs by {:.1}%", diff.percentage_difference.abs()));
+                summary.push(format!(
+                    "P/E ratio differs by {:.1}%",
+                    diff.percentage_difference.abs()
+                ));
             }
         }
 

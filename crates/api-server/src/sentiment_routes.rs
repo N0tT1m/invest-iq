@@ -9,18 +9,16 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
 use sentiment_analysis::{
     SentimentDataPoint, SentimentDynamics, SentimentVelocityCalculator, VelocitySignal,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-use sqlx;
 
 use crate::{get_default_analysis, ApiResponse, AppError, AppState};
 
 /// Query parameters for sentiment velocity
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct VelocityQuery {
     /// Number of days of history to analyze (default: 7)
     #[serde(default = "default_days")]
@@ -32,7 +30,7 @@ fn default_days() -> i64 {
 }
 
 /// Query parameters for sentiment history
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct HistoryQuery {
     /// Number of days of history to return (default: 30)
     #[serde(default = "default_history_days")]
@@ -51,7 +49,7 @@ fn default_limit() -> i64 {
 }
 
 /// Request to record a sentiment data point
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RecordSentimentRequest {
     pub symbol: String,
     pub sentiment_score: f64,
@@ -61,7 +59,7 @@ pub struct RecordSentimentRequest {
 }
 
 /// Response for sentiment velocity
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SentimentVelocityResponse {
     pub symbol: String,
     pub dynamics: SentimentDynamics,
@@ -70,7 +68,7 @@ pub struct SentimentVelocityResponse {
 }
 
 /// Response for sentiment history
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SentimentHistoryResponse {
     pub symbol: String,
     pub history: Vec<SentimentHistoryPoint>,
@@ -78,7 +76,7 @@ pub struct SentimentHistoryResponse {
 }
 
 /// A point in sentiment history
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SentimentHistoryPoint {
     pub timestamp: DateTime<Utc>,
     pub sentiment_score: f64,
@@ -88,7 +86,7 @@ pub struct SentimentHistoryPoint {
 }
 
 /// Summary statistics for sentiment
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SentimentSummary {
     pub avg_sentiment: f64,
     pub min_sentiment: f64,
@@ -100,7 +98,10 @@ pub struct SentimentSummary {
 /// Create sentiment routes
 pub fn sentiment_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/sentiment/:symbol/velocity", get(get_sentiment_velocity))
+        .route(
+            "/api/sentiment/:symbol/velocity",
+            get(get_sentiment_velocity),
+        )
         .route("/api/sentiment/:symbol/history", get(get_sentiment_history))
         .route("/api/sentiment/record", post(record_sentiment))
         .route("/api/sentiment/:symbol/analyze", get(analyze_sentiment_now))
@@ -108,7 +109,7 @@ pub fn sentiment_routes() -> Router<AppState> {
 }
 
 /// A headline entry with sentiment
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct HeadlineEntry {
     pub title: String,
     pub published: String,
@@ -118,7 +119,7 @@ pub struct HeadlineEntry {
 }
 
 /// Social sentiment response (news-powered)
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SocialSentimentResponse {
     pub symbol: String,
     pub available: bool,
@@ -135,18 +136,66 @@ pub struct SocialSentimentResponse {
 
 /// Positive / negative word lists for simple news scoring
 const POSITIVE_WORDS: &[&str] = &[
-    "upgrade", "beat", "surge", "rally", "gain", "growth", "profit", "bullish",
-    "outperform", "strong", "record", "high", "positive", "optimistic", "buy",
-    "boost", "rise", "jump", "soar", "breakout", "momentum", "upbeat", "exceeds",
-    "dividend", "innovative", "partnership", "expansion", "recovery",
+    "upgrade",
+    "beat",
+    "surge",
+    "rally",
+    "gain",
+    "growth",
+    "profit",
+    "bullish",
+    "outperform",
+    "strong",
+    "record",
+    "high",
+    "positive",
+    "optimistic",
+    "buy",
+    "boost",
+    "rise",
+    "jump",
+    "soar",
+    "breakout",
+    "momentum",
+    "upbeat",
+    "exceeds",
+    "dividend",
+    "innovative",
+    "partnership",
+    "expansion",
+    "recovery",
 ];
 
 const NEGATIVE_WORDS: &[&str] = &[
-    "downgrade", "miss", "plunge", "crash", "loss", "decline", "bearish",
-    "underperform", "weak", "low", "negative", "pessimistic", "sell",
-    "drop", "fall", "slump", "warning", "risk", "lawsuit", "fraud",
-    "bankruptcy", "default", "layoff", "cut", "recession", "investigation",
-    "recall", "debt", "concern",
+    "downgrade",
+    "miss",
+    "plunge",
+    "crash",
+    "loss",
+    "decline",
+    "bearish",
+    "underperform",
+    "weak",
+    "low",
+    "negative",
+    "pessimistic",
+    "sell",
+    "drop",
+    "fall",
+    "slump",
+    "warning",
+    "risk",
+    "lawsuit",
+    "fraud",
+    "bankruptcy",
+    "default",
+    "layoff",
+    "cut",
+    "recession",
+    "investigation",
+    "recall",
+    "debt",
+    "concern",
 ];
 
 fn score_text(text: &str) -> f64 {
@@ -165,13 +214,23 @@ fn score_text(text: &str) -> f64 {
     score
 }
 
-/// Get social sentiment (news-powered)
+#[utoipa::path(
+    get,
+    path = "/api/sentiment/{symbol}/social",
+    params(("symbol" = String, Path, description = "Stock ticker symbol")),
+    responses((status = 200, description = "Social sentiment data powered by news analysis")),
+    tag = "Sentiment"
+)]
 async fn get_social_sentiment(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Result<Json<ApiResponse<SocialSentimentResponse>>, AppError> {
     let symbol = symbol.to_uppercase();
-    let articles = state.orchestrator.get_news(&symbol, 30).await.unwrap_or_default();
+    let articles = state
+        .orchestrator
+        .get_news(&symbol, 30)
+        .await
+        .unwrap_or_default();
 
     if articles.is_empty() {
         return Ok(Json(ApiResponse {
@@ -270,6 +329,16 @@ async fn get_social_sentiment(
 ///
 /// Calculates the rate of change in sentiment and provides
 /// trading signals based on sentiment momentum.
+#[utoipa::path(
+    get,
+    path = "/api/sentiment/{symbol}/velocity",
+    params(
+        ("symbol" = String, Path, description = "Stock ticker symbol"),
+        VelocityQuery,
+    ),
+    responses((status = 200, description = "Sentiment velocity and momentum signals")),
+    tag = "Sentiment"
+)]
 async fn get_sentiment_velocity(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
@@ -278,10 +347,12 @@ async fn get_sentiment_velocity(
     let symbol = symbol.to_uppercase();
 
     // Get sentiment history from database
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?;
 
-    let mut history = get_sentiment_history_from_db(&portfolio_manager, &symbol, query.days).await?;
+    let mut history = get_sentiment_history_from_db(portfolio_manager, &symbol, query.days).await?;
 
     // Auto-record: if no recent data point (within 1 hour), save current sentiment
     let needs_recording = if let Some(latest) = history.last() {
@@ -308,7 +379,7 @@ async fn get_sentiment_velocity(
 
             let now = Utc::now();
             let _ = save_sentiment_to_db(
-                &portfolio_manager,
+                portfolio_manager,
                 &symbol,
                 now,
                 sentiment_score,
@@ -331,7 +402,11 @@ async fn get_sentiment_velocity(
 
     // Seed from news articles if we have fewer than 3 points (minimum for velocity calc)
     if history.len() < 3 {
-        let articles = state.orchestrator.get_news(&symbol, 50).await.unwrap_or_default();
+        let articles = state
+            .orchestrator
+            .get_news(&symbol, 50)
+            .await
+            .unwrap_or_default();
         if !articles.is_empty() {
             // Group articles by date and compute daily sentiment
             let mut daily: BTreeMap<NaiveDate, (f64, i32)> = BTreeMap::new();
@@ -349,10 +424,8 @@ async fn get_sentiment_velocity(
             }
 
             // Convert to data points and save any we don't already have
-            let existing_dates: std::collections::HashSet<NaiveDate> = history
-                .iter()
-                .map(|p| p.timestamp.date_naive())
-                .collect();
+            let existing_dates: std::collections::HashSet<NaiveDate> =
+                history.iter().map(|p| p.timestamp.date_naive()).collect();
 
             for (date, (total_score, count)) in &daily {
                 if existing_dates.contains(date) {
@@ -361,13 +434,10 @@ async fn get_sentiment_velocity(
                 let avg_score = *total_score / (*count as f64);
                 // Normalize to -100..100 scale (word-list scores are typically -3..3)
                 let normalized = (avg_score * 33.3).clamp(-100.0, 100.0);
-                let ts = date
-                    .and_hms_opt(12, 0, 0)
-                    .unwrap()
-                    .and_utc();
+                let ts = date.and_hms_opt(12, 0, 0).unwrap().and_utc();
 
                 let _ = save_sentiment_to_db(
-                    &portfolio_manager,
+                    portfolio_manager,
                     &symbol,
                     ts,
                     normalized,
@@ -400,7 +470,8 @@ async fn get_sentiment_velocity(
                 acceleration: 0.0,
                 narrative_shift: None,
                 signal: VelocitySignal::Stable,
-                interpretation: "No sentiment data available. Try again after analyzing the symbol.".to_string(),
+                interpretation:
+                    "No sentiment data available. Try again after analyzing the symbol.".to_string(),
                 confidence: 0.0,
             },
             history_points: 0,
@@ -421,6 +492,16 @@ async fn get_sentiment_velocity(
 }
 
 /// Get sentiment history for a symbol
+#[utoipa::path(
+    get,
+    path = "/api/sentiment/{symbol}/history",
+    params(
+        ("symbol" = String, Path, description = "Stock ticker symbol"),
+        HistoryQuery,
+    ),
+    responses((status = 200, description = "Historical sentiment data with summary statistics")),
+    tag = "Sentiment"
+)]
 async fn get_sentiment_history(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
@@ -428,10 +509,12 @@ async fn get_sentiment_history(
 ) -> Result<Json<ApiResponse<SentimentHistoryResponse>>, AppError> {
     let symbol = symbol.to_uppercase();
 
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?;
 
-    let history = get_sentiment_history_from_db(&portfolio_manager, &symbol, query.days).await?;
+    let history = get_sentiment_history_from_db(portfolio_manager, &symbol, query.days).await?;
 
     // Convert to response format
     let history_points: Vec<SentimentHistoryPoint> = history
@@ -464,8 +547,8 @@ async fn get_sentiment_history(
 
         // Determine trend
         let trend = if history.len() >= 2 {
-            let first_half_avg: f64 = scores[..scores.len() / 2].iter().sum::<f64>()
-                / (scores.len() / 2) as f64;
+            let first_half_avg: f64 =
+                scores[..scores.len() / 2].iter().sum::<f64>() / (scores.len() / 2) as f64;
             let second_half_avg: f64 = scores[scores.len() / 2..].iter().sum::<f64>()
                 / (scores.len() - scores.len() / 2) as f64;
 
@@ -497,6 +580,13 @@ async fn get_sentiment_history(
 }
 
 /// Record a sentiment data point
+#[utoipa::path(
+    post,
+    path = "/api/sentiment/record",
+    request_body = RecordSentimentRequest,
+    responses((status = 200, description = "Sentiment data point recorded")),
+    tag = "Sentiment"
+)]
 async fn record_sentiment(
     State(state): State<AppState>,
     Json(req): Json<RecordSentimentRequest>,
@@ -504,11 +594,13 @@ async fn record_sentiment(
     let symbol = req.symbol.to_uppercase();
     let timestamp = req.timestamp.unwrap_or_else(Utc::now);
 
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?;
 
     // Calculate velocity if we have history
-    let history = get_sentiment_history_from_db(&portfolio_manager, &symbol, 7).await?;
+    let history = get_sentiment_history_from_db(portfolio_manager, &symbol, 7).await?;
 
     let (velocity, acceleration, signal) = if !history.is_empty() {
         let mut all_points = history.clone();
@@ -532,7 +624,7 @@ async fn record_sentiment(
 
     // Insert into database
     save_sentiment_to_db(
-        &portfolio_manager,
+        portfolio_manager,
         &symbol,
         timestamp,
         req.sentiment_score,
@@ -550,6 +642,13 @@ async fn record_sentiment(
 }
 
 /// Analyze current sentiment and record it
+#[utoipa::path(
+    get,
+    path = "/api/sentiment/{symbol}/analyze",
+    params(("symbol" = String, Path, description = "Stock ticker symbol")),
+    responses((status = 200, description = "Fresh sentiment analysis with velocity tracking")),
+    tag = "Sentiment"
+)]
 async fn analyze_sentiment_now(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
@@ -610,7 +709,10 @@ async fn analyze_sentiment_now(
             acceleration: 0.0,
             narrative_shift: None,
             signal: VelocitySignal::Stable,
-            interpretation: format!("Current sentiment: {:.1}. Enable database for velocity tracking.", sentiment_score),
+            interpretation: format!(
+                "Current sentiment: {:.1}. Enable database for velocity tracking.",
+                sentiment_score
+            ),
             confidence: 0.0,
         },
         history_points: 0,
@@ -637,7 +739,7 @@ async fn get_sentiment_history_from_db(
     let rows = sqlx::query_as::<_, SentimentHistoryRow>(
         "SELECT symbol, timestamp, sentiment_score, article_count FROM sentiment_history \
          WHERE symbol = ? AND timestamp >= datetime('now', '-' || ? || ' days') \
-         ORDER BY timestamp ASC"
+         ORDER BY timestamp ASC",
     )
     .bind(symbol)
     .bind(days)
@@ -666,6 +768,7 @@ async fn get_sentiment_history_from_db(
     Ok(points)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn save_sentiment_to_db(
     portfolio_manager: &portfolio_manager::PortfolioManager,
     symbol: &str,

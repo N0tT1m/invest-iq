@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["crates/invest-iq-data"]
+exclude = ["crates/invest-iq-data", "crates/desktop-app", "crates/desktop-frontend"]
 members = [
     "crates/analysis-core",
     "crates/polygon-client",
@@ -29,6 +29,10 @@ members = [
     "crates/time-machine",
     "crates/tax-optimizer",
     "crates/data-loader",
+    "crates/ml-engine",
+    "crates/notification-service",
+    "crates/broker-trait",
+    "crates/ibkr-broker",
 ]
 
 resolver = "2"
@@ -46,7 +50,7 @@ async-trait = "0.1"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
 tower = { version = "0.5", features = ["timeout"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
@@ -85,6 +89,13 @@ rust_decimal_macros = "1.36"
 
 # Data structures
 dashmap = "6.1"
+
+# WebSocket
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+
+# Python integration
+pyo3 = { version = "0.27", features = ["auto-initialize"] }
 
 # Embedded frontend
 rust-embed = { version = "8", features = ["include-exclude"] }

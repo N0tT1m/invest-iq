@@ -1,14 +1,20 @@
-pub mod sentiment;
 pub mod bayesian;
-pub mod price_predictor;
-pub mod signal_models;
+pub mod earnings_nlp;
 pub mod error;
+pub mod price_predictor;
+pub mod provider;
+pub mod sentiment;
+pub mod signal_models;
+pub mod social_sentiment;
 
-pub use sentiment::SentimentClient;
 pub use bayesian::BayesianClient;
-pub use price_predictor::PricePredictorClient;
-pub use signal_models::SignalModelsClient;
+pub use earnings_nlp::EarningsNlpClient;
 pub use error::{MLError, MLResult};
+pub use price_predictor::PricePredictorClient;
+pub use provider::{HttpMLProvider, MLProvider};
+pub use sentiment::SentimentClient;
+pub use signal_models::SignalModelsClient;
+pub use social_sentiment::SocialSentimentClient;
 
 use std::time::Duration;
 
@@ -19,6 +25,8 @@ pub struct MLConfig {
     pub bayesian_url: String,
     pub price_predictor_url: String,
     pub signal_models_url: String,
+    pub social_sentiment_url: String,
+    pub earnings_nlp_url: String,
     pub timeout: Duration,
 }
 
@@ -33,6 +41,10 @@ impl Default for MLConfig {
                 .unwrap_or_else(|_| "http://localhost:8003".to_string()),
             signal_models_url: std::env::var("ML_SIGNAL_MODELS_URL")
                 .unwrap_or_else(|_| "http://localhost:8004".to_string()),
+            social_sentiment_url: std::env::var("ML_SOCIAL_SENTIMENT_URL")
+                .unwrap_or_else(|_| "http://localhost:8006".to_string()),
+            earnings_nlp_url: std::env::var("ML_EARNINGS_NLP_URL")
+                .unwrap_or_else(|_| "http://localhost:8005".to_string()),
             timeout: Duration::from_secs(10),
         }
     }
@@ -45,6 +57,8 @@ pub struct MLClient {
     pub bayesian: BayesianClient,
     pub price_predictor: PricePredictorClient,
     pub signal_models: SignalModelsClient,
+    pub social_sentiment: SocialSentimentClient,
+    pub earnings_nlp: EarningsNlpClient,
 }
 
 impl MLClient {
@@ -59,8 +73,19 @@ impl MLClient {
         Self {
             sentiment: SentimentClient::with_client(shared_client.clone(), config.sentiment_url),
             bayesian: BayesianClient::with_client(shared_client.clone(), config.bayesian_url),
-            price_predictor: PricePredictorClient::with_client(shared_client.clone(), config.price_predictor_url),
-            signal_models: SignalModelsClient::with_client(shared_client, config.signal_models_url),
+            price_predictor: PricePredictorClient::with_client(
+                shared_client.clone(),
+                config.price_predictor_url,
+            ),
+            signal_models: SignalModelsClient::with_client(
+                shared_client.clone(),
+                config.signal_models_url,
+            ),
+            social_sentiment: SocialSentimentClient::with_client(
+                shared_client.clone(),
+                config.social_sentiment_url,
+            ),
+            earnings_nlp: EarningsNlpClient::with_client(shared_client, config.earnings_nlp_url),
         }
     }
 

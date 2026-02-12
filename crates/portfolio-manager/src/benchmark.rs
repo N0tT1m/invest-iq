@@ -58,8 +58,8 @@ impl BenchmarkComparer {
 
         let te = shared_math::tracking_error(pr, br);
         let info_ratio = if te > 1e-12 {
-            let excess_mean = pr.iter().zip(br.iter()).map(|(p, b)| p - b).sum::<f64>()
-                / n_returns as f64;
+            let excess_mean =
+                pr.iter().zip(br.iter()).map(|(p, b)| p - b).sum::<f64>() / n_returns as f64;
             Some(excess_mean / (te / 252.0_f64.sqrt()))
         } else {
             None
@@ -83,7 +83,11 @@ impl BenchmarkComparer {
             .zip(port_vals.iter())
             .map(|(d, v)| IndexedPoint {
                 date: d.clone(),
-                value: if port_vals[0] > 0.0 { v / port_vals[0] * 100.0 } else { 100.0 },
+                value: if port_vals[0] > 0.0 {
+                    v / port_vals[0] * 100.0
+                } else {
+                    100.0
+                },
             })
             .collect();
 
@@ -92,7 +96,11 @@ impl BenchmarkComparer {
             .zip(bench_vals.iter())
             .map(|(d, v)| IndexedPoint {
                 date: d.clone(),
-                value: if bench_vals[0] > 0.0 { v / bench_vals[0] * 100.0 } else { 100.0 },
+                value: if bench_vals[0] > 0.0 {
+                    v / bench_vals[0] * 100.0
+                } else {
+                    100.0
+                },
             })
             .collect();
 

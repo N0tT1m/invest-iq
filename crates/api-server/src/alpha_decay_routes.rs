@@ -2,14 +2,14 @@
 //!
 //! Endpoints for strategy health monitoring and decay detection.
 
+use alpha_decay::{
+    AlphaDecayMonitor, ChangeDetector, DecayMetrics, HealthReport, HealthReportBuilder,
+    HealthStatus, PerformanceSnapshot, StrategyHealth,
+};
 use axum::{
     extract::{Path, State},
     routing::{get, post},
     Json, Router,
-};
-use alpha_decay::{
-    AlphaDecayMonitor, ChangeDetector, DecayMetrics, HealthReport, HealthReportBuilder,
-    HealthStatus, PerformanceSnapshot, StrategyHealth,
 };
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::{ApiResponse, AppError, AppState};
 
 /// Request to record a performance snapshot
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RecordSnapshotRequest {
     pub strategy_name: String,
     pub snapshot_date: String, // YYYY-MM-DD
@@ -28,14 +28,14 @@ pub struct RecordSnapshotRequest {
 }
 
 /// Response with all strategy health summaries
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct StrategiesHealthResponse {
     pub strategies: Vec<StrategyHealthSummary>,
     pub overall_portfolio_health: f64,
 }
 
 /// Summary of a single strategy's health
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct StrategyHealthSummary {
     pub strategy_name: String,
     pub status: String,
@@ -59,6 +59,12 @@ pub fn alpha_decay_routes() -> Router<AppState> {
 }
 
 /// Get health status for all strategies
+#[utoipa::path(
+    get,
+    path = "/api/strategies/health",
+    responses((status = 200, description = "Health summary for all monitored strategies")),
+    tag = "Strategies"
+)]
 async fn get_all_strategies_health(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<StrategiesHealthResponse>>, AppError> {
@@ -102,6 +108,13 @@ async fn get_all_strategies_health(
 }
 
 /// Get health status for a specific strategy
+#[utoipa::path(
+    get,
+    path = "/api/strategies/{name}/health",
+    params(("name" = String, Path, description = "Strategy name")),
+    responses((status = 200, description = "Detailed health status for a strategy")),
+    tag = "Strategies"
+)]
 async fn get_strategy_health(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -126,7 +139,9 @@ async fn get_strategy_health(
         "Strategy should be retired.".to_string()
     };
 
-    let time_to_breakeven = metrics.days_to_breakeven.map(|d| chrono::Duration::days(d as i64));
+    let time_to_breakeven = metrics
+        .days_to_breakeven
+        .map(|d| chrono::Duration::days(d as i64));
 
     Ok(Json(ApiResponse::success(StrategyHealth {
         strategy_name: name,
@@ -140,6 +155,13 @@ async fn get_strategy_health(
 }
 
 /// Get performance history for a strategy
+#[utoipa::path(
+    get,
+    path = "/api/strategies/{name}/history",
+    params(("name" = String, Path, description = "Strategy name")),
+    responses((status = 200, description = "Historical performance snapshots")),
+    tag = "Strategies"
+)]
 async fn get_strategy_history(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -153,6 +175,13 @@ async fn get_strategy_history(
 }
 
 /// Get decay analysis with change detection
+#[utoipa::path(
+    get,
+    path = "/api/strategies/{name}/decay",
+    params(("name" = String, Path, description = "Strategy name")),
+    responses((status = 200, description = "Decay metrics with CUSUM change detection")),
+    tag = "Strategies"
+)]
 async fn get_decay_analysis(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -184,7 +213,7 @@ async fn get_decay_analysis(
     })))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DecayAnalysisResponse {
     pub metrics: DecayMetrics,
     pub cusum_result: Option<alpha_decay::CusumResult>,
@@ -192,6 +221,13 @@ pub struct DecayAnalysisResponse {
 }
 
 /// Get full health report for a strategy
+#[utoipa::path(
+    get,
+    path = "/api/strategies/{name}/report",
+    params(("name" = String, Path, description = "Strategy name")),
+    responses((status = 200, description = "Full health report with recommendations")),
+    tag = "Strategies"
+)]
 async fn get_health_report(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -223,6 +259,13 @@ async fn get_health_report(
 }
 
 /// Record a performance snapshot
+#[utoipa::path(
+    post,
+    path = "/api/strategies/snapshot",
+    request_body = RecordSnapshotRequest,
+    responses((status = 200, description = "Snapshot recorded with assigned ID")),
+    tag = "Strategies"
+)]
 async fn record_snapshot(
     State(state): State<AppState>,
     Json(req): Json<RecordSnapshotRequest>,
@@ -252,22 +295,33 @@ async fn record_snapshot(
 }
 
 /// Mark a strategy as retired
+#[utoipa::path(
+    post,
+    path = "/api/strategies/{name}/retire",
+    params(("name" = String, Path, description = "Strategy name")),
+    responses((status = 200, description = "Strategy marked as retired")),
+    tag = "Strategies"
+)]
 async fn retire_strategy(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
-    let pool = state.portfolio_manager.as_ref()
+    let pool = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
-        .db().pool();
+        .db()
+        .pool();
 
-    sqlx::query(
-        "UPDATE strategy_health_snapshots SET status = 'retired' WHERE strategy_name = ?"
-    )
-    .bind(&name)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE strategy_health_snapshots SET status = 'retired' WHERE strategy_name = ?")
+        .bind(&name)
+        .execute(pool)
+        .await?;
 
-    Ok(Json(ApiResponse::success(format!("Strategy '{}' retired", name))))
+    Ok(Json(ApiResponse::success(format!(
+        "Strategy '{}' retired",
+        name
+    ))))
 }
 
 fn calculate_quick_health_score(metrics: &DecayMetrics, status: &HealthStatus) -> f64 {

@@ -101,11 +101,11 @@ impl OpportunityScanner {
     /// Default stock universe (popular stocks)
     fn default_universe() -> Vec<String> {
         vec![
-            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "CRM",
-            "ORCL", "ADBE", "INTC", "QCOM", "AVGO", "TXN", "MU", "AMAT", "LRCX", "KLAC",
-            "JPM", "BAC", "WFC", "GS", "MS", "C", "USB", "PNC", "TFC", "COF",
-            "JNJ", "UNH", "PFE", "MRK", "ABBV", "TMO", "LLY", "BMY", "AMGN", "GILD",
-            "DIS", "CMCSA", "VZ", "T", "TMUS", "NFLX", "CHTR", "FOXA", "WBD", "PARA",
+            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "CRM", "ORCL",
+            "ADBE", "INTC", "QCOM", "AVGO", "TXN", "MU", "AMAT", "LRCX", "KLAC", "JPM", "BAC",
+            "WFC", "GS", "MS", "C", "USB", "PNC", "TFC", "COF", "JNJ", "UNH", "PFE", "MRK", "ABBV",
+            "TMO", "LLY", "BMY", "AMGN", "GILD", "DIS", "CMCSA", "VZ", "T", "TMUS", "NFLX", "CHTR",
+            "FOXA", "WBD", "PARA",
         ]
         .into_iter()
         .map(|s| s.to_string())
@@ -139,7 +139,8 @@ impl OpportunityScanner {
                     }
 
                     // Check for upcoming events
-                    let (event_type, event_date) = self.find_upcoming_event(symbol, config.event_horizon_days);
+                    let (event_type, event_date) =
+                        self.find_upcoming_event(symbol, config.event_horizon_days);
 
                     let potential_return = if let (Some(target), Some(current)) =
                         (analysis.price_target, analysis.current_price)
@@ -214,11 +215,19 @@ impl OpportunityScanner {
         let mut parts: Vec<String> = Vec::new();
 
         match signal {
-            OpportunitySignal::StrongBuy => parts.push("Strong bullish signals across multiple indicators".to_string()),
-            OpportunitySignal::Buy => parts.push("Positive technical and fundamental setup".to_string()),
-            OpportunitySignal::Neutral => parts.push("Mixed signals, wait for confirmation".to_string()),
+            OpportunitySignal::StrongBuy => {
+                parts.push("Strong bullish signals across multiple indicators".to_string())
+            }
+            OpportunitySignal::Buy => {
+                parts.push("Positive technical and fundamental setup".to_string())
+            }
+            OpportunitySignal::Neutral => {
+                parts.push("Mixed signals, wait for confirmation".to_string())
+            }
             OpportunitySignal::Sell => parts.push("Bearish indicators suggest caution".to_string()),
-            OpportunitySignal::StrongSell => parts.push("Multiple warning signs, consider reducing exposure".to_string()),
+            OpportunitySignal::StrongSell => {
+                parts.push("Multiple warning signs, consider reducing exposure".to_string())
+            }
         }
 
         if let Some(event_type) = event {

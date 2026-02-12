@@ -202,11 +202,17 @@ impl HarvestingEngine {
             }
 
             // Calculate wash sale safe date
-            let wash_sale_safe_date = today + chrono::Duration::days(rules.wash_sale_window_days as i64 + 1);
+            let wash_sale_safe_date =
+                today + chrono::Duration::days(rules.wash_sale_window_days as i64 + 1);
 
             let priority = HarvestPriority::from_savings(tax_savings, self.config.is_year_end);
 
-            let reason = self.generate_reason(&lot, unrealized_loss, tax_savings, estimate.days_until_long_term);
+            let reason = self.generate_reason(
+                lot,
+                unrealized_loss,
+                tax_savings,
+                estimate.days_until_long_term,
+            );
 
             opportunities.push(HarvestOpportunity {
                 symbol: lot.symbol.clone(),
@@ -228,8 +234,11 @@ impl HarvestingEngine {
 
         // Sort by priority (descending) then by savings (descending)
         opportunities.sort_by(|a, b| {
-            b.priority.cmp(&a.priority)
-                .then(b.estimated_tax_savings.partial_cmp(&a.estimated_tax_savings).unwrap())
+            b.priority.cmp(&a.priority).then(
+                b.estimated_tax_savings
+                    .partial_cmp(&a.estimated_tax_savings)
+                    .unwrap(),
+            )
         });
 
         // Limit results
@@ -279,7 +288,8 @@ impl HarvestingEngine {
         let today = Utc::now().date_naive();
         let rules = self.calculator.rules();
 
-        let wash_sale_window_ends = today + chrono::Duration::days(rules.wash_sale_window_days as i64);
+        let wash_sale_window_ends =
+            today + chrono::Duration::days(rules.wash_sale_window_days as i64);
 
         let message = if let Some(sub) = substitute {
             format!(
@@ -400,9 +410,21 @@ mod tests {
 
     #[test]
     fn test_priority_levels() {
-        assert_eq!(HarvestPriority::from_savings(50.0, false), HarvestPriority::Low);
-        assert_eq!(HarvestPriority::from_savings(500.0, false), HarvestPriority::Medium);
-        assert_eq!(HarvestPriority::from_savings(2000.0, false), HarvestPriority::High);
-        assert_eq!(HarvestPriority::from_savings(500.0, true), HarvestPriority::Urgent);
+        assert_eq!(
+            HarvestPriority::from_savings(50.0, false),
+            HarvestPriority::Low
+        );
+        assert_eq!(
+            HarvestPriority::from_savings(500.0, false),
+            HarvestPriority::Medium
+        );
+        assert_eq!(
+            HarvestPriority::from_savings(2000.0, false),
+            HarvestPriority::High
+        );
+        assert_eq!(
+            HarvestPriority::from_savings(500.0, true),
+            HarvestPriority::Urgent
+        );
     }
 }

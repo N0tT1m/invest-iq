@@ -34,7 +34,7 @@ impl RiskManager {
             FROM risk_parameters
             ORDER BY id DESC
             LIMIT 1
-            "#
+            "#,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -53,7 +53,7 @@ impl RiskManager {
                 trailing_stop_percent, min_confidence_threshold,
                 min_win_rate_threshold
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(params.max_risk_per_trade_percent)
         .bind(params.max_portfolio_risk_percent)
@@ -84,8 +84,12 @@ impl RiskManager {
         let risk_amount = Decimal::from_f64(risk_amount_f64).unwrap_or_default();
 
         // Calculate stop loss and take profit prices
-        let stop_loss_multiplier = Decimal::from_f64(1.0 - params.default_stop_loss_percent / 100.0).unwrap_or(Decimal::ONE);
-        let take_profit_multiplier = Decimal::from_f64(1.0 + params.default_take_profit_percent / 100.0).unwrap_or(Decimal::ONE);
+        let stop_loss_multiplier =
+            Decimal::from_f64(1.0 - params.default_stop_loss_percent / 100.0)
+                .unwrap_or(Decimal::ONE);
+        let take_profit_multiplier =
+            Decimal::from_f64(1.0 + params.default_take_profit_percent / 100.0)
+                .unwrap_or(Decimal::ONE);
 
         let stop_loss_price = entry_price * stop_loss_multiplier;
         let take_profit_price = entry_price * take_profit_multiplier;
@@ -106,7 +110,8 @@ impl RiskManager {
         let position_size_percent = (position_value_f64 / total_portfolio_value) * 100.0;
 
         let adjusted_shares = if position_size_percent > params.max_position_size_percent {
-            let max_position_value = total_portfolio_value * (params.max_position_size_percent / 100.0);
+            let max_position_value =
+                total_portfolio_value * (params.max_position_size_percent / 100.0);
             let max_position_value_dec = Decimal::from_f64(max_position_value).unwrap_or_default();
             (max_position_value_dec / entry_price).floor()
         } else {
@@ -115,7 +120,8 @@ impl RiskManager {
 
         let final_position_value = adjusted_shares * entry_price;
         let final_position_value_f64 = final_position_value.to_f64().unwrap_or(0.0);
-        let final_position_size_percent = (final_position_value_f64 / total_portfolio_value) * 100.0;
+        let final_position_size_percent =
+            (final_position_value_f64 / total_portfolio_value) * 100.0;
 
         Ok(PositionSizeCalculation {
             recommended_shares: adjusted_shares,
@@ -166,12 +172,13 @@ impl RiskManager {
                 can_trade: false,
                 reason: format!(
                     "Portfolio risk {:.1}% at or above maximum {:.1}%",
-                    current_portfolio_risk_percent,
-                    params.max_portfolio_risk_percent
+                    current_portfolio_risk_percent, params.max_portfolio_risk_percent
                 ),
                 current_portfolio_risk: current_portfolio_risk_percent,
                 position_count: active_positions_count,
-                suggested_action: Some("Close existing positions before opening new ones".to_string()),
+                suggested_action: Some(
+                    "Close existing positions before opening new ones".to_string(),
+                ),
             });
         }
 
@@ -201,14 +208,18 @@ impl RiskManager {
                 position_size_percent, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
-            "#
+            "#,
         )
         .bind(&position.symbol)
         .bind(position.shares.to_f64().unwrap_or(0.0))
         .bind(position.entry_price.to_f64().unwrap_or(0.0))
         .bind(&position.entry_date)
         .bind(position.stop_loss_price.map(|d| d.to_f64().unwrap_or(0.0)))
-        .bind(position.take_profit_price.map(|d| d.to_f64().unwrap_or(0.0)))
+        .bind(
+            position
+                .take_profit_price
+                .map(|d| d.to_f64().unwrap_or(0.0)),
+        )
         .bind(trailing_stop_enabled)
         .bind(position.trailing_stop_percent)
         .bind(position.max_price_seen.map(|d| d.to_f64().unwrap_or(0.0)))
@@ -236,7 +247,7 @@ impl RiskManager {
             FROM active_risk_positions
             WHERE status = 'active'
             ORDER BY created_at DESC
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -258,7 +269,7 @@ impl RiskManager {
                 position_size_percent, status, created_at, closed_at
             FROM active_risk_positions
             WHERE symbol = ? AND status = 'active'
-            "#
+            "#,
         )
         .bind(symbol)
         .fetch_optional(&self.pool)
@@ -268,10 +279,14 @@ impl RiskManager {
             let pos: ActiveRiskPosition = row.into();
 
             if pos.trailing_stop_enabled {
-                let max_price = pos.max_price_seen.unwrap_or(pos.entry_price).max(current_price);
+                let max_price = pos
+                    .max_price_seen
+                    .unwrap_or(pos.entry_price)
+                    .max(current_price);
 
                 if let Some(trailing_pct) = pos.trailing_stop_percent {
-                    let trailing_multiplier = Decimal::from_f64(1.0 - trailing_pct / 100.0).unwrap_or(Decimal::ONE);
+                    let trailing_multiplier =
+                        Decimal::from_f64(1.0 - trailing_pct / 100.0).unwrap_or(Decimal::ONE);
                     let new_stop = max_price * trailing_multiplier;
 
                     // Only update if new stop is higher than current stop
@@ -288,7 +303,9 @@ impl RiskManager {
 
                         tracing::info!(
                             "Updated trailing stop for {}: ${:.2} -> ${:.2}",
-                            symbol, current_stop, new_stop
+                            symbol,
+                            current_stop,
+                            new_stop
                         );
                     }
                 }
@@ -299,11 +316,17 @@ impl RiskManager {
     }
 
     /// Check stop losses for all active positions
-    pub async fn check_stop_losses(&self, current_prices: Vec<(String, Decimal)>) -> Result<Vec<StopLossAlert>> {
+    pub async fn check_stop_losses(
+        &self,
+        current_prices: Vec<(String, Decimal)>,
+    ) -> Result<Vec<StopLossAlert>> {
         let mut alerts = Vec::new();
 
         for (symbol, current_price) in current_prices {
-            if let Some(alert) = self.check_position_stop_loss(&symbol, current_price).await? {
+            if let Some(alert) = self
+                .check_position_stop_loss(&symbol, current_price)
+                .await?
+            {
                 alerts.push(alert);
             }
         }
@@ -311,7 +334,11 @@ impl RiskManager {
         Ok(alerts)
     }
 
-    async fn check_position_stop_loss(&self, symbol: &str, current_price: Decimal) -> Result<Option<StopLossAlert>> {
+    async fn check_position_stop_loss(
+        &self,
+        symbol: &str,
+        current_price: Decimal,
+    ) -> Result<Option<StopLossAlert>> {
         use crate::models::ActiveRiskPositionRow;
 
         let row: Option<ActiveRiskPositionRow> = sqlx::query_as(
@@ -324,7 +351,7 @@ impl RiskManager {
                 position_size_percent, status, created_at, closed_at
             FROM active_risk_positions
             WHERE symbol = ? AND status = 'active'
-            "#
+            "#,
         )
         .bind(symbol)
         .fetch_optional(&self.pool)
@@ -336,7 +363,8 @@ impl RiskManager {
             if let Some(stop_loss_price) = pos.stop_loss_price {
                 if current_price <= stop_loss_price {
                     let loss_amount = (pos.entry_price - current_price) * pos.shares;
-                    let loss_percent_dec = ((current_price - pos.entry_price) / pos.entry_price) * Decimal::from(100);
+                    let loss_percent_dec =
+                        ((current_price - pos.entry_price) / pos.entry_price) * Decimal::from(100);
                     let loss_percent = loss_percent_dec.to_f64().unwrap_or(0.0);
 
                     return Ok(Some(StopLossAlert {
@@ -371,7 +399,9 @@ impl RiskManager {
 
         // 1. Manual halt check
         if params.trading_halted {
-            let reason = params.halt_reason.unwrap_or_else(|| "Manual trading halt active".to_string());
+            let reason = params
+                .halt_reason
+                .unwrap_or_else(|| "Manual trading halt active".to_string());
             return Ok(CircuitBreakerCheck {
                 can_trade: false,
                 reason,
@@ -392,7 +422,8 @@ impl RiskManager {
         if daily_pl_percent < -params.daily_loss_limit_percent {
             breakers_triggered.push(format!(
                 "daily_loss: {:.1}% exceeds limit of {:.1}%",
-                daily_pl_percent.abs(), params.daily_loss_limit_percent
+                daily_pl_percent.abs(),
+                params.daily_loss_limit_percent
             ));
         }
 
@@ -406,7 +437,10 @@ impl RiskManager {
         }
 
         // 4. Drawdown from peak
-        let drawdown_percent = self.check_drawdown_from_peak(portfolio_value).await.unwrap_or(0.0);
+        let drawdown_percent = self
+            .check_drawdown_from_peak(portfolio_value)
+            .await
+            .unwrap_or(0.0);
         if drawdown_percent > params.account_drawdown_limit_percent {
             breakers_triggered.push(format!(
                 "drawdown: {:.1}% exceeds limit of {:.1}%",
@@ -418,7 +452,10 @@ impl RiskManager {
         let reason = if can_trade {
             "All circuit breakers clear".to_string()
         } else {
-            format!("Circuit breakers triggered: {}", breakers_triggered.join("; "))
+            format!(
+                "Circuit breakers triggered: {}",
+                breakers_triggered.join("; ")
+            )
         };
 
         Ok(CircuitBreakerCheck {
@@ -433,12 +470,11 @@ impl RiskManager {
 
     /// Count recent consecutive losing trades from trade_outcomes table
     pub async fn get_consecutive_losses(&self) -> Result<i32> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT outcome FROM trade_outcomes ORDER BY id DESC LIMIT 20"
-        )
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT outcome FROM trade_outcomes ORDER BY id DESC LIMIT 20")
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
 
         let mut consecutive = 0i32;
         for (outcome,) in rows {
@@ -470,7 +506,7 @@ impl RiskManager {
 
         sqlx::query(
             "INSERT INTO trade_outcomes (symbol, order_id, action, outcome, pnl)
-             VALUES (?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(symbol)
         .bind(order_id)
@@ -485,11 +521,10 @@ impl RiskManager {
 
     /// Check drawdown from portfolio peak, updating peak if new high
     pub async fn check_drawdown_from_peak(&self, current_value: f64) -> Result<f64> {
-        let peak: Option<(f64,)> = sqlx::query_as(
-            "SELECT peak_value FROM portfolio_peak ORDER BY id DESC LIMIT 1"
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let peak: Option<(f64,)> =
+            sqlx::query_as("SELECT peak_value FROM portfolio_peak ORDER BY id DESC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?;
 
         match peak {
             None => {
@@ -534,7 +569,7 @@ impl RiskManager {
                     max_consecutive_losses, account_drawdown_limit_percent,
                     trading_halted, halt_reason, halted_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-                "#
+                "#,
             )
             .bind(params.max_risk_per_trade_percent)
             .bind(params.max_portfolio_risk_percent)
@@ -564,7 +599,7 @@ impl RiskManager {
                     max_consecutive_losses, account_drawdown_limit_percent,
                     trading_halted, halt_reason, halted_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL)
-                "#
+                "#,
             )
             .bind(params.max_risk_per_trade_percent)
             .bind(params.max_portfolio_risk_percent)
@@ -592,7 +627,7 @@ impl RiskManager {
             UPDATE active_risk_positions
             SET status = ?, closed_at = CURRENT_TIMESTAMP
             WHERE symbol = ? AND status = 'active'
-            "#
+            "#,
         )
         .bind(reason)
         .bind(symbol)

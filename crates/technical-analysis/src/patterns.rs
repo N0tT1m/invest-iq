@@ -118,29 +118,25 @@ fn is_engulfing(bars: &[Bar]) -> Option<PatternMatch> {
     let curr_bullish = curr.close > curr.open;
 
     // Bullish engulfing: prev bearish, curr bullish and engulfs prev
-    if !prev_bullish && curr_bullish {
-        if curr.open <= prev.close && curr.close >= prev.open {
-            let body_size = (curr.close - curr.open) / (prev.open - prev.close);
-            return Some(PatternMatch {
-                pattern: CandlestickPattern::Engulfing,
-                index: bars.len() - 1,
-                strength: body_size.min(2.0) / 2.0,
-                bullish: true,
-            });
-        }
+    if !prev_bullish && curr_bullish && curr.open <= prev.close && curr.close >= prev.open {
+        let body_size = (curr.close - curr.open) / (prev.open - prev.close);
+        return Some(PatternMatch {
+            pattern: CandlestickPattern::Engulfing,
+            index: bars.len() - 1,
+            strength: body_size.min(2.0) / 2.0,
+            bullish: true,
+        });
     }
 
     // Bearish engulfing: prev bullish, curr bearish and engulfs prev
-    if prev_bullish && !curr_bullish {
-        if curr.open >= prev.close && curr.close <= prev.open {
-            let body_size = (curr.open - curr.close) / (prev.close - prev.open);
-            return Some(PatternMatch {
-                pattern: CandlestickPattern::Engulfing,
-                index: bars.len() - 1,
-                strength: body_size.min(2.0) / 2.0,
-                bullish: false,
-            });
-        }
+    if prev_bullish && !curr_bullish && curr.open >= prev.close && curr.close <= prev.open {
+        let body_size = (curr.open - curr.close) / (prev.close - prev.open);
+        return Some(PatternMatch {
+            pattern: CandlestickPattern::Engulfing,
+            index: bars.len() - 1,
+            strength: body_size.min(2.0) / 2.0,
+            bullish: false,
+        });
     }
 
     None
@@ -350,15 +346,24 @@ pub fn detect_patterns(bars: &[Bar]) -> Vec<PatternMatch> {
     }
 
     if let Some(p) = is_hammer(last) {
-        patterns.push(PatternMatch { index: bars.len() - 1, ..p });
+        patterns.push(PatternMatch {
+            index: bars.len() - 1,
+            ..p
+        });
     }
 
     if let Some(p) = is_inverted_hammer(last) {
-        patterns.push(PatternMatch { index: bars.len() - 1, ..p });
+        patterns.push(PatternMatch {
+            index: bars.len() - 1,
+            ..p
+        });
     }
 
     if let Some(p) = is_shooting_star(last) {
-        patterns.push(PatternMatch { index: bars.len() - 1, ..p });
+        patterns.push(PatternMatch {
+            index: bars.len() - 1,
+            ..p
+        });
     }
 
     // Multi-candle patterns

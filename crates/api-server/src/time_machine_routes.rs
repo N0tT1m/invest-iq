@@ -114,7 +114,10 @@ pub fn time_machine_routes() -> Router<AppState> {
         .route("/api/time-machine/session/:id", get(get_session))
         .route("/api/time-machine/session/:id/decide", post(make_decision))
         .route("/api/time-machine/session/:id/advance", post(advance_day))
-        .route("/api/time-machine/session/:id/abandon", post(abandon_session))
+        .route(
+            "/api/time-machine/session/:id/abandon",
+            post(abandon_session),
+        )
         .route("/api/time-machine/session/:id/score", get(get_score))
         .route("/api/time-machine/leaderboard", get(get_leaderboard))
 }
@@ -148,9 +151,7 @@ async fn list_scenarios(
 }
 
 /// Get a specific scenario
-async fn get_scenario(
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<Scenario>>, AppError> {
+async fn get_scenario(Path(id): Path<String>) -> Result<Json<ApiResponse<Scenario>>, AppError> {
     let scenario = ScenarioLibrary::get_scenario(&id)
         .ok_or_else(|| anyhow::anyhow!("Scenario not found: {}", id))?;
 
@@ -206,10 +207,15 @@ async fn start_session(
     let session = engine.start_session(config.clone());
 
     // Fetch historical price data for the session
-    let bars = fetch_historical_bars(&state, &config.symbol, config.start_date, config.end_date).await?;
+    let bars =
+        fetch_historical_bars(&state, &config.symbol, config.start_date, config.end_date).await?;
 
     if bars.is_empty() {
-        return Err(anyhow::anyhow!("No historical data available for {} in the specified date range", config.symbol).into());
+        return Err(anyhow::anyhow!(
+            "No historical data available for {} in the specified date range",
+            config.symbol
+        )
+        .into());
     }
 
     // Get initial snapshot
@@ -223,7 +229,7 @@ async fn start_session(
 
     let response = SessionResponse {
         session: session.clone(),
-        current_snapshot: snapshot.map(|s| convert_snapshot(s)),
+        current_snapshot: snapshot.map(convert_snapshot),
     };
 
     Ok(Json(ApiResponse::success(response)))
@@ -243,7 +249,7 @@ async fn get_session(
 
     let response = SessionResponse {
         session: session.clone(),
-        current_snapshot: snapshot.map(|s| convert_snapshot(s)),
+        current_snapshot: snapshot.map(convert_snapshot),
     };
 
     Ok(Json(ApiResponse::success(response)))
@@ -311,7 +317,7 @@ async fn make_decision(
 
     let response = SessionResponse {
         session: session.clone(),
-        current_snapshot: new_snapshot.map(|s| convert_snapshot(s)),
+        current_snapshot: new_snapshot.map(convert_snapshot),
     };
 
     Ok(Json(ApiResponse::success(response)))
@@ -347,9 +353,7 @@ async fn abandon_session(
 }
 
 /// Get score for a completed session
-async fn get_score(
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<ScoreCard>>, AppError> {
+async fn get_score(Path(id): Path<String>) -> Result<Json<ApiResponse<ScoreCard>>, AppError> {
     let sessions = SESSIONS.read().await;
     let (session, bars) = sessions
         .get(&id)

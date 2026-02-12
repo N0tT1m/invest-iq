@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+broker-trait = { path = "../broker-trait" }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -15,6 +16,9 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 rust_decimal = { workspace = true }
+async-trait = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

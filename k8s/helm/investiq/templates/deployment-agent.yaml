@@ -1,0 +1,50 @@
+{{- if .Values.tradingAgent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "investiq.fullname" . }}-trading-agent
+  labels:
+    {{- include "investiq.labels" . | nindent 4 }}
+    app.kubernetes.io/component: trading-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "investiq.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: trading-agent
+  template:
+    metadata:
+      labels:
+        {{- include "investiq.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: trading-agent
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: trading-agent
+          image: "{{ .Values.global.imageRegistry }}{{ .Values.tradingAgent.image.repository }}:{{ .Values.tradingAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.tradingAgent.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "investiq.fullname" . }}-config
+            - secretRef:
+                name: {{ include "investiq.fullname" . }}-secrets
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.tradingAgent.env.RUST_LOG | quote }}
+          resources:
+            {{- toYaml .Values.tradingAgent.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: /data
+            {{- end }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "investiq.fullname" . }}-data
+        {{- end }}
+{{- end }}

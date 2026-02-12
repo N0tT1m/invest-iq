@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "investiq.fullname" . }}-config
+  labels:
+    {{- include "investiq.labels" . | nindent 4 }}
+data:
+  RUST_LOG: {{ .Values.apiServer.env.RUST_LOG | quote }}
+  RUST_LOG_FORMAT: {{ .Values.apiServer.env.RUST_LOG_FORMAT | quote }}
+  RATE_LIMIT_PER_MINUTE: {{ .Values.apiServer.env.RATE_LIMIT_PER_MINUTE | quote }}
+  REQUIRE_AUTH: {{ .Values.apiServer.env.REQUIRE_AUTH | quote }}
+  CACHE_TTL: {{ .Values.apiServer.env.CACHE_TTL | quote }}
+  REDIS_URL: "redis://{{ include "investiq.fullname" . }}-redis:6379"
+  ML_SIGNAL_MODELS_URL: "http://{{ include "investiq.fullname" . }}-signal-models:8004"
+  {{- if .Values.postgresql.enabled }}
+  DATABASE_URL: "postgres://{{ .Values.postgresql.auth.username }}:{{ .Values.postgresql.auth.password }}@{{ include "investiq.fullname" . }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+  {{- else }}
+  DATABASE_URL: "sqlite:/data/portfolio.db"
+  {{- end }}

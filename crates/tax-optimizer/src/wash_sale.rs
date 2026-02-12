@@ -175,7 +175,8 @@ impl WashSaleMonitor {
         let mut latest_window_end = as_of;
 
         for window in &self.windows {
-            if window.symbol == symbol && !window.triggered && window.window_end > latest_window_end {
+            if window.symbol == symbol && !window.triggered && window.window_end > latest_window_end
+            {
                 latest_window_end = window.window_end;
             }
         }
@@ -219,7 +220,8 @@ impl WashSaleMonitor {
 
                 let violation = WashSaleViolation {
                     symbol: symbol.to_string(),
-                    sale_date: window.window_start + Duration::days(self.rules.wash_sale_window_days as i64),
+                    sale_date: window.window_start
+                        + Duration::days(self.rules.wash_sale_window_days as i64),
                     purchase_date,
                     original_loss: window.loss_amount,
                     disallowed_loss: window.loss_amount,
@@ -356,8 +358,14 @@ mod tests {
         );
 
         // Window should span 30 days before and after
-        assert_eq!(window.window_start, NaiveDate::from_ymd_opt(2024, 5, 16).unwrap());
-        assert_eq!(window.window_end, NaiveDate::from_ymd_opt(2024, 7, 15).unwrap());
+        assert_eq!(
+            window.window_start,
+            NaiveDate::from_ymd_opt(2024, 5, 16).unwrap()
+        );
+        assert_eq!(
+            window.window_end,
+            NaiveDate::from_ymd_opt(2024, 7, 15).unwrap()
+        );
     }
 
     #[test]
@@ -386,13 +394,22 @@ mod tests {
 
         // Should be in window
         let in_window = NaiveDate::from_ymd_opt(2024, 6, 20).unwrap();
-        assert_eq!(monitor.is_safe_to_purchase("AAPL", in_window), WashSaleStatus::InWindow);
+        assert_eq!(
+            monitor.is_safe_to_purchase("AAPL", in_window),
+            WashSaleStatus::InWindow
+        );
 
         // Should be safe after window
         let after_window = NaiveDate::from_ymd_opt(2024, 7, 20).unwrap();
-        assert_eq!(monitor.is_safe_to_purchase("AAPL", after_window), WashSaleStatus::Safe);
+        assert_eq!(
+            monitor.is_safe_to_purchase("AAPL", after_window),
+            WashSaleStatus::Safe
+        );
 
         // Different symbol should be safe
-        assert_eq!(monitor.is_safe_to_purchase("MSFT", in_window), WashSaleStatus::Safe);
+        assert_eq!(
+            monitor.is_safe_to_purchase("MSFT", in_window),
+            WashSaleStatus::Safe
+        );
     }
 }

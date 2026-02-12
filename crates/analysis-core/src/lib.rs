@@ -1,8 +1,8 @@
-pub mod types;
-pub mod traits;
-pub mod error;
 pub mod adaptive;
+pub mod error;
+pub mod traits;
+pub mod types;
 
-pub use types::*;
-pub use traits::*;
 pub use error::*;
+pub use traits::*;
+pub use types::*;

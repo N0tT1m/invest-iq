@@ -24,10 +24,8 @@ impl Reconciler {
             .map(|p| (p.symbol.clone(), p))
             .collect();
 
-        let broker_map: std::collections::HashMap<String, &BrokerPosition> = broker
-            .iter()
-            .map(|p| (p.symbol.clone(), p))
-            .collect();
+        let broker_map: std::collections::HashMap<String, &BrokerPosition> =
+            broker.iter().map(|p| (p.symbol.clone(), p)).collect();
 
         // Check all broker positions
         for bp in broker {
@@ -171,22 +169,10 @@ impl Reconciler {
             let record = result?;
             let symbol = record.get(0).unwrap_or("").trim().to_uppercase();
             let action = record.get(1).unwrap_or("").trim().to_lowercase();
-            let shares: f64 = record
-                .get(2)
-                .unwrap_or("0")
-                .trim()
-                .parse()
-                .unwrap_or(0.0);
-            let price: f64 = record
-                .get(3)
-                .unwrap_or("0")
-                .trim()
-                .parse()
-                .unwrap_or(0.0);
+            let shares: f64 = record.get(2).unwrap_or("0").trim().parse().unwrap_or(0.0);
+            let price: f64 = record.get(3).unwrap_or("0").trim().parse().unwrap_or(0.0);
             let date = record.get(4).unwrap_or("").trim().to_string();
-            let commission: Option<f64> = record
-                .get(5)
-                .and_then(|s| s.trim().parse().ok());
+            let commission: Option<f64> = record.get(5).and_then(|s| s.trim().parse().ok());
             let notes: Option<String> = record
                 .get(6)
                 .map(|s| s.trim().to_string())
@@ -211,10 +197,7 @@ impl Reconciler {
     }
 
     /// Import CSV trades into the trade logger.
-    pub async fn import_csv_trades(
-        tl: &TradeLogger,
-        rows: &[CsvTradeRow],
-    ) -> Result<ImportResult> {
+    pub async fn import_csv_trades(tl: &TradeLogger, rows: &[CsvTradeRow]) -> Result<ImportResult> {
         let mut imported = 0;
         let mut skipped = 0;
         let mut errors = Vec::new();

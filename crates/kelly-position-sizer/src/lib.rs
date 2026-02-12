@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 /// Kelly Criterion position sizing calculator
@@ -79,10 +79,10 @@ pub struct PositionSize {
 impl Default for KellyPositionSizer {
     fn default() -> Self {
         Self {
-            max_kelly_fraction: 0.25,      // Never risk more than 25%
-            kelly_multiplier: 0.5,         // Use half-Kelly for safety
-            min_position_size: 0.01,       // Minimum 1% position
-            max_position_size: 0.10,       // Maximum 10% position
+            max_kelly_fraction: 0.25, // Never risk more than 25%
+            kelly_multiplier: 0.5,    // Use half-Kelly for safety
+            min_position_size: 0.01,  // Minimum 1% position
+            max_position_size: 0.10,  // Maximum 10% position
         }
     }
 }
@@ -118,20 +118,20 @@ impl KellyPositionSizer {
     /// Conservative constructor with safer defaults
     pub fn conservative() -> Self {
         Self {
-            max_kelly_fraction: 0.15,      // Max 15%
-            kelly_multiplier: 0.25,        // Quarter-Kelly
-            min_position_size: 0.005,      // 0.5% minimum
-            max_position_size: 0.05,       // 5% maximum
+            max_kelly_fraction: 0.15, // Max 15%
+            kelly_multiplier: 0.25,   // Quarter-Kelly
+            min_position_size: 0.005, // 0.5% minimum
+            max_position_size: 0.05,  // 5% maximum
         }
     }
 
     /// Aggressive constructor for higher risk tolerance
     pub fn aggressive() -> Self {
         Self {
-            max_kelly_fraction: 0.40,      // Max 40%
-            kelly_multiplier: 0.75,        // 3/4 Kelly
-            min_position_size: 0.02,       // 2% minimum
-            max_position_size: 0.20,       // 20% maximum
+            max_kelly_fraction: 0.40, // Max 40%
+            kelly_multiplier: 0.75,   // 3/4 Kelly
+            min_position_size: 0.02,  // 2% minimum
+            max_position_size: 0.20,  // 20% maximum
         }
     }
 
@@ -149,7 +149,10 @@ impl KellyPositionSizer {
                 dollar_amount: portfolio_value * self.min_position_size,
                 shares: ((portfolio_value * self.min_position_size) / current_price).floor() as i64,
                 raw_kelly_fraction: 0.0,
-                reasoning: format!("Insufficient trade history ({} trades). Using minimum position size.", performance.num_trades),
+                reasoning: format!(
+                    "Insufficient trade history ({} trades). Using minimum position size.",
+                    performance.num_trades
+                ),
             });
         }
 
@@ -181,7 +184,7 @@ impl KellyPositionSizer {
 
         // Apply constraints
         let constrained_kelly = fractional_kelly
-            .max(0.0)  // No negative positions
+            .max(0.0) // No negative positions
             .min(self.max_kelly_fraction);
 
         let final_fraction = constrained_kelly
@@ -218,11 +221,8 @@ impl KellyPositionSizer {
         current_price: f64,
     ) -> Result<PositionSize> {
         // Start with performance-based Kelly
-        let mut base_position = self.calculate_from_performance(
-            performance,
-            portfolio_value,
-            current_price,
-        )?;
+        let mut base_position =
+            self.calculate_from_performance(performance, portfolio_value, current_price)?;
 
         // Adjust based on signal confidence
         // Lower confidence = smaller position
@@ -230,7 +230,8 @@ impl KellyPositionSizer {
         base_position.fraction *= confidence_multiplier;
 
         // Ensure we stay within bounds
-        base_position.fraction = base_position.fraction
+        base_position.fraction = base_position
+            .fraction
             .max(self.min_position_size)
             .min(self.max_position_size);
 
@@ -270,7 +271,8 @@ impl KellyPositionSizer {
             .max(self.min_position_size)
             .min(self.max_position_size);
 
-        let final_shares = ((constrained_fraction * portfolio_value) / current_price).floor() as i64;
+        let final_shares =
+            ((constrained_fraction * portfolio_value) / current_price).floor() as i64;
         let final_dollar = final_shares as f64 * current_price;
 
         let reasoning = format!(
@@ -307,7 +309,9 @@ mod tests {
             confidence: 1.0,
         };
 
-        let result = sizer.calculate_from_performance(&performance, 10000.0, 100.0).unwrap();
+        let result = sizer
+            .calculate_from_performance(&performance, 10000.0, 100.0)
+            .unwrap();
 
         // With 60% win rate, 2:1 win/loss ratio
         // Kelly = (0.6 * 2 - 0.4) / 2 = 0.4
@@ -328,7 +332,9 @@ mod tests {
             confidence: 1.0,
         };
 
-        let result = sizer.calculate_from_performance(&performance, 10000.0, 100.0).unwrap();
+        let result = sizer
+            .calculate_from_performance(&performance, 10000.0, 100.0)
+            .unwrap();
 
         // No edge = use minimum position
         assert_relative_eq!(result.fraction, 0.01, epsilon = 0.001);
@@ -342,11 +348,13 @@ mod tests {
             win_rate: 0.70,
             avg_win: 200.0,
             avg_loss: 50.0,
-            num_trades: 5,  // Not enough trades
+            num_trades: 5, // Not enough trades
             confidence: 1.0,
         };
 
-        let result = sizer.calculate_from_performance(&performance, 10000.0, 100.0).unwrap();
+        let result = sizer
+            .calculate_from_performance(&performance, 10000.0, 100.0)
+            .unwrap();
 
         // Should use minimum due to insufficient data
         assert_relative_eq!(result.fraction, 0.01, epsilon = 0.001);
@@ -362,10 +370,12 @@ mod tests {
             avg_win: 100.0,
             avg_loss: 50.0,
             num_trades: 100,
-            confidence: 0.5,  // Low confidence
+            confidence: 0.5, // Low confidence
         };
 
-        let result = sizer.calculate_from_performance(&performance, 10000.0, 100.0).unwrap();
+        let result = sizer
+            .calculate_from_performance(&performance, 10000.0, 100.0)
+            .unwrap();
 
         // Low confidence should reduce position size
         assert!(result.fraction < 0.10);
@@ -375,19 +385,21 @@ mod tests {
     fn test_risk_based_sizing() {
         let sizer = KellyPositionSizer::default();
 
-        let result = sizer.calculate_risk_based(
-            10000.0,  // portfolio value
-            200.0,    // max risk dollars
-            100.0,    // current price
-            95.0,     // stop loss price
-        ).unwrap();
+        let result = sizer
+            .calculate_risk_based(
+                10000.0, // portfolio value
+                200.0,   // max risk dollars
+                100.0,   // current price
+                95.0,    // stop loss price
+            )
+            .unwrap();
 
         // Risk per share = $5, max risk = $200
         // Shares = 200 / 5 = 40 shares
         // Dollar amount = 40 * 100 = $4000
         // Fraction = 4000 / 10000 = 0.40
         // But max is 0.10, so capped
-        assert_eq!(result.shares, 10);  // (0.10 * 10000) / 100
+        assert_eq!(result.shares, 10); // (0.10 * 10000) / 100
     }
 
     #[test]

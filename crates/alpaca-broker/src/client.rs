@@ -1,6 +1,10 @@
 use crate::models::*;
 use anyhow::{anyhow, Result};
-use reqwest::{Client, header};
+use async_trait::async_trait;
+use broker_trait::{
+    BrokerAccount, BrokerClient, BrokerOrder, BrokerOrderRequest, BrokerOrderSide, BrokerPosition,
+};
+use reqwest::{header, Client};
 use std::time::Duration;
 
 pub struct AlpacaClient {
@@ -13,9 +17,7 @@ pub struct AlpacaClient {
 impl AlpacaClient {
     /// Create a new Alpaca client
     pub fn new(api_key: String, secret_key: String, base_url: String) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()?;
+        let client = Client::builder().timeout(Duration::from_secs(15)).build()?;
 
         Ok(Self {
             client,
@@ -61,7 +63,8 @@ impl AlpacaClient {
     pub async fn get_account(&self) -> Result<Account> {
         let url = format!("{}/v2/account", self.base_url);
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .headers(self.auth_headers())
             .send()
@@ -82,7 +85,8 @@ impl AlpacaClient {
 
         tracing::info!("Submitting order to Alpaca: {:?}", order);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .headers(self.auth_headers())
             .json(&order)
@@ -108,7 +112,8 @@ impl AlpacaClient {
     pub async fn get_order(&self, order_id: &str) -> Result<Order> {
         let url = format!("{}/v2/orders/{}", self.base_url, order_id);
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .headers(self.auth_headers())
             .send()
@@ -130,7 +135,8 @@ impl AlpacaClient {
             url.push_str(&format!("&limit={}", lim));
         }
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .headers(self.auth_headers())
             .send()
@@ -149,7 +155,8 @@ impl AlpacaClient {
     pub async fn cancel_order(&self, order_id: &str) -> Result<()> {
         let url = format!("{}/v2/orders/{}", self.base_url, order_id);
 
-        let response = self.client
+        let response = self
+            .client
             .delete(&url)
             .headers(self.auth_headers())
             .send()
@@ -168,7 +175,8 @@ impl AlpacaClient {
     pub async fn get_positions(&self) -> Result<Vec<Position>> {
         let url = format!("{}/v2/positions", self.base_url);
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .headers(self.auth_headers())
             .send()
@@ -187,7 +195,8 @@ impl AlpacaClient {
     pub async fn get_position(&self, symbol: &str) -> Result<Option<Position>> {
         let url = format!("{}/v2/positions/{}", self.base_url, symbol);
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .headers(self.auth_headers())
             .send()
@@ -210,7 +219,8 @@ impl AlpacaClient {
     pub async fn close_position(&self, symbol: &str) -> Result<Order> {
         let url = format!("{}/v2/positions/{}", self.base_url, symbol);
 
-        let response = self.client
+        let response = self
+            .client
             .delete(&url)
             .headers(self.auth_headers())
             .send()
@@ -240,6 +250,118 @@ impl AlpacaClient {
     /// Get the base URL (for logging/diagnostics)
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conversion helpers: Alpaca types -> unified BrokerClient types
+// ---------------------------------------------------------------------------
+
+fn account_to_broker(a: Account) -> BrokerAccount {
+    BrokerAccount {
+        id: a.id,
+        account_number: a.account_number,
+        status: a.status,
+        currency: a.currency,
+        buying_power: a.buying_power,
+        cash: a.cash,
+        portfolio_value: a.portfolio_value,
+        pattern_day_trader: a.pattern_day_trader,
+        trading_blocked: a.trading_blocked,
+        daytrade_count: a.daytrade_count,
+    }
+}
+
+fn position_to_broker(p: Position) -> BrokerPosition {
+    BrokerPosition {
+        symbol: p.symbol,
+        qty: p.qty,
+        side: p.side,
+        avg_entry_price: p.avg_entry_price,
+        market_value: p.market_value,
+        cost_basis: p.cost_basis,
+        unrealized_pl: p.unrealized_pl,
+        unrealized_plpc: p.unrealized_plpc,
+        unrealized_intraday_pl: p.unrealized_intraday_pl,
+        current_price: p.current_price,
+        lastday_price: p.lastday_price,
+        change_today: p.change_today,
+    }
+}
+
+fn order_to_broker(o: Order) -> BrokerOrder {
+    BrokerOrder {
+        id: o.id,
+        client_order_id: o.client_order_id,
+        created_at: o.created_at,
+        filled_at: o.filled_at,
+        symbol: o.symbol,
+        qty: o.quantity,
+        filled_qty: o.filled_quantity,
+        filled_avg_price: o.filled_avg_price,
+        order_type: o.order_type,
+        side: o.side,
+        status: o.status,
+    }
+}
+
+#[async_trait]
+impl BrokerClient for AlpacaClient {
+    async fn get_account(&self) -> Result<BrokerAccount> {
+        self.get_account().await.map(account_to_broker)
+    }
+
+    async fn get_positions(&self) -> Result<Vec<BrokerPosition>> {
+        self.get_positions()
+            .await
+            .map(|ps| ps.into_iter().map(position_to_broker).collect())
+    }
+
+    async fn get_position(&self, symbol: &str) -> Result<Option<BrokerPosition>> {
+        self.get_position(symbol)
+            .await
+            .map(|p| p.map(position_to_broker))
+    }
+
+    async fn submit_market_order(&self, order: BrokerOrderRequest) -> Result<BrokerOrder> {
+        let side = match order.side {
+            BrokerOrderSide::Buy => OrderSide::Buy,
+            BrokerOrderSide::Sell => OrderSide::Sell,
+        };
+        let alpaca_order = MarketOrderRequest {
+            symbol: order.symbol,
+            qty: order.qty,
+            side,
+        };
+        self.submit_market_order(alpaca_order)
+            .await
+            .map(order_to_broker)
+    }
+
+    async fn get_order(&self, order_id: &str) -> Result<BrokerOrder> {
+        self.get_order(order_id).await.map(order_to_broker)
+    }
+
+    async fn get_orders(&self, limit: Option<usize>) -> Result<Vec<BrokerOrder>> {
+        self.get_orders(limit)
+            .await
+            .map(|os| os.into_iter().map(order_to_broker).collect())
+    }
+
+    async fn cancel_order(&self, order_id: &str) -> Result<()> {
+        self.cancel_order(order_id).await
+    }
+
+    async fn close_position(&self, symbol: &str) -> Result<BrokerOrder> {
+        self.close_position(symbol).await.map(order_to_broker)
+    }
+
+    fn is_paper(&self) -> bool {
+        self.is_paper()
+    }
+
+    fn broker_name(&self) -> &str {
+        "alpaca"
     }
 }
 

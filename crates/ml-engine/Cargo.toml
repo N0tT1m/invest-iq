@@ -1,0 +1,14 @@
+[package]
+name = "ml-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ml-client = { path = "../ml-client" }
+pyo3 = { version = "0.27", features = ["auto-initialize"] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true

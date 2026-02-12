@@ -153,9 +153,9 @@ class PatchTSTTrainer:
 
         pbar = tqdm(train_loader, desc="Training")
         for x, y_price, y_direction in pbar:
-            x = x.to(self.device)
-            y_price = y_price.to(self.device)
-            y_direction = y_direction.to(self.device)
+            x = x.to(self.device, non_blocking=True)
+            y_price = y_price.to(self.device, non_blocking=True)
+            y_direction = y_direction.to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad()
 
@@ -211,9 +211,9 @@ class PatchTSTTrainer:
         num_batches = 0
 
         for x, y_price, y_direction in val_loader:
-            x = x.to(self.device)
-            y_price = y_price.to(self.device)
-            y_direction = y_direction.to(self.device)
+            x = x.to(self.device, non_blocking=True)
+            y_price = y_price.to(self.device, non_blocking=True)
+            y_direction = y_direction.to(self.device, non_blocking=True)
 
             # Forward pass
             price_pred, direction_logits = self.model(x)
@@ -663,23 +663,37 @@ def main():
         stride=4
     )
 
-    # pin_memory only benefits CUDA; num_workers>0 can crash on macOS (fork safety)
+    # num_workers>0 with fork crashes on macOS (ObjC fork safety),
+    # but 'spawn' context is safe. pin_memory only benefits CUDA.
+    import platform
     use_cuda = device == "cuda"
-    num_workers = 4 if use_cuda else 0
+    if use_cuda:
+        num_workers = 4
+        mp_context = None
+    elif platform.system() == "Darwin" and device == "mps":
+        num_workers = 4
+        mp_context = "spawn"
+    else:
+        num_workers = 0
+        mp_context = None
+
+    loader_kwargs = dict(
+        batch_size=args.batch_size,
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        persistent_workers=num_workers > 0,
+        multiprocessing_context=mp_context if num_workers > 0 else None,
+    )
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=use_cuda,
+        **loader_kwargs,
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=args.batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=use_cuda,
+        **loader_kwargs,
     )
 
     logger.info(f"Train batches: {len(train_loader)}")
@@ -706,9 +720,10 @@ def main():
     with open(output_dir / "config.json", "w") as f:
         json.dump(model_config, f, indent=2)
 
-    # Compile model for faster inference (PyTorch 2.0+, CUDA and MPS)
-    if hasattr(torch, 'compile') and device in ("cuda", "mps"):
-        logger.info(f"Compiling model with torch.compile (device={device})")
+    # Compile model for faster training (PyTorch 2.0+, CUDA only — inductor
+    # backend does not support MPS and adds overhead without benefit)
+    if hasattr(torch, 'compile') and device == "cuda":
+        logger.info("Compiling model with torch.compile")
         try:
             model = torch.compile(model)
         except Exception as e:

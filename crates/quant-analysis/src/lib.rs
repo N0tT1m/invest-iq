@@ -14,10 +14,7 @@ impl QuantAnalysisEngine {
 
     /// Calculate returns from prices
     fn calculate_returns(&self, prices: &[f64]) -> Vec<f64> {
-        prices
-            .windows(2)
-            .map(|w| (w[1] - w[0]) / w[0])
-            .collect()
+        prices.windows(2).map(|w| (w[1] - w[0]) / w[0]).collect()
     }
 
     /// Calculate Sharpe Ratio (annualized)
@@ -224,12 +221,12 @@ impl QuantAnalysisEngine {
         let mut total = 0;
 
         // Mean reversion: price below SMA → expect it to revert up (and vice versa)
-        for i in 1..sma_10.len() - 1 {
+        for (i, sma_val) in sma_10.iter().enumerate().skip(1).take(sma_10.len() - 2) {
             let price_idx = i + 9; // offset for SMA warmup
             if price_idx + 1 >= closes.len() {
                 break;
             }
-            let below_sma = closes[price_idx] < sma_10[i];
+            let below_sma = closes[price_idx] < *sma_val;
             let next_up = closes[price_idx + 1] > closes[price_idx];
 
             total += 1;
@@ -248,11 +245,15 @@ impl QuantAnalysisEngine {
 
     /// CVaR (Conditional VaR) / Expected Shortfall at 95% confidence
     fn calculate_cvar(&self, returns: &[f64]) -> f64 {
-        if returns.is_empty() { return 0.0; }
+        if returns.is_empty() {
+            return 0.0;
+        }
         let mut sorted = returns.to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let cutoff = (returns.len() as f64 * 0.05).ceil() as usize;
-        if cutoff == 0 { return 0.0; }
+        if cutoff == 0 {
+            return 0.0;
+        }
         let tail = &sorted[..cutoff];
         (tail.iter().sum::<f64>() / tail.len() as f64).abs() * 100.0
     }
@@ -260,10 +261,13 @@ impl QuantAnalysisEngine {
     /// Hurst Exponent via Rescaled Range (R/S) analysis.
     /// Uses rayon to parallelize R/S computation over sub-series sizes.
     fn calculate_hurst_exponent(&self, prices: &[f64]) -> f64 {
-        let log_returns: Vec<f64> = prices.windows(2)
+        let log_returns: Vec<f64> = prices
+            .windows(2)
             .map(|w| if w[0] > 0.0 { (w[1] / w[0]).ln() } else { 0.0 })
             .collect();
-        if log_returns.len() < 20 { return 0.5; }
+        if log_returns.len() < 20 {
+            return 0.5;
+        }
 
         let sizes: Vec<usize> = [8usize, 16, 32, 64, 128]
             .iter()
@@ -276,7 +280,9 @@ impl QuantAnalysisEngine {
             .par_iter()
             .map(|&size| {
                 let num_sub = log_returns.len() / size;
-                if num_sub == 0 { return None; }
+                if num_sub == 0 {
+                    return None;
+                }
 
                 let mut rs_values = Vec::new();
                 for s in 0..num_sub {
@@ -285,11 +291,17 @@ impl QuantAnalysisEngine {
                     let deviations: Vec<f64> = sub.iter().map(|r| r - mean).collect();
                     let mut cum = Vec::with_capacity(size);
                     let mut sum = 0.0;
-                    for d in &deviations { sum += d; cum.push(sum); }
+                    for d in &deviations {
+                        sum += d;
+                        cum.push(sum);
+                    }
                     let range = cum.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
                         - cum.iter().cloned().fold(f64::INFINITY, f64::min);
-                    let std_dev = (deviations.iter().map(|d| d * d).sum::<f64>() / size as f64).sqrt();
-                    if std_dev > 0.0 { rs_values.push(range / std_dev); }
+                    let std_dev =
+                        (deviations.iter().map(|d| d * d).sum::<f64>() / size as f64).sqrt();
+                    if std_dev > 0.0 {
+                        rs_values.push(range / std_dev);
+                    }
                 }
                 if !rs_values.is_empty() {
                     let avg_rs = rs_values.iter().sum::<f64>() / rs_values.len() as f64;
@@ -308,25 +320,35 @@ impl QuantAnalysisEngine {
             log_n.push(result.1);
         }
 
-        if log_rs.len() < 2 { return 0.5; }
+        if log_rs.len() < 2 {
+            return 0.5;
+        }
         let n = log_rs.len() as f64;
         let sum_x: f64 = log_n.iter().sum();
         let sum_y: f64 = log_rs.iter().sum();
         let sum_xy: f64 = log_n.iter().zip(log_rs.iter()).map(|(x, y)| x * y).sum();
         let sum_x2: f64 = log_n.iter().map(|x| x * x).sum();
         let denom = n * sum_x2 - sum_x * sum_x;
-        if denom == 0.0 { return 0.5; }
+        if denom == 0.0 {
+            return 0.5;
+        }
         let slope = (n * sum_xy - sum_x * sum_y) / denom;
         slope.clamp(0.0, 1.0)
     }
 
     /// Autocorrelation at a given lag
     fn calculate_autocorrelation(&self, returns: &[f64], lag: usize) -> f64 {
-        if returns.len() <= lag { return 0.0; }
+        if returns.len() <= lag {
+            return 0.0;
+        }
         let mean = returns.iter().sum::<f64>() / returns.len() as f64;
         let var: f64 = returns.iter().map(|r| (r - mean).powi(2)).sum();
-        if var == 0.0 { return 0.0; }
-        let cov: f64 = returns[lag..].iter().zip(returns.iter())
+        if var == 0.0 {
+            return 0.0;
+        }
+        let cov: f64 = returns[lag..]
+            .iter()
+            .zip(returns.iter())
             .map(|(r1, r0)| (r1 - mean) * (r0 - mean))
             .sum();
         cov / var
@@ -334,7 +356,9 @@ impl QuantAnalysisEngine {
 
     /// GARCH(1,1) one-step volatility forecast (annualized %)
     fn forecast_volatility_garch(&self, returns: &[f64]) -> f64 {
-        if returns.is_empty() { return 0.0; }
+        if returns.is_empty() {
+            return 0.0;
+        }
         let omega = 0.00001;
         let alpha = 0.1;
         let beta = 0.85;
@@ -351,21 +375,29 @@ impl QuantAnalysisEngine {
 
     /// Kelly Criterion optimal fraction
     fn calculate_kelly(&self, returns: &[f64]) -> f64 {
-        if returns.is_empty() { return 0.0; }
+        if returns.is_empty() {
+            return 0.0;
+        }
         let wins: Vec<f64> = returns.iter().filter(|&&r| r > 0.0).copied().collect();
         let losses: Vec<f64> = returns.iter().filter(|&&r| r < 0.0).copied().collect();
-        if wins.is_empty() || losses.is_empty() { return 0.0; }
+        if wins.is_empty() || losses.is_empty() {
+            return 0.0;
+        }
         let win_rate = wins.len() as f64 / returns.len() as f64;
         let avg_win = wins.iter().sum::<f64>() / wins.len() as f64;
         let avg_loss = losses.iter().map(|l| l.abs()).sum::<f64>() / losses.len() as f64;
-        if avg_loss == 0.0 { return 0.0; }
+        if avg_loss == 0.0 {
+            return 0.0;
+        }
         let r = avg_win / avg_loss;
         (win_rate - (1.0 - win_rate) / r).clamp(-1.0, 1.0)
     }
 
     /// Momentum factor: 12-month return minus last month
     fn calculate_momentum_factor(&self, prices: &[f64]) -> Option<f64> {
-        if prices.len() < 252 { return None; }
+        if prices.len() < 252 {
+            return None;
+        }
         let n = prices.len();
         let ret_12m = (prices[n - 1] - prices[n - 252]) / prices[n - 252];
         let ret_1m = (prices[n - 1] - prices[n - 21.min(n)]) / prices[n - 21.min(n)];
@@ -375,19 +407,37 @@ impl QuantAnalysisEngine {
     /// Omega Ratio: probability-weighted ratio of gains to losses relative to threshold
     /// More comprehensive than Sharpe as it considers entire return distribution
     fn calculate_omega_ratio(&self, returns: &[f64], threshold: f64) -> f64 {
-        if returns.is_empty() { return 1.0; }
+        if returns.is_empty() {
+            return 1.0;
+        }
         let daily_threshold = threshold / 252.0; // Convert annual to daily
 
-        let gains: f64 = returns.iter().filter(|&&r| r > daily_threshold).map(|r| r - daily_threshold).sum();
-        let losses: f64 = returns.iter().filter(|&&r| r < daily_threshold).map(|r| daily_threshold - r).sum();
+        let gains: f64 = returns
+            .iter()
+            .filter(|&&r| r > daily_threshold)
+            .map(|r| r - daily_threshold)
+            .sum();
+        let losses: f64 = returns
+            .iter()
+            .filter(|&&r| r < daily_threshold)
+            .map(|r| daily_threshold - r)
+            .sum();
 
-        if losses > 0.0 { gains / losses } else if gains > 0.0 { 99.99 } else { 1.0 }
+        if losses > 0.0 {
+            gains / losses
+        } else if gains > 0.0 {
+            99.99
+        } else {
+            1.0
+        }
     }
 
     /// Mean Reversion Speed (Half-Life of Price Deviations from SMA)
     /// Measures how quickly price returns to its moving average
     fn calculate_mean_reversion_speed(&self, prices: &[f64]) -> Option<f64> {
-        if prices.len() < 50 { return None; }
+        if prices.len() < 50 {
+            return None;
+        }
 
         // Use 20-SMA as equilibrium
         let sma_20: Vec<f64> = {
@@ -400,11 +450,15 @@ impl QuantAnalysisEngine {
         };
 
         // Calculate deviations from SMA
-        let deviations: Vec<f64> = prices[19..].iter().zip(sma_20.iter())
+        let deviations: Vec<f64> = prices[19..]
+            .iter()
+            .zip(sma_20.iter())
             .map(|(p, sma)| if *sma > 0.0 { (p - sma) / sma } else { 0.0 })
             .collect();
 
-        if deviations.is_empty() { return None; }
+        if deviations.is_empty() {
+            return None;
+        }
 
         // Estimate AR(1) coefficient: dev[t] = rho * dev[t-1] + epsilon
         // Half-life = -ln(2) / ln(rho)
@@ -415,7 +469,9 @@ impl QuantAnalysisEngine {
             sum_x2 += deviations[i - 1] * deviations[i - 1];
         }
 
-        if sum_x2 == 0.0 { return None; }
+        if sum_x2 == 0.0 {
+            return None;
+        }
         let rho = sum_xy / sum_x2;
 
         if rho > 0.0 && rho < 1.0 {
@@ -429,20 +485,30 @@ impl QuantAnalysisEngine {
     /// Jump Diffusion Detection: identifies days with abnormal returns (potential jumps)
     /// Returns (jump_days, jump_intensity)
     fn detect_jumps(&self, returns: &[f64], threshold_sigma: f64) -> (usize, f64) {
-        if returns.len() < 20 { return (0, 0.0); }
+        if returns.len() < 20 {
+            return (0, 0.0);
+        }
 
         let mean = returns.iter().sum::<f64>() / returns.len() as f64;
         let std_dev = {
-            let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
+            let variance =
+                returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
             variance.sqrt()
         };
 
-        if std_dev == 0.0 { return (0, 0.0); }
+        if std_dev == 0.0 {
+            return (0, 0.0);
+        }
 
-        let jumps: Vec<f64> = returns.iter()
+        let jumps: Vec<f64> = returns
+            .iter()
             .filter_map(|&r| {
                 let z = (r - mean) / std_dev;
-                if z.abs() > threshold_sigma { Some(r) } else { None }
+                if z.abs() > threshold_sigma {
+                    Some(r)
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -458,13 +524,17 @@ impl QuantAnalysisEngine {
 
     /// Rachev Ratio: ratio of expected tail gains to tail losses (like CVaR-based Sharpe)
     fn calculate_rachev_ratio(&self, returns: &[f64]) -> f64 {
-        if returns.is_empty() { return 1.0; }
+        if returns.is_empty() {
+            return 1.0;
+        }
 
         let mut sorted = returns.to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
         let cutoff = (returns.len() as f64 * 0.05).ceil() as usize;
-        if cutoff == 0 || cutoff >= sorted.len() { return 1.0; }
+        if cutoff == 0 || cutoff >= sorted.len() {
+            return 1.0;
+        }
 
         // Expected tail loss (5% worst returns)
         let tail_loss = sorted[..cutoff].iter().sum::<f64>() / cutoff as f64;
@@ -527,7 +597,7 @@ impl QuantAnalysisEngine {
         if returns.len() >= 60 {
             let mut rolling_sharpes = Vec::new();
             for i in 60..=returns.len() {
-                let window = &returns[i-60..i];
+                let window = &returns[i - 60..i];
                 let mean_r = window.mean();
                 let std_r = window.std_dev();
                 if std_r > 0.0 {
@@ -570,7 +640,7 @@ impl QuantAnalysisEngine {
         if returns.len() >= 30 {
             let mut rolling_vols = Vec::new();
             for i in 30..=returns.len() {
-                let window = &returns[i-30..i];
+                let window = &returns[i - 30..i];
                 let std_dev = window.std_dev();
                 rolling_vols.push(std_dev * (252.0_f64).sqrt() * 100.0);
             }
@@ -596,7 +666,7 @@ impl QuantAnalysisEngine {
         if prices.len() >= 60 {
             let mut rolling_dds = Vec::new();
             for i in 60..=prices.len() {
-                let window = &prices[i-60..i];
+                let window = &prices[i - 60..i];
                 let mut max_price = window[0];
                 let mut max_dd_window = 0.0;
                 for &price in window.iter() {
@@ -660,7 +730,7 @@ impl QuantAnalysisEngine {
         if returns.len() >= 30 {
             let mut rolling_vars = Vec::new();
             for i in 30..=returns.len() {
-                let window = &returns[i-30..i];
+                let window = &returns[i - 30..i];
                 let mut sorted_window = window.to_vec();
                 sorted_window.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 let index = (window.len() as f64 * 0.05) as usize;
@@ -698,7 +768,7 @@ impl QuantAnalysisEngine {
         if prices.len() >= 40 {
             let mut rolling_rets = Vec::new();
             for i in 20..prices.len() {
-                let ret = (prices[i] - prices[i-20]) / prices[i-20];
+                let ret = (prices[i] - prices[i - 20]) / prices[i - 20];
                 rolling_rets.push(ret);
             }
             if !rolling_rets.is_empty() {
@@ -739,7 +809,7 @@ impl QuantAnalysisEngine {
         if returns.len() >= 30 {
             let mut rolling_cvars = Vec::new();
             for i in 30..=returns.len() {
-                let window = &returns[i-30..i];
+                let window = &returns[i - 30..i];
                 let mut sorted_window = window.to_vec();
                 sorted_window.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 let cutoff = (window.len() as f64 * 0.05).ceil() as usize;
@@ -771,7 +841,13 @@ impl QuantAnalysisEngine {
 
         // --- Hurst Exponent ---
         let hurst = self.calculate_hurst_exponent(&prices);
-        let hurst_regime = if hurst > 0.65 { "trending" } else if hurst < 0.35 { "mean_reverting" } else { "random" };
+        let hurst_regime = if hurst > 0.65 {
+            "trending"
+        } else if hurst < 0.35 {
+            "mean_reverting"
+        } else {
+            "random"
+        };
         if hurst > 0.65 {
             // Trending — signal aligns with current direction
             signals.push(("Trending Market (Hurst)", 2, recent_return > 0.0));
@@ -788,9 +864,17 @@ impl QuantAnalysisEngine {
             let ac_z = ac1 / (1.0 / (returns.len() as f64).sqrt());
             let ac_weight = adaptive::z_score_to_weight(ac_z.abs());
             if ac1 > 0.0 {
-                signals.push(("Positive Serial Correlation", ac_weight, recent_return > 0.0));
+                signals.push((
+                    "Positive Serial Correlation",
+                    ac_weight,
+                    recent_return > 0.0,
+                ));
             } else {
-                signals.push(("Negative Serial Correlation", ac_weight, recent_return < 0.0));
+                signals.push((
+                    "Negative Serial Correlation",
+                    ac_weight,
+                    recent_return < 0.0,
+                ));
             }
         }
 
@@ -800,7 +884,7 @@ impl QuantAnalysisEngine {
         if volatility > 0.0 && returns.len() >= 30 {
             let mut rolling_ratios = Vec::new();
             for i in 30..=returns.len() {
-                let window = &returns[i-30..i];
+                let window = &returns[i - 30..i];
                 let realized_vol = window.std_dev() * (252.0_f64).sqrt() * 100.0;
                 let garch_forecast = self.forecast_volatility_garch(window);
                 if realized_vol > 0.0 {
@@ -830,7 +914,7 @@ impl QuantAnalysisEngine {
         if returns.len() >= 30 {
             let mut rolling_kellys = Vec::new();
             for i in 30..=returns.len() {
-                let window = &returns[i-30..i];
+                let window = &returns[i - 30..i];
                 rolling_kellys.push(self.calculate_kelly(window));
             }
             if !rolling_kellys.is_empty() {
@@ -886,20 +970,36 @@ impl QuantAnalysisEngine {
             let std_dev = volatility / (252.0_f64).sqrt(); // daily vol
             if std_dev > 0.0 {
                 let n = returns.len() as f64;
-                let m3 = returns.iter().map(|r| ((r - mean) / std_dev).powi(3)).sum::<f64>() / n;
+                let m3 = returns
+                    .iter()
+                    .map(|r| ((r - mean) / std_dev).powi(3))
+                    .sum::<f64>()
+                    / n;
                 Some(m3)
-            } else { None }
-        } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let kurtosis = if returns.len() >= 30 {
             let mean = returns.iter().sum::<f64>() / returns.len() as f64;
             let std_dev = volatility / (252.0_f64).sqrt();
             if std_dev > 0.0 {
                 let n = returns.len() as f64;
-                let m4 = returns.iter().map(|r| ((r - mean) / std_dev).powi(4)).sum::<f64>() / n;
+                let m4 = returns
+                    .iter()
+                    .map(|r| ((r - mean) / std_dev).powi(4))
+                    .sum::<f64>()
+                    / n;
                 Some(m4 - 3.0) // excess kurtosis (normal = 0)
-            } else { None }
-        } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         if let Some(sk) = skewness {
             if sk < -0.5 {
@@ -926,39 +1026,77 @@ impl QuantAnalysisEngine {
                     let sr = &spy_returns[..half];
                     let ar = &returns[..half];
                     let sm = sr.iter().sum::<f64>() / sr.len() as f64;
-                    let cov = sr.iter().zip(ar.iter()).map(|(s, a)| (s - sm) * a).sum::<f64>() / sr.len() as f64;
+                    let cov = sr
+                        .iter()
+                        .zip(ar.iter())
+                        .map(|(s, a)| (s - sm) * a)
+                        .sum::<f64>()
+                        / sr.len() as f64;
                     let var = sr.iter().map(|s| (s - sm).powi(2)).sum::<f64>() / sr.len() as f64;
-                    if var > 0.0 { cov / var } else { 0.0 }
+                    if var > 0.0 {
+                        cov / var
+                    } else {
+                        0.0
+                    }
                 };
                 let beta_second = {
                     let sr = &spy_returns[half..min_len];
                     let ar = &returns[half..min_len];
                     let sm = sr.iter().sum::<f64>() / sr.len() as f64;
-                    let cov = sr.iter().zip(ar.iter()).map(|(s, a)| (s - sm) * a).sum::<f64>() / sr.len() as f64;
+                    let cov = sr
+                        .iter()
+                        .zip(ar.iter())
+                        .map(|(s, a)| (s - sm) * a)
+                        .sum::<f64>()
+                        / sr.len() as f64;
                     let var = sr.iter().map(|s| (s - sm).powi(2)).sum::<f64>() / sr.len() as f64;
-                    if var > 0.0 { cov / var } else { 0.0 }
+                    if var > 0.0 {
+                        cov / var
+                    } else {
+                        0.0
+                    }
                 };
                 let shift = (beta_second - beta_first).abs();
                 // Adaptive beta shift: z-score of shift magnitude
                 let mut rolling_shifts = Vec::new();
                 let min_window = 60;
-                for i in min_window*2..min_len {
+                for i in min_window * 2..min_len {
                     let half = i / 2;
                     let b1 = {
                         let sr = &spy_returns[..half];
                         let ar = &returns[..half];
                         let sm = sr.iter().sum::<f64>() / sr.len() as f64;
-                        let cov = sr.iter().zip(ar.iter()).map(|(s, a)| (s - sm) * a).sum::<f64>() / sr.len() as f64;
-                        let var = sr.iter().map(|s| (s - sm).powi(2)).sum::<f64>() / sr.len() as f64;
-                        if var > 0.0 { cov / var } else { 0.0 }
+                        let cov = sr
+                            .iter()
+                            .zip(ar.iter())
+                            .map(|(s, a)| (s - sm) * a)
+                            .sum::<f64>()
+                            / sr.len() as f64;
+                        let var =
+                            sr.iter().map(|s| (s - sm).powi(2)).sum::<f64>() / sr.len() as f64;
+                        if var > 0.0 {
+                            cov / var
+                        } else {
+                            0.0
+                        }
                     };
                     let b2 = {
                         let sr = &spy_returns[half..i];
                         let ar = &returns[half..i];
                         let sm = sr.iter().sum::<f64>() / sr.len() as f64;
-                        let cov = sr.iter().zip(ar.iter()).map(|(s, a)| (s - sm) * a).sum::<f64>() / sr.len() as f64;
-                        let var = sr.iter().map(|s| (s - sm).powi(2)).sum::<f64>() / sr.len() as f64;
-                        if var > 0.0 { cov / var } else { 0.0 }
+                        let cov = sr
+                            .iter()
+                            .zip(ar.iter())
+                            .map(|(s, a)| (s - sm) * a)
+                            .sum::<f64>()
+                            / sr.len() as f64;
+                        let var =
+                            sr.iter().map(|s| (s - sm).powi(2)).sum::<f64>() / sr.len() as f64;
+                        if var > 0.0 {
+                            cov / var
+                        } else {
+                            0.0
+                        }
                     };
                     rolling_shifts.push((b2 - b1).abs());
                 }
@@ -972,8 +1110,12 @@ impl QuantAnalysisEngine {
                     signals.push(("Correlation Regime Shift", 2, false));
                 }
                 Some(shift)
-            } else { None }
-        } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // --- Omega Ratio ---
         let omega_ratio = self.calculate_omega_ratio(&returns, risk_free_rate);
@@ -981,7 +1123,7 @@ impl QuantAnalysisEngine {
         if returns.len() >= 60 {
             let mut rolling_omegas = Vec::new();
             for i in 60..=returns.len() {
-                let window = &returns[i-60..i];
+                let window = &returns[i - 60..i];
                 rolling_omegas.push(self.calculate_omega_ratio(window, risk_free_rate));
             }
             if !rolling_omegas.is_empty() {
@@ -1023,7 +1165,7 @@ impl QuantAnalysisEngine {
         if returns.len() >= 60 {
             let mut rolling_rachevs = Vec::new();
             for i in 60..=returns.len() {
-                let window = &returns[i-60..i];
+                let window = &returns[i - 60..i];
                 rolling_rachevs.push(self.calculate_rachev_ratio(window));
             }
             if !rolling_rachevs.is_empty() {
@@ -1032,7 +1174,11 @@ impl QuantAnalysisEngine {
                 if rachev_z > 1.0 {
                     signals.push(("Favorable Tail Risk Profile (Rachev)", rachev_weight, true));
                 } else if rachev_z < -1.0 {
-                    signals.push(("Unfavorable Tail Risk Profile (Rachev)", rachev_weight, false));
+                    signals.push((
+                        "Unfavorable Tail Risk Profile (Rachev)",
+                        rachev_weight,
+                        false,
+                    ));
                 }
             }
         } else if rachev_ratio > 1.5 {
@@ -1056,9 +1202,8 @@ impl QuantAnalysisEngine {
                 if month_returns.len() >= 5 {
                     let avg = month_returns.iter().sum::<f64>() / month_returns.len() as f64;
                     let std_dev = {
-                        let variance = month_returns.iter()
-                            .map(|r| (r - avg).powi(2))
-                            .sum::<f64>() / month_returns.len() as f64;
+                        let variance = month_returns.iter().map(|r| (r - avg).powi(2)).sum::<f64>()
+                            / month_returns.len() as f64;
                         variance.sqrt()
                     };
                     // Statistical significance: z-score = avg / (std_dev / sqrt(n))
@@ -1076,9 +1221,15 @@ impl QuantAnalysisEngine {
                         }
                     }
                     Some(avg * 100.0)
-                } else { None }
-            } else { None }
-        } else { None };
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // --- Low Vol Factor (relative to SPY) ---
         let low_vol_factor = if let Some(spy) = spy_bars {
@@ -1092,8 +1243,8 @@ impl QuantAnalysisEngine {
                     let mut rolling_ratios = Vec::new();
                     let min_len = returns.len().min(spy_returns.len());
                     for i in 30..=min_len {
-                        let stock_window = &returns[i-30..i];
-                        let spy_window = &spy_returns[i-30..i];
+                        let stock_window = &returns[i - 30..i];
+                        let spy_window = &spy_returns[i - 30..i];
                         let stock_vol = stock_window.std_dev() * (252.0_f64).sqrt() * 100.0;
                         let spy_vol_window = spy_window.std_dev() * (252.0_f64).sqrt() * 100.0;
                         if spy_vol_window > 0.0 {
@@ -1115,8 +1266,12 @@ impl QuantAnalysisEngine {
                     signals.push(("High Volatility Factor", 1, false));
                 }
                 Some(ratio)
-            } else { None }
-        } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Calculate overall signal
         let mut total_score = 0;
@@ -1156,9 +1311,7 @@ impl QuantAnalysisEngine {
 
         let reason = signals
             .iter()
-            .map(|(name, _, bullish)| {
-                format!("{} {}", if *bullish { "+" } else { "-" }, name)
-            })
+            .map(|(name, _, bullish)| format!("{} {}", if *bullish { "+" } else { "-" }, name))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -1202,6 +1355,209 @@ impl QuantAnalysisEngine {
             reason,
             metrics,
         })
+    }
+
+    /// Fama-French 5-factor model using ETF proxies.
+    /// Returns JSON with factor betas, alpha, R-squared.
+    /// Factors:
+    ///   MKT = SPY return - risk_free_rate
+    ///   SMB = IWM return - SPY return  (size)
+    ///   HML = IWD return - IWF return  (value)
+    pub fn compute_fama_french(
+        &self,
+        bars: &[Bar],
+        spy_bars: &[Bar],
+        iwm_bars: Option<&[Bar]>,
+        iwd_bars: Option<&[Bar]>,
+        iwf_bars: Option<&[Bar]>,
+        risk_free_rate: f64,
+    ) -> Option<serde_json::Value> {
+        // Need at least 60 data points for meaningful regression
+        let min_len = 60.min(bars.len()).min(spy_bars.len());
+        if min_len < 30 {
+            return None;
+        }
+
+        // Compute daily returns (aligned by using last `min_len` bars from each)
+        let stock_returns = self.calculate_returns(
+            &bars[bars.len().saturating_sub(min_len)..]
+                .iter()
+                .map(|b| b.close)
+                .collect::<Vec<_>>(),
+        );
+        let spy_returns = self.calculate_returns(
+            &spy_bars[spy_bars.len().saturating_sub(min_len)..]
+                .iter()
+                .map(|b| b.close)
+                .collect::<Vec<_>>(),
+        );
+
+        let n = stock_returns.len().min(spy_returns.len());
+        if n < 30 {
+            return None;
+        }
+
+        let daily_rf = risk_free_rate / 252.0;
+
+        // Factor 1: MKT (market excess return)
+        let mkt: Vec<f64> = spy_returns[..n].iter().map(|r| r - daily_rf).collect();
+
+        // Factor 2: SMB (size) = IWM - SPY
+        let smb: Option<Vec<f64>> = iwm_bars.and_then(|iwm| {
+            let iwm_ret = self.calculate_returns(
+                &iwm[iwm.len().saturating_sub(min_len)..]
+                    .iter()
+                    .map(|b| b.close)
+                    .collect::<Vec<_>>(),
+            );
+            if iwm_ret.len() >= n {
+                Some(
+                    iwm_ret[..n]
+                        .iter()
+                        .zip(&spy_returns[..n])
+                        .map(|(a, b)| a - b)
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        });
+
+        // Factor 3: HML (value) = IWD - IWF
+        let hml: Option<Vec<f64>> = match (iwd_bars, iwf_bars) {
+            (Some(iwd), Some(iwf)) => {
+                let iwd_ret = self.calculate_returns(
+                    &iwd[iwd.len().saturating_sub(min_len)..]
+                        .iter()
+                        .map(|b| b.close)
+                        .collect::<Vec<_>>(),
+                );
+                let iwf_ret = self.calculate_returns(
+                    &iwf[iwf.len().saturating_sub(min_len)..]
+                        .iter()
+                        .map(|b| b.close)
+                        .collect::<Vec<_>>(),
+                );
+                if iwd_ret.len() >= n && iwf_ret.len() >= n {
+                    Some(
+                        iwd_ret[..n]
+                            .iter()
+                            .zip(&iwf_ret[..n])
+                            .map(|(a, b)| a - b)
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        // Excess stock returns
+        let y: Vec<f64> = stock_returns[..n].iter().map(|r| r - daily_rf).collect();
+
+        // Build X matrix: depends on available factors
+        let mut num_factors = 1; // always have MKT
+        if smb.is_some() {
+            num_factors += 1;
+        }
+        if hml.is_some() {
+            num_factors += 1;
+        }
+
+        // cols = num_factors + 1 (intercept)
+        let cols = num_factors + 1;
+        let mut x_data = Vec::with_capacity(n * cols);
+        for i in 0..n {
+            x_data.push(1.0); // intercept
+            x_data.push(mkt[i]);
+            if let Some(ref smb_vec) = smb {
+                x_data.push(smb_vec[i]);
+            }
+            if let Some(ref hml_vec) = hml {
+                x_data.push(hml_vec[i]);
+            }
+        }
+
+        // OLS: beta = (X'X)^-1 X'y using nalgebra
+        let x = nalgebra::DMatrix::from_row_slice(n, cols, &x_data);
+        let y_vec = nalgebra::DVector::from_column_slice(&y);
+
+        let xtx = x.transpose() * &x;
+        let xty = x.transpose() * &y_vec;
+
+        let xtx_inv = xtx.try_inverse()?;
+
+        let betas = xtx_inv * xty;
+
+        // R-squared
+        let y_hat = &x * &betas;
+        let residuals = &y_vec - &y_hat;
+        let y_mean = y.iter().sum::<f64>() / n as f64;
+        let ss_res: f64 = residuals.iter().map(|r| r * r).sum();
+        let ss_tot: f64 = y.iter().map(|yi| (yi - y_mean).powi(2)).sum();
+        let r_squared = if ss_tot > 0.0 {
+            1.0 - ss_res / ss_tot
+        } else {
+            0.0
+        };
+
+        // Annualized alpha
+        let daily_alpha = betas[0];
+        let annualized_alpha = daily_alpha * 252.0;
+
+        // Residual volatility (annualized)
+        let residual_vol = (ss_res / (n as f64 - cols as f64)).sqrt() * (252.0_f64).sqrt();
+
+        let mut result = serde_json::Map::new();
+        result.insert("alpha_annualized".into(), json!(annualized_alpha));
+        result.insert("r_squared".into(), json!(r_squared));
+        result.insert("residual_volatility".into(), json!(residual_vol));
+        result.insert("observations".into(), json!(n));
+        result.insert("beta_market".into(), json!(betas[1]));
+
+        let mut idx = 2;
+        if smb.is_some() {
+            result.insert("beta_smb".into(), json!(betas[idx]));
+            idx += 1;
+        }
+        if hml.is_some() {
+            result.insert("beta_hml".into(), json!(betas[idx]));
+        }
+
+        result.insert("factors_used".into(), json!(num_factors));
+
+        Some(serde_json::Value::Object(result))
+    }
+
+    /// Extended analysis with factor ETF bars for Fama-French.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_factors(
+        &self,
+        symbol: &str,
+        bars: &[Bar],
+        spy_bars: Option<&[Bar]>,
+        iwm_bars: Option<&[Bar]>,
+        iwd_bars: Option<&[Bar]>,
+        iwf_bars: Option<&[Bar]>,
+        dynamic_risk_free_rate: Option<f64>,
+    ) -> Result<AnalysisResult, AnalysisError> {
+        let mut result =
+            self.analyze_with_benchmark_and_rate(symbol, bars, spy_bars, dynamic_risk_free_rate)?;
+
+        // Compute Fama-French factors if SPY bars available
+        if let Some(spy) = spy_bars {
+            let rf = dynamic_risk_free_rate.unwrap_or(0.05);
+            if let Some(ff) = self.compute_fama_french(bars, spy, iwm_bars, iwd_bars, iwf_bars, rf)
+            {
+                // Merge into metrics
+                if let Some(obj) = result.metrics.as_object_mut() {
+                    obj.insert("fama_french_factors".to_string(), ff);
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     fn analyze_sync(&self, symbol: &str, bars: &[Bar]) -> Result<AnalysisResult, AnalysisError> {

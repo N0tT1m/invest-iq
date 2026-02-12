@@ -5,9 +5,8 @@ mod embeds;
 use analysis_core::SignalStrength;
 use serenity::{
     all::{
-        Command, CommandInteraction, CommandOptionType,
-        CreateCommand, CreateCommandOption, CreateInteractionResponse,
-        CreateInteractionResponseMessage, Interaction,
+        Command, CommandInteraction, CommandOptionType, CreateCommand, CreateCommandOption,
+        CreateInteractionResponse, CreateInteractionResponseMessage, Interaction,
     },
     async_trait,
     builder::{CreateAttachment, CreateMessage},
@@ -15,8 +14,8 @@ use serenity::{
     prelude::*,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::RwLock;
@@ -339,24 +338,39 @@ impl EventHandler for Handler {
 
                             let now = chrono::Utc::now();
                             let start = now - chrono::Duration::days(90);
-                            match self.polygon_client.get_aggregates(&symbol, 1, "day", start, now).await {
+                            match self
+                                .polygon_client
+                                .get_aggregates(&symbol, 1, "day", start, now)
+                                .await
+                            {
                                 Ok(bars) if !bars.is_empty() => {
                                     match charts::generate_chart(&symbol, &bars, &signal).await {
                                         Ok(chart_path) => {
-                                            if let Ok(attachment) = CreateAttachment::path(&chart_path).await {
+                                            if let Ok(attachment) =
+                                                CreateAttachment::path(&chart_path).await
+                                            {
                                                 let builder = CreateMessage::default()
                                                     .embed(embed)
                                                     .add_file(attachment);
-                                                let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+                                                let _ = msg
+                                                    .channel_id
+                                                    .send_message(&ctx.http, builder)
+                                                    .await;
                                                 let _ = std::fs::remove_file(chart_path);
                                             } else {
                                                 let builder = CreateMessage::default().embed(embed);
-                                                let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+                                                let _ = msg
+                                                    .channel_id
+                                                    .send_message(&ctx.http, builder)
+                                                    .await;
                                             }
                                         }
                                         Err(_) => {
                                             let builder = CreateMessage::default().embed(embed);
-                                            let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+                                            let _ = msg
+                                                .channel_id
+                                                .send_message(&ctx.http, builder)
+                                                .await;
                                         }
                                     }
                                 }
@@ -367,15 +381,27 @@ impl EventHandler for Handler {
                             }
                         }
                         Err(e) => {
-                            let _ = msg.channel_id.say(&ctx.http, format!("Error analyzing {}: {}", symbol, e)).await;
+                            let _ = msg
+                                .channel_id
+                                .say(&ctx.http, format!("Error analyzing {}: {}", symbol, e))
+                                .await;
                         }
                     }
                 }
                 Ok(resp) => {
-                    let _ = msg.channel_id.say(&ctx.http, format!("Error analyzing {}: {}", symbol, resp.status())).await;
+                    let _ = msg
+                        .channel_id
+                        .say(
+                            &ctx.http,
+                            format!("Error analyzing {}: {}", symbol, resp.status()),
+                        )
+                        .await;
                 }
                 Err(e) => {
-                    let _ = msg.channel_id.say(&ctx.http, format!("Error analyzing {}: {}", symbol, e)).await;
+                    let _ = msg
+                        .channel_id
+                        .say(&ctx.http, format!("Error analyzing {}: {}", symbol, e))
+                        .await;
                 }
             }
         }
@@ -406,72 +432,140 @@ fn create_iq_command() -> CreateCommand {
         .description("InvestIQ stock analysis bot")
         // ── Existing SubCommands ─────────────────────────
         .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "analyze", "Full 4-engine analysis with chart")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Stock ticker symbol (e.g. AAPL)")
-                        .required(true),
-                ),
-        )
-        .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "price", "Quick price snapshot")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Stock ticker symbol")
-                        .required(true),
-                ),
-        )
-        .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "chart", "Enhanced technical chart")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Stock ticker symbol")
-                        .required(true),
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "analyze",
+                "Full 4-engine analysis with chart",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "symbol",
+                    "Stock ticker symbol (e.g. AAPL)",
                 )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "days", "Number of days (default 90)")
-                        .required(false)
-                        .min_int_value(7)
-                        .max_int_value(365),
-                ),
+                .required(true),
+            ),
         )
         .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "watchlist", "Manage your personal watchlist")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "action", "Action to perform")
-                        .required(false)
-                        .add_string_choice("Show watchlist", "show")
-                        .add_string_choice("Add symbol", "add")
-                        .add_string_choice("Remove symbol", "remove"),
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "price",
+                "Quick price snapshot",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "symbol",
+                    "Stock ticker symbol",
                 )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Symbol to add/remove")
-                        .required(false),
-                ),
-        )
-        .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "portfolio", "View paper trading portfolio"))
-        .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "compare", "Side-by-side analysis comparison")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "symbol1", "First stock ticker")
-                        .required(true),
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "symbol2", "Second stock ticker")
-                        .required(true),
-                ),
+                .required(true),
+            ),
         )
         .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "backtest", "Run backtest and show results")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "symbol", "Stock ticker symbol")
-                        .required(true),
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "chart",
+                "Enhanced technical chart",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "symbol",
+                    "Stock ticker symbol",
                 )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "days", "Backtest period in days (default 365)")
-                        .required(false)
-                        .min_int_value(30)
-                        .max_int_value(1825),
-                ),
+                .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "days",
+                    "Number of days (default 90)",
+                )
+                .required(false)
+                .min_int_value(7)
+                .max_int_value(365),
+            ),
         )
-        .add_option(CreateCommandOption::new(CommandOptionType::SubCommand, "help", "Show command reference"))
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "watchlist",
+                "Manage your personal watchlist",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(CommandOptionType::String, "action", "Action to perform")
+                    .required(false)
+                    .add_string_choice("Show watchlist", "show")
+                    .add_string_choice("Add symbol", "add")
+                    .add_string_choice("Remove symbol", "remove"),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "symbol",
+                    "Symbol to add/remove",
+                )
+                .required(false),
+            ),
+        )
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "portfolio",
+            "View paper trading portfolio",
+        ))
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "compare",
+                "Side-by-side analysis comparison",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "symbol1",
+                    "First stock ticker",
+                )
+                .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "symbol2",
+                    "Second stock ticker",
+                )
+                .required(true),
+            ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "backtest",
+                "Run backtest and show results",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "symbol",
+                    "Stock ticker symbol",
+                )
+                .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "days",
+                    "Backtest period in days (default 365)",
+                )
+                .required(false)
+                .min_int_value(30)
+                .max_int_value(1825),
+            ),
+        )
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "help",
+            "Show command reference",
+        ))
         // ── New SubCommandGroups ─────────────────────────
         .add_option(create_agent_group())
         .add_option(create_risk_group())
@@ -488,181 +582,301 @@ fn symbol_option(desc: &str) -> CreateCommandOption {
 }
 
 fn create_agent_group() -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "agent", "Agent oversight commands")
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "pending", "List pending agent trades"),
+    CreateCommandOption::new(
+        CommandOptionType::SubCommandGroup,
+        "agent",
+        "Agent oversight commands",
+    )
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "pending",
+        "List pending agent trades",
+    ))
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "approve",
+            "Approve a pending trade",
         )
         .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "approve", "Approve a pending trade")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "id", "Trade ID to approve")
-                        .required(true),
-                ),
+            CreateCommandOption::new(CommandOptionType::String, "id", "Trade ID to approve")
+                .required(true),
+        ),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "reject",
+            "Reject a pending trade",
         )
         .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "reject", "Reject a pending trade")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "id", "Trade ID to reject")
-                        .required(true),
-                ),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "stats", "Agent analytics summary"),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "history", "Recent executed trades"),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "regimes", "Win rate by market regime"),
-        )
+            CreateCommandOption::new(CommandOptionType::String, "id", "Trade ID to reject")
+                .required(true),
+        ),
+    )
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "stats",
+        "Agent analytics summary",
+    ))
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "history",
+        "Recent executed trades",
+    ))
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "regimes",
+        "Win rate by market regime",
+    ))
 }
 
 fn create_risk_group() -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "risk", "Risk management commands")
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "overview", "Portfolio risk radar"),
+    CreateCommandOption::new(
+        CommandOptionType::SubCommandGroup,
+        "risk",
+        "Risk management commands",
+    )
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "overview",
+        "Portfolio risk radar",
+    ))
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "symbol",
+            "Per-symbol risk analysis",
         )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "symbol", "Per-symbol risk analysis")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "breakers", "Circuit breaker status"),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "positions", "Stop-loss tracked positions"),
-        )
+        .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "breakers",
+        "Circuit breaker status",
+    ))
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "positions",
+        "Stop-loss tracked positions",
+    ))
 }
 
 fn create_market_group() -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "market", "Market intelligence commands")
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "news", "Headlines and sentiment")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
+    CreateCommandOption::new(
+        CommandOptionType::SubCommandGroup,
+        "market",
+        "Market intelligence commands",
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "news",
+            "Headlines and sentiment",
         )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "sectors", "Sector rotation and flows"),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "macro", "Macro indicators and regime"),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "screen", "Stock screener opportunities"),
-        )
+        .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "sectors",
+        "Sector rotation and flows",
+    ))
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "macro",
+        "Macro indicators and regime",
+    ))
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "screen",
+        "Stock screener opportunities",
+    ))
 }
 
 fn create_data_group() -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "data", "Supplementary data commands")
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "earnings", "Earnings data")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
+    CreateCommandOption::new(
+        CommandOptionType::SubCommandGroup,
+        "data",
+        "Supplementary data commands",
+    )
+    .add_sub_option(
+        CreateCommandOption::new(CommandOptionType::SubCommand, "earnings", "Earnings data")
+            .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(CommandOptionType::SubCommand, "dividends", "Dividend data")
+            .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "options",
+            "Options flow data",
         )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "dividends", "Dividend data")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
+        .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "insiders",
+            "Insider transactions",
         )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "options", "Options flow data")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
+        .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "short",
+            "Short interest analysis",
         )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "insiders", "Insider transactions")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
+        .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "correlation",
+            "Correlation with benchmarks",
         )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "short", "Short interest analysis")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "correlation", "Correlation with benchmarks")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
-        )
+        .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
 }
 
 fn create_trade_group() -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "trade", "Trade execution commands")
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "buy", "Buy shares")
-                .add_sub_option(symbol_option("Stock ticker symbol"))
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "shares", "Number of shares")
-                        .required(true)
-                        .min_int_value(1),
-                ),
+    CreateCommandOption::new(
+        CommandOptionType::SubCommandGroup,
+        "trade",
+        "Trade execution commands",
+    )
+    .add_sub_option(
+        CreateCommandOption::new(CommandOptionType::SubCommand, "buy", "Buy shares")
+            .add_sub_option(symbol_option("Stock ticker symbol"))
+            .add_sub_option(
+                CreateCommandOption::new(CommandOptionType::Integer, "shares", "Number of shares")
+                    .required(true)
+                    .min_int_value(1),
+            ),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(CommandOptionType::SubCommand, "sell", "Sell shares")
+            .add_sub_option(symbol_option("Stock ticker symbol"))
+            .add_sub_option(
+                CreateCommandOption::new(CommandOptionType::Integer, "shares", "Number of shares")
+                    .required(true)
+                    .min_int_value(1),
+            ),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "close",
+            "Close entire position",
         )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "sell", "Sell shares")
-                .add_sub_option(symbol_option("Stock ticker symbol"))
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "shares", "Number of shares")
-                        .required(true)
-                        .min_int_value(1),
-                ),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "close", "Close entire position")
-                .add_sub_option(symbol_option("Stock ticker symbol")),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "orders", "Recent orders list"),
-        )
+        .add_sub_option(symbol_option("Stock ticker symbol")),
+    )
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "orders",
+        "Recent orders list",
+    ))
 }
 
 fn create_tax_group() -> CreateCommandOption {
     CreateCommandOption::new(CommandOptionType::SubCommandGroup, "tax", "Tax tools")
+        .add_sub_option(CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "harvest",
+            "Tax-loss harvesting opportunities",
+        ))
         .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "harvest", "Tax-loss harvesting opportunities"),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "summary", "Year-end tax summary")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "year", "Tax year (default current)")
-                        .required(false)
-                        .min_int_value(2020)
-                        .max_int_value(2030),
-                ),
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "summary",
+                "Year-end tax summary",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "year",
+                    "Tax year (default current)",
+                )
+                .required(false)
+                .min_int_value(2020)
+                .max_int_value(2030),
+            ),
         )
 }
 
 fn create_advanced_group() -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "advanced", "Advanced backtesting")
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "walkforward", "Walk-forward validation")
-                .add_sub_option(symbol_option("Stock ticker symbol"))
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "days", "Period in days (default 365)")
-                        .required(false)
-                        .min_int_value(90)
-                        .max_int_value(1825),
-                ),
+    CreateCommandOption::new(
+        CommandOptionType::SubCommandGroup,
+        "advanced",
+        "Advanced backtesting",
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "walkforward",
+            "Walk-forward validation",
         )
+        .add_sub_option(symbol_option("Stock ticker symbol"))
         .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "montecarlo", "Monte Carlo simulation")
-                .add_sub_option(symbol_option("Stock ticker symbol"))
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "sims", "Number of simulations (default 1000)")
-                        .required(false)
-                        .min_int_value(100)
-                        .max_int_value(10000),
-                ),
+            CreateCommandOption::new(
+                CommandOptionType::Integer,
+                "days",
+                "Period in days (default 365)",
+            )
+            .required(false)
+            .min_int_value(90)
+            .max_int_value(1825),
+        ),
+    )
+    .add_sub_option(
+        CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "montecarlo",
+            "Monte Carlo simulation",
         )
+        .add_sub_option(symbol_option("Stock ticker symbol"))
         .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "strategies", "Strategy health / alpha decay"),
-        )
+            CreateCommandOption::new(
+                CommandOptionType::Integer,
+                "sims",
+                "Number of simulations (default 1000)",
+            )
+            .required(false)
+            .min_int_value(100)
+            .max_int_value(10000),
+        ),
+    )
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "strategies",
+        "Strategy health / alpha decay",
+    ))
 }
 
 fn create_system_group() -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommandGroup, "system", "System commands")
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "health", "Dependency health check"),
-        )
-        .add_sub_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "search", "Symbol search")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "query", "Search query (e.g. 'apple')")
-                        .required(true),
-                ),
-        )
+    CreateCommandOption::new(
+        CommandOptionType::SubCommandGroup,
+        "system",
+        "System commands",
+    )
+    .add_sub_option(CreateCommandOption::new(
+        CommandOptionType::SubCommand,
+        "health",
+        "Dependency health check",
+    ))
+    .add_sub_option(
+        CreateCommandOption::new(CommandOptionType::SubCommand, "search", "Symbol search")
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "query",
+                    "Search query (e.g. 'apple')",
+                )
+                .required(true),
+            ),
+    )
 }
 
 // ── Utility Functions ────────────────────────────────────────────────
@@ -720,10 +934,8 @@ async fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    let discord_token =
-        std::env::var("DISCORD_BOT_TOKEN").expect("DISCORD_BOT_TOKEN must be set");
-    let polygon_api_key =
-        std::env::var("POLYGON_API_KEY").expect("POLYGON_API_KEY must be set");
+    let discord_token = std::env::var("DISCORD_BOT_TOKEN").expect("DISCORD_BOT_TOKEN must be set");
+    let polygon_api_key = std::env::var("POLYGON_API_KEY").expect("POLYGON_API_KEY must be set");
 
     let api_base = std::env::var("API_BASE_URL").unwrap_or_else(|_| API_BASE_URL.to_string());
     let polygon_client = Arc::new(polygon_client::PolygonClient::new(polygon_api_key));

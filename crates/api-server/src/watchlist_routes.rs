@@ -4,20 +4,20 @@
 
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post, delete},
+    routing::{delete, get, post},
     Json, Router,
-};
-use smart_watchlist::{
-    InteractionType, Opportunity, OpportunityRanker, OpportunitySignal,
-    PreferenceLearner, SymbolInteraction, UserPreference, WatchlistItem,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use smart_watchlist::{
+    InteractionType, Opportunity, OpportunityRanker, OpportunitySignal, PreferenceLearner,
+    SymbolInteraction, UserPreference, WatchlistItem,
+};
 
 use crate::{get_cached_etf_bars, ApiResponse, AppError, AppState};
 
 /// Query params for personalized feed
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct FeedQuery {
     pub user_id: Option<String>,
     pub limit: Option<usize>,
@@ -25,7 +25,7 @@ pub struct FeedQuery {
 }
 
 /// Request to record user interaction
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct InteractionRequest {
     pub user_id: String,
     pub symbol: String,
@@ -34,7 +34,7 @@ pub struct InteractionRequest {
 }
 
 /// Request to update preferences
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdatePreferencesRequest {
     pub sectors: Option<Vec<String>>,
     pub risk_tolerance: Option<f64>,
@@ -44,7 +44,7 @@ pub struct UpdatePreferencesRequest {
 }
 
 /// Response for personalized feed
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct PersonalizedFeedResponse {
     pub opportunities: Vec<Opportunity>,
     pub total_scanned: usize,
@@ -59,37 +59,65 @@ pub fn watchlist_routes() -> Router<AppState> {
         .route("/api/watchlist/preferences", post(update_preferences))
         .route("/api/watchlist/items", get(get_watchlist_items))
         .route("/api/watchlist/items", post(add_to_watchlist))
-        .route("/api/watchlist/items/:symbol", delete(remove_from_watchlist))
+        .route(
+            "/api/watchlist/items/:symbol",
+            delete(remove_from_watchlist),
+        )
         .route("/api/watchlist/scan", get(scan_opportunities))
 }
 
 /// Broader stock universe for scanning (covers major sectors + mid-caps)
 const QUICK_UNIVERSE: &[(&str, &str)] = &[
     // Technology
-    ("AAPL", "Technology"), ("MSFT", "Technology"), ("NVDA", "Technology"),
-    ("AVGO", "Technology"), ("AMD", "Technology"), ("CRM", "Technology"),
-    ("ORCL", "Technology"), ("ADBE", "Technology"),
+    ("AAPL", "Technology"),
+    ("MSFT", "Technology"),
+    ("NVDA", "Technology"),
+    ("AVGO", "Technology"),
+    ("AMD", "Technology"),
+    ("CRM", "Technology"),
+    ("ORCL", "Technology"),
+    ("ADBE", "Technology"),
     // Communication Services
-    ("GOOGL", "Communication Services"), ("META", "Communication Services"),
-    ("NFLX", "Communication Services"), ("DIS", "Communication Services"),
+    ("GOOGL", "Communication Services"),
+    ("META", "Communication Services"),
+    ("NFLX", "Communication Services"),
+    ("DIS", "Communication Services"),
     // Consumer Discretionary
-    ("AMZN", "Consumer Discretionary"), ("TSLA", "Consumer Discretionary"),
-    ("NKE", "Consumer Discretionary"), ("SBUX", "Consumer Discretionary"),
+    ("AMZN", "Consumer Discretionary"),
+    ("TSLA", "Consumer Discretionary"),
+    ("NKE", "Consumer Discretionary"),
+    ("SBUX", "Consumer Discretionary"),
     // Financials
-    ("JPM", "Financials"), ("V", "Financials"), ("GS", "Financials"),
-    ("BAC", "Financials"), ("MA", "Financials"),
+    ("JPM", "Financials"),
+    ("V", "Financials"),
+    ("GS", "Financials"),
+    ("BAC", "Financials"),
+    ("MA", "Financials"),
     // Healthcare
-    ("UNH", "Healthcare"), ("JNJ", "Healthcare"), ("LLY", "Healthcare"),
-    ("PFE", "Healthcare"), ("ABBV", "Healthcare"), ("MRK", "Healthcare"),
+    ("UNH", "Healthcare"),
+    ("JNJ", "Healthcare"),
+    ("LLY", "Healthcare"),
+    ("PFE", "Healthcare"),
+    ("ABBV", "Healthcare"),
+    ("MRK", "Healthcare"),
     // Energy
-    ("XOM", "Energy"), ("CVX", "Energy"), ("COP", "Energy"),
+    ("XOM", "Energy"),
+    ("CVX", "Energy"),
+    ("COP", "Energy"),
     // Consumer Staples
-    ("PG", "Consumer Staples"), ("KO", "Consumer Staples"), ("COST", "Consumer Staples"),
+    ("PG", "Consumer Staples"),
+    ("KO", "Consumer Staples"),
+    ("COST", "Consumer Staples"),
     // Industrials
-    ("HD", "Industrials"), ("CAT", "Industrials"), ("BA", "Industrials"),
-    ("UPS", "Industrials"), ("GE", "Industrials"),
+    ("HD", "Industrials"),
+    ("CAT", "Industrials"),
+    ("BA", "Industrials"),
+    ("UPS", "Industrials"),
+    ("GE", "Industrials"),
     // Materials & Utilities
-    ("LIN", "Materials"), ("NEE", "Utilities"), ("SO", "Utilities"),
+    ("LIN", "Materials"),
+    ("NEE", "Utilities"),
+    ("SO", "Utilities"),
 ];
 
 /// Result of quick technical scan with rich context
@@ -106,29 +134,35 @@ struct QuickSignalResult {
 fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> QuickSignalResult {
     if bars.len() < 21 {
         return QuickSignalResult {
-            signal_score: 0.5, confidence: 0.3,
+            signal_score: 0.5,
+            confidence: 0.3,
             summary: "Insufficient data".to_string(),
             reason: "Not enough price history".to_string(),
-            potential_return: None, tags: vec![],
+            potential_return: None,
+            tags: vec![],
         };
     }
 
     let current = match bars.last() {
         Some(b) => b.close,
-        None => return QuickSignalResult {
-            signal_score: 0.5, confidence: 0.3,
-            summary: "No data".to_string(),
-            reason: "No bar data".to_string(),
-            potential_return: None, tags: vec![],
-        },
+        None => {
+            return QuickSignalResult {
+                signal_score: 0.5,
+                confidence: 0.3,
+                summary: "No data".to_string(),
+                reason: "No bar data".to_string(),
+                potential_return: None,
+                tags: vec![],
+            }
+        }
     };
     let len = bars.len();
 
     // SMA-20
-    let sma_20: f64 = bars[len-20..].iter().map(|b| b.close).sum::<f64>() / 20.0;
+    let sma_20: f64 = bars[len - 20..].iter().map(|b| b.close).sum::<f64>() / 20.0;
     // SMA-50 (if available)
     let sma_50 = if len >= 50 {
-        bars[len-50..].iter().map(|b| b.close).sum::<f64>() / 50.0
+        bars[len - 50..].iter().map(|b| b.close).sum::<f64>() / 50.0
     } else {
         sma_20
     };
@@ -142,12 +176,18 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> QuickSignalResult {
     let mut gains = 0.0_f64;
     let mut losses = 0.0_f64;
     for i in (len - rsi_period)..len {
-        let change = bars[i].close - bars[i-1].close;
-        if change > 0.0 { gains += change; } else { losses += change.abs(); }
+        let change = bars[i].close - bars[i - 1].close;
+        if change > 0.0 {
+            gains += change;
+        } else {
+            losses += change.abs();
+        }
     }
     let avg_gain = gains / rsi_period as f64;
     let avg_loss = losses / rsi_period as f64;
-    let rsi = if avg_loss == 0.0 { 100.0 } else {
+    let rsi = if avg_loss == 0.0 {
+        100.0
+    } else {
         100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
     };
 
@@ -160,17 +200,21 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> QuickSignalResult {
 
     // Volume trend (5d avg vs 20d avg)
     let vol_surge = if len >= 20 {
-        let avg_5d: f64 = bars[len-5..].iter().map(|b| b.volume).sum::<f64>() / 5.0;
-        let avg_20d: f64 = bars[len-20..].iter().map(|b| b.volume).sum::<f64>() / 20.0;
-        if avg_20d > 0.0 { Some(avg_5d / avg_20d) } else { None }
+        let avg_5d: f64 = bars[len - 5..].iter().map(|b| b.volume).sum::<f64>() / 5.0;
+        let avg_20d: f64 = bars[len - 20..].iter().map(|b| b.volume).sum::<f64>() / 20.0;
+        if avg_20d > 0.0 {
+            Some(avg_5d / avg_20d)
+        } else {
+            None
+        }
     } else {
         None
     };
 
     // Golden/death cross detection
     let sma_cross = if len >= 50 && sma_20 != sma_50 {
-        let prev_sma_20: f64 = bars[len-21..len-1].iter().map(|b| b.close).sum::<f64>() / 20.0;
-        let prev_sma_50: f64 = bars[len-51..len-1].iter().map(|b| b.close).sum::<f64>() / 50.0;
+        let prev_sma_20: f64 = bars[len - 21..len - 1].iter().map(|b| b.close).sum::<f64>() / 20.0;
+        let prev_sma_50: f64 = bars[len - 51..len - 1].iter().map(|b| b.close).sum::<f64>() / 50.0;
         if sma_20 > sma_50 && prev_sma_20 <= prev_sma_50 {
             Some("golden_cross")
         } else if sma_20 < sma_50 && prev_sma_20 >= prev_sma_50 {
@@ -184,7 +228,15 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> QuickSignalResult {
 
     // Composite signal score (0.0=StrongSell, 1.0=StrongBuy)
     let trend_score = ((trend_20 + trend_50) / 2.0 / 10.0 + 0.5).clamp(0.0, 1.0);
-    let rsi_score = if rsi > 70.0 { 0.3 } else if rsi > 50.0 { 0.7 } else if rsi > 30.0 { 0.4 } else { 0.2 };
+    let rsi_score = if rsi > 70.0 {
+        0.3
+    } else if rsi > 50.0 {
+        0.7
+    } else if rsi > 30.0 {
+        0.4
+    } else {
+        0.2
+    };
     let signal_score = trend_score * 0.6 + rsi_score * 0.4;
 
     let confidence = (trend_20.abs() / 8.0).clamp(0.3, 0.85);
@@ -197,8 +249,14 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> QuickSignalResult {
         ret_5d,
         rsi,
         if let Some(vs) = vol_surge {
-            if vs > 1.5 { format!(" | Vol {:.1}x", vs) } else { String::new() }
-        } else { String::new() }
+            if vs > 1.5 {
+                format!(" | Vol {:.1}x", vs)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
     );
 
     // Build contextual reason (explains *why* the signal)
@@ -243,7 +301,10 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> QuickSignalResult {
     // Volume context
     if let Some(vs) = vol_surge {
         if vs > 2.0 {
-            reasons.push(format!("Volume surge {:.1}x above average — institutional interest", vs));
+            reasons.push(format!(
+                "Volume surge {:.1}x above average — institutional interest",
+                vs
+            ));
             tags.push("High Volume".to_string());
         } else if vs > 1.5 {
             reasons.push(format!("Elevated volume {:.1}x — increased attention", vs));
@@ -287,11 +348,21 @@ fn quick_signal_from_bars(bars: &[analysis_core::Bar]) -> QuickSignalResult {
 }
 
 /// Get personalized opportunity feed
+#[utoipa::path(
+    get,
+    path = "/api/watchlist/personalized",
+    params(FeedQuery),
+    responses((status = 200, description = "Personalized opportunity feed ranked by user preferences")),
+    tag = "Portfolio"
+)]
 async fn get_personalized_feed(
     State(state): State<AppState>,
     Query(query): Query<FeedQuery>,
 ) -> Result<Json<ApiResponse<PersonalizedFeedResponse>>, AppError> {
-    let user_id = query.user_id.clone().unwrap_or_else(|| "default".to_string());
+    let user_id = query
+        .user_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let limit = query.limit.unwrap_or(20);
     let min_confidence = query.min_confidence.unwrap_or(0.3);
 
@@ -364,6 +435,13 @@ async fn get_personalized_feed(
 }
 
 /// Record a user interaction
+#[utoipa::path(
+    post,
+    path = "/api/watchlist/interaction",
+    request_body = InteractionRequest,
+    responses((status = 200, description = "Interaction recorded for preference learning")),
+    tag = "Portfolio"
+)]
 async fn record_interaction(
     State(state): State<AppState>,
     Json(req): Json<InteractionRequest>,
@@ -391,11 +469,21 @@ async fn record_interaction(
 }
 
 /// Get user preferences
+#[utoipa::path(
+    get,
+    path = "/api/watchlist/preferences",
+    params(FeedQuery),
+    responses((status = 200, description = "Current user preferences")),
+    tag = "Portfolio"
+)]
 async fn get_preferences(
     State(state): State<AppState>,
     Query(query): Query<FeedQuery>,
 ) -> Result<Json<ApiResponse<UserPreference>>, AppError> {
-    let user_id = query.user_id.clone().unwrap_or_else(|| "default".to_string());
+    let user_id = query
+        .user_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
 
     let pool = state
         .portfolio_manager
@@ -415,7 +503,10 @@ async fn update_preferences(
     Query(query): Query<FeedQuery>,
     Json(req): Json<UpdatePreferencesRequest>,
 ) -> Result<Json<ApiResponse<UserPreference>>, AppError> {
-    let user_id = query.user_id.clone().unwrap_or_else(|| "default".to_string());
+    let user_id = query
+        .user_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
 
     let pool = state
         .portfolio_manager
@@ -441,7 +532,10 @@ async fn get_watchlist_items(
     State(state): State<AppState>,
     Query(query): Query<FeedQuery>,
 ) -> Result<Json<ApiResponse<Vec<WatchlistItem>>>, AppError> {
-    let user_id = query.user_id.clone().unwrap_or_else(|| "default".to_string());
+    let user_id = query
+        .user_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
 
     let pool = state
         .portfolio_manager
@@ -449,15 +543,15 @@ async fn get_watchlist_items(
         .map(|pm| pm.db().pool().clone())
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?;
 
-    let rows: Vec<(i64, String, Option<String>, String)> = sqlx::query_as(
-        "SELECT id, symbol, notes, added_at FROM watchlist ORDER BY added_at DESC"
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap_or_default();
+    let rows: Vec<(i64, String, Option<String>, String)> =
+        sqlx::query_as("SELECT id, symbol, notes, added_at FROM watchlist ORDER BY added_at DESC")
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
 
-    let items: Vec<WatchlistItem> = rows.into_iter().map(|(id, symbol, notes, added_at)| {
-        WatchlistItem {
+    let items: Vec<WatchlistItem> = rows
+        .into_iter()
+        .map(|(id, symbol, notes, added_at)| WatchlistItem {
             id: Some(id),
             user_id: user_id.clone(),
             symbol,
@@ -468,14 +562,14 @@ async fn get_watchlist_items(
             target_price: None,
             stop_loss: None,
             alert_enabled: false,
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok(Json(ApiResponse::success(items)))
 }
 
 /// Add symbol to watchlist
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct AddWatchlistRequest {
     pub user_id: String,
     pub symbol: String,
@@ -490,20 +584,21 @@ async fn add_to_watchlist(
     State(state): State<AppState>,
     Json(req): Json<AddWatchlistRequest>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
-    let pool = state.portfolio_manager.as_ref()
+    let pool = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
-        .db().pool();
+        .db()
+        .pool();
 
     let symbol = req.symbol.to_uppercase();
 
     // Insert into watchlist table (ignore if already exists)
-    sqlx::query(
-        "INSERT INTO watchlist (symbol, notes) VALUES (?, ?) ON CONFLICT DO NOTHING"
-    )
-    .bind(&symbol)
-    .bind(&req.notes)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO watchlist (symbol, notes) VALUES (?, ?) ON CONFLICT DO NOTHING")
+        .bind(&symbol)
+        .bind(&req.notes)
+        .execute(pool)
+        .await?;
 
     // Record as interaction for learning
     let learner = PreferenceLearner::new(pool.clone());
@@ -529,11 +624,17 @@ async fn remove_from_watchlist(
     Path(symbol): Path<String>,
     Query(query): Query<FeedQuery>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
-    let pool = state.portfolio_manager.as_ref()
+    let pool = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?
-        .db().pool();
+        .db()
+        .pool();
 
-    let user_id = query.user_id.clone().unwrap_or_else(|| "default".to_string());
+    let user_id = query
+        .user_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let symbol = symbol.to_uppercase();
 
     // Delete from watchlist table
@@ -607,7 +708,11 @@ async fn scan_opportunities(
     }
 
     // Sort by confidence descending
-    opportunities.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    opportunities.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     opportunities.truncate(limit);
 
     Ok(Json(ApiResponse::success(opportunities)))

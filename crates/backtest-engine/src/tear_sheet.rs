@@ -97,7 +97,11 @@ pub fn generate_tear_sheet(result: &BacktestResult) -> serde_json::Value {
         sheet["trade_analysis_by_day"] = json!(by_day);
 
         // Holding period distribution
-        let holding_periods: Vec<i64> = result.trades.iter().map(|t| t.holding_period_days).collect();
+        let holding_periods: Vec<i64> = result
+            .trades
+            .iter()
+            .map(|t| t.holding_period_days)
+            .collect();
         if !holding_periods.is_empty() {
             let min_hp = *holding_periods.iter().min().unwrap_or(&0);
             let max_hp = *holding_periods.iter().max().unwrap_or(&0);

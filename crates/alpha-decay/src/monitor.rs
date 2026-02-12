@@ -52,7 +52,9 @@ impl SnapshotRow {
             trades_count: self.trades_count,
             cumulative_return: self.cumulative_return,
             max_drawdown: self.max_drawdown,
-            created_at: self.created_at.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+            created_at: self
+                .created_at
+                .and_then(|s| s.parse::<DateTime<Utc>>().ok()),
         }
     }
 }
@@ -195,10 +197,7 @@ impl AlphaDecayMonitor {
     }
 
     /// Get Sharpe ratio time series for decay analysis
-    pub async fn get_sharpe_series(
-        &self,
-        strategy_name: &str,
-    ) -> Result<Vec<(NaiveDate, f64)>> {
+    pub async fn get_sharpe_series(&self, strategy_name: &str) -> Result<Vec<(NaiveDate, f64)>> {
         let snapshots = self.get_snapshots(strategy_name, 365).await?;
 
         Ok(snapshots
@@ -209,10 +208,7 @@ impl AlphaDecayMonitor {
     }
 
     /// Calculate decay percentage from peak
-    pub async fn calculate_decay(
-        &self,
-        strategy_name: &str,
-    ) -> Result<Option<DecayMetrics>> {
+    pub async fn calculate_decay(&self, strategy_name: &str) -> Result<Option<DecayMetrics>> {
         let performance = self.get_strategy_performance(strategy_name).await?;
 
         match performance {
@@ -224,8 +220,7 @@ impl AlphaDecayMonitor {
                 };
 
                 let decay_from_avg = if perf.avg_historical_sharpe > 0.0 {
-                    (perf.avg_historical_sharpe - perf.current_sharpe)
-                        / perf.avg_historical_sharpe
+                    (perf.avg_historical_sharpe - perf.current_sharpe) / perf.avg_historical_sharpe
                         * 100.0
                 } else {
                     0.0
@@ -286,7 +281,11 @@ fn calculate_trend(series: &[(NaiveDate, f64)]) -> f64 {
     let x_mean = x.iter().sum::<f64>() / n;
     let y_mean = y.iter().sum::<f64>() / n;
 
-    let numerator: f64 = x.iter().zip(y.iter()).map(|(xi, yi)| (xi - x_mean) * (yi - y_mean)).sum();
+    let numerator: f64 = x
+        .iter()
+        .zip(y.iter())
+        .map(|(xi, yi)| (xi - x_mean) * (yi - y_mean))
+        .sum();
     let denominator: f64 = x.iter().map(|xi| (xi - x_mean).powi(2)).sum();
 
     if denominator.abs() < 1e-10 {
@@ -304,14 +303,24 @@ mod tests {
     fn test_trend_calculation() {
         // Upward trend
         let series: Vec<(NaiveDate, f64)> = (0..10)
-            .map(|i| (NaiveDate::from_ymd_opt(2024, 1, i + 1).unwrap(), i as f64 * 0.1))
+            .map(|i| {
+                (
+                    NaiveDate::from_ymd_opt(2024, 1, i + 1).unwrap(),
+                    i as f64 * 0.1,
+                )
+            })
             .collect();
         let trend = calculate_trend(&series);
         assert!(trend > 0.0);
 
         // Downward trend
         let series: Vec<(NaiveDate, f64)> = (0..10)
-            .map(|i| (NaiveDate::from_ymd_opt(2024, 1, i + 1).unwrap(), 1.0 - i as f64 * 0.1))
+            .map(|i| {
+                (
+                    NaiveDate::from_ymd_opt(2024, 1, i + 1).unwrap(),
+                    1.0 - i as f64 * 0.1,
+                )
+            })
             .collect();
         let trend = calculate_trend(&series);
         assert!(trend < 0.0);

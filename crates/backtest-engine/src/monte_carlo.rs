@@ -37,7 +37,10 @@ pub fn run_monte_carlo(
         };
     }
 
-    let trade_pcts: Vec<f64> = trades.iter().map(|t| t.profit_loss_percent / 100.0).collect();
+    let trade_pcts: Vec<f64> = trades
+        .iter()
+        .map(|t| t.profit_loss_percent / 100.0)
+        .collect();
     let initial_capital_f64 = initial_capital.to_f64().unwrap_or(100000.0);
 
     let n_trades = trade_pcts.len();
@@ -80,7 +83,11 @@ pub fn run_monte_carlo(
             let sharpe = if daily_returns.len() > 1 {
                 let n = daily_returns.len() as f64;
                 let mean = daily_returns.iter().sum::<f64>() / n;
-                let var = daily_returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n;
+                let var = daily_returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>()
+                    / n;
                 let std = var.sqrt();
                 if std > 0.0 {
                     Some((mean / std) * (n.min(252.0)).sqrt())
@@ -130,7 +137,11 @@ pub fn run_monte_carlo(
     };
 
     let mean_return = returns.iter().sum::<f64>() / n as f64;
-    let var = returns.iter().map(|r| (r - mean_return).powi(2)).sum::<f64>() / n as f64;
+    let var = returns
+        .iter()
+        .map(|r| (r - mean_return).powi(2))
+        .sum::<f64>()
+        / n as f64;
 
     // Sample up to 200 points for histograms
     let sample_dist = |sorted: &[f64], max_pts: usize| -> Vec<f64> {
@@ -152,11 +163,23 @@ pub fn run_monte_carlo(
         percentile_25: percentile(&returns, 25.0),
         percentile_75: percentile(&returns, 75.0),
         percentile_95: percentile(&returns, 95.0),
-        probability_of_profit: if n > 0 { profitable_count as f64 / n as f64 * 100.0 } else { 0.0 },
-        probability_of_ruin: if n > 0 { ruin_count as f64 / n as f64 * 100.0 } else { 0.0 },
+        probability_of_profit: if n > 0 {
+            profitable_count as f64 / n as f64 * 100.0
+        } else {
+            0.0
+        },
+        probability_of_ruin: if n > 0 {
+            ruin_count as f64 / n as f64 * 100.0
+        } else {
+            0.0
+        },
         expected_max_drawdown_95: percentile(&drawdowns, 95.0),
         median_max_drawdown: percentile(&drawdowns, 50.0),
-        median_sharpe: if !sharpes.is_empty() { percentile(&sharpes, 50.0) } else { 0.0 },
+        median_sharpe: if !sharpes.is_empty() {
+            percentile(&sharpes, 50.0)
+        } else {
+            0.0
+        },
         return_distribution: sample_dist(&returns, 200),
         drawdown_distribution: sample_dist(&drawdowns, 200),
     }
@@ -192,7 +215,10 @@ pub fn run_monte_carlo_enhanced(
     let n_trades = trades.len();
 
     // Pre-compute base trade returns and costs
-    let base_pcts: Vec<f64> = trades.iter().map(|t| t.profit_loss_percent / 100.0).collect();
+    let base_pcts: Vec<f64> = trades
+        .iter()
+        .map(|t| t.profit_loss_percent / 100.0)
+        .collect();
     let base_costs: Vec<f64> = trades
         .iter()
         .map(|t| {
@@ -208,7 +234,7 @@ pub fn run_monte_carlo_enhanced(
         .collect();
 
     // Build blocks: split trades into blocks of block_size
-    let n_blocks = (n_trades + block_size - 1) / block_size;
+    let n_blocks = n_trades.div_ceil(block_size);
     let block_indices: Vec<usize> = (0..n_blocks).collect();
     let parameter_uncertainty = config.parameter_uncertainty;
 
@@ -270,7 +296,11 @@ pub fn run_monte_carlo_enhanced(
             let sharpe = if daily_returns.len() > 1 {
                 let n = daily_returns.len() as f64;
                 let mean = daily_returns.iter().sum::<f64>() / n;
-                let var = daily_returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n;
+                let var = daily_returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>()
+                    / n;
                 let std = var.sqrt();
                 if std > 0.0 {
                     Some((mean / std) * (n.min(252.0)).sqrt())
@@ -320,7 +350,11 @@ pub fn run_monte_carlo_enhanced(
     };
 
     let mean_return = returns.iter().sum::<f64>() / n as f64;
-    let var = returns.iter().map(|r| (r - mean_return).powi(2)).sum::<f64>() / n as f64;
+    let var = returns
+        .iter()
+        .map(|r| (r - mean_return).powi(2))
+        .sum::<f64>()
+        / n as f64;
 
     let sample_dist = |sorted: &[f64], max_pts: usize| -> Vec<f64> {
         if sorted.len() <= max_pts {

@@ -116,20 +116,18 @@ impl FlowMapData {
 
                 if perf_diff.abs() > 0.5 {
                     // Significant performance difference suggests flow
-                    let flow_pct = perf_diff * 0.1; // Rough estimate
+                    let flow_pct = perf_diff.abs() * 0.1; // Rough estimate
                     let confidence = (perf_diff.abs() / 5.0).min(1.0);
 
-                    if perf_diff > 0.0 {
-                        // Flow from weaker to stronger
-                        flows.push(SectorFlow {
-                            from_sector: from_sector.name.clone(),
-                            to_sector: to_sector.name.clone(),
-                            flow_amount: flow_pct.abs() * 100.0,
-                            flow_percentage: flow_pct,
-                            confidence,
-                            intensity: (flow_pct.abs() / 2.0).min(1.0),
-                        });
-                    }
+                    // Flow from weaker (lower ranked) to stronger (higher ranked)
+                    flows.push(SectorFlow {
+                        from_sector: to_sector.name.clone(),
+                        to_sector: from_sector.name.clone(),
+                        flow_amount: flow_pct * 100.0,
+                        flow_percentage: flow_pct,
+                        confidence,
+                        intensity: (flow_pct / 2.0).min(1.0),
+                    });
                 }
             }
         }
@@ -165,12 +163,11 @@ impl FlowMapData {
         }
     }
 
-    fn detect_dominant_rotation(
-        sectors: &[SectorNode],
-        _flows: &[SectorFlow],
-    ) -> Option<String> {
+    fn detect_dominant_rotation(sectors: &[SectorNode], _flows: &[SectorFlow]) -> Option<String> {
         // Look for patterns
-        let tech_inflow = sectors.iter().any(|s| s.name == "Technology" && s.net_flow > 2.0);
+        let tech_inflow = sectors
+            .iter()
+            .any(|s| s.name == "Technology" && s.net_flow > 2.0);
         let value_inflow = sectors
             .iter()
             .any(|s| (s.name == "Financials" || s.name == "Energy") && s.net_flow > 2.0);

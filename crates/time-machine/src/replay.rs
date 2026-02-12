@@ -310,11 +310,12 @@ impl ReplayEngine {
         let indicators = self.calculate_indicators(&visible_history);
 
         // Generate AI recommendation
-        let (ai_recommendation, ai_confidence) = self.generate_ai_recommendation(&indicators, current_bar);
+        let (ai_recommendation, ai_confidence) =
+            self.generate_ai_recommendation(&indicators, current_bar);
 
         // Check if this is the final day
-        let is_final_day = session.current_date >= session.end_date
-            || current_idx >= price_data.len() - 1;
+        let is_final_day =
+            session.current_date >= session.end_date || current_idx >= price_data.len() - 1;
 
         Some(DaySnapshot {
             date: session.current_date,
@@ -553,7 +554,11 @@ impl ReplayEngine {
         for i in (history.len() - n)..history.len() {
             let high = history[i].high;
             let low = history[i].low;
-            let prev_close = if i > 0 { history[i - 1].close } else { history[i].open };
+            let prev_close = if i > 0 {
+                history[i - 1].close
+            } else {
+                history[i].open
+            };
 
             let tr = (high - low)
                 .max((high - prev_close).abs())

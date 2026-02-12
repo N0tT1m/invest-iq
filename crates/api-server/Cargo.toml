@@ -3,12 +3,16 @@ name = "api-server"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "api_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "api-server"
 path = "src/main.rs"
 
 [dependencies]
-analysis-core = { path = "../analysis-core" }
+analysis-core = { path = "../analysis-core", features = ["openapi"] }
 analysis-orchestrator = { path = "../analysis-orchestrator" }
 technical-analysis = { path = "../technical-analysis" }
 quant-analysis = { path = "../quant-analysis" }
@@ -16,6 +20,8 @@ polygon-client = { path = "../polygon-client" }
 validation = { path = "../validation" }
 portfolio-manager = { path = "../portfolio-manager" }
 alpaca-broker = { path = "../alpaca-broker" }
+broker-trait = { path = "../broker-trait" }
+ibkr-broker = { path = "../ibkr-broker" }
 backtest-engine = { path = "../backtest-engine" }
 risk-manager = { path = "../risk-manager" }
 analytics = { path = "../analytics" }
@@ -26,7 +32,10 @@ smart-watchlist = { path = "../smart-watchlist" }
 flow-map = { path = "../flow-map" }
 time-machine = { path = "../time-machine" }
 tax-optimizer = { path = "../tax-optimizer" }
-
+ml-client = { path = "../ml-client" }
+ml-engine = { path = "../ml-engine", optional = true }
+notification-service = { path = "../notification-service" }
+async-trait.workspace = true
 tokio = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
@@ -54,6 +63,20 @@ hex = { workspace = true }
 rust_decimal = { workspace = true }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 ipnet = "2"
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+sentry = { version = "0.34", features = ["tower", "tracing", "anyhow"], optional = true }
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"], optional = true }
+tracing-opentelemetry = { version = "0.28", optional = true }
+futures-util = { workspace = true }
+
+[features]
+default = []
+embedded-ml = ["dep:ml-engine"]
+sentry = ["dep:sentry"]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

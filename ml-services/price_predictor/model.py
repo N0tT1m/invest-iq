@@ -210,10 +210,20 @@ class PricePredictorInference:
         checkpoint_path = self.model_path / "model.pt"
         if checkpoint_path.exists():
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            logger.info(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
+            epoch = checkpoint.get('epoch', 0)
+            min_epoch = int(self.config.get('min_trained_epoch', 1))
+            if epoch < min_epoch:
+                raise RuntimeError(
+                    f"Checkpoint at epoch {epoch} is untrained (need >= {min_epoch}). "
+                    f"Train the model first with: python price_predictor/train.py"
+                )
+            state_dict = checkpoint['model_state_dict']
+            # Strip `_orig_mod.` prefix added by torch.compile()
+            state_dict = {k.removeprefix('_orig_mod.'): v for k, v in state_dict.items()}
+            model.load_state_dict(state_dict)
+            logger.info(f"Loaded checkpoint from epoch {epoch}")
         else:
-            logger.warning("No checkpoint found, using random weights")
+            raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
 
         model = model.to(self.device)
 
@@ -269,6 +279,18 @@ class PricePredictorInference:
         # Handle single sample
         if history.ndim == 2:
             history = history[np.newaxis, ...]
+
+        # Pad or truncate to context_length so patch count matches pos_embedding
+        ctx = self.config['context_length']
+        seq_len = history.shape[1]
+        if seq_len > ctx:
+            # Take the most recent bars
+            history = history[:, -ctx:, :]
+        elif seq_len < ctx:
+            # Left-pad by repeating the earliest bar
+            pad_len = ctx - seq_len
+            pad = np.repeat(history[:, :1, :], pad_len, axis=1)
+            history = np.concatenate([pad, history], axis=1)
 
         # Normalize
         history = self.normalize(history)

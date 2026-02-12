@@ -1,9 +1,9 @@
+use crate::error::{MLError, MLResult};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use std::sync::Arc;
-use dashmap::DashMap;
-use crate::error::{MLError, MLResult};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradePrediction {
@@ -137,7 +137,7 @@ impl SignalModelsClient {
 
         let response = self
             .client
-            .post(&format!("{}/predict", self.base_url))
+            .post(format!("{}/predict", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -190,7 +190,13 @@ impl SignalModelsClient {
         let wt = self.weights_cache.len();
         let total = pred + cal + wt;
         let ttl_secs = self.cache_ttl.as_secs();
-        (total, format!("predictions: {}, calibrations: {}, weights: {}, TTL: {}s", pred, cal, wt, ttl_secs))
+        (
+            total,
+            format!(
+                "predictions: {}, calibrations: {}, weights: {}, TTL: {}s",
+                pred, cal, wt, ttl_secs
+            ),
+        )
     }
 
     /// Calibrate a raw confidence score for a specific engine
@@ -210,7 +216,7 @@ impl SignalModelsClient {
 
         let response = self
             .client
-            .post(&format!("{}/calibrate", self.base_url))
+            .post(format!("{}/calibrate", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -236,7 +242,8 @@ impl SignalModelsClient {
         let cache_key = {
             let mut pairs: Vec<_> = engines.iter().collect();
             pairs.sort_by_key(|(k, _)| *k);
-            let engines_str: String = pairs.iter()
+            let engines_str: String = pairs
+                .iter()
                 .map(|(k, v)| format!("{}:{:.6}", k, v))
                 .collect::<Vec<_>>()
                 .join("|");
@@ -246,7 +253,10 @@ impl SignalModelsClient {
         // Check cache
         if let Some(cached) = self.calibration_cache.get(&cache_key) {
             if cached.cached_at.elapsed() < self.cache_ttl {
-                tracing::debug!("Cache hit for batch_calibrate (age: {:?})", cached.cached_at.elapsed());
+                tracing::debug!(
+                    "Cache hit for batch_calibrate (age: {:?})",
+                    cached.cached_at.elapsed()
+                );
                 return Ok(cached.calibrations.clone());
             } else {
                 drop(cached);
@@ -261,7 +271,7 @@ impl SignalModelsClient {
 
         let response = self
             .client
-            .post(&format!("{}/batch-calibrate", self.base_url))
+            .post(format!("{}/batch-calibrate", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -276,10 +286,13 @@ impl SignalModelsClient {
         let result = response.json::<BatchCalibrateResponse>().await?;
 
         // Cache the result
-        self.calibration_cache.insert(cache_key, CachedCalibration {
-            calibrations: result.calibrations.clone(),
-            cached_at: Instant::now(),
-        });
+        self.calibration_cache.insert(
+            cache_key,
+            CachedCalibration {
+                calibrations: result.calibrations.clone(),
+                cached_at: Instant::now(),
+            },
+        );
 
         Ok(result.calibrations)
     }
@@ -295,7 +308,10 @@ impl SignalModelsClient {
         // Check cache
         if let Some(cached) = self.weights_cache.get(&cache_key) {
             if cached.cached_at.elapsed() < self.cache_ttl {
-                tracing::debug!("Cache hit for get_optimal_weights (age: {:?})", cached.cached_at.elapsed());
+                tracing::debug!(
+                    "Cache hit for get_optimal_weights (age: {:?})",
+                    cached.cached_at.elapsed()
+                );
                 return Ok(cached.weights.clone());
             } else {
                 drop(cached);
@@ -309,7 +325,7 @@ impl SignalModelsClient {
 
         let response = self
             .client
-            .post(&format!("{}/weights", self.base_url))
+            .post(format!("{}/weights", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -324,10 +340,13 @@ impl SignalModelsClient {
         let result = response.json::<EngineWeights>().await?;
 
         // Cache the result
-        self.weights_cache.insert(cache_key, CachedWeights {
-            weights: result.clone(),
-            cached_at: Instant::now(),
-        });
+        self.weights_cache.insert(
+            cache_key,
+            CachedWeights {
+                weights: result.clone(),
+                cached_at: Instant::now(),
+            },
+        );
 
         Ok(result)
     }
@@ -336,7 +355,7 @@ impl SignalModelsClient {
     pub async fn health(&self) -> MLResult<bool> {
         let response = self
             .client
-            .get(&format!("{}/health", self.base_url))
+            .get(format!("{}/health", self.base_url))
             .send()
             .await?;
 

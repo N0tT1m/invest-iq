@@ -1,12 +1,12 @@
-pub mod core;
-pub mod agent;
-pub mod risk;
-pub mod market;
-pub mod data;
-pub mod trading;
-pub mod tax;
 pub mod advanced;
+pub mod agent;
+pub mod core;
+pub mod data;
+pub mod market;
+pub mod risk;
 pub mod system;
+pub mod tax;
+pub mod trading;
 
 use serenity::all::{CommandDataOption, CommandDataOptionValue};
 

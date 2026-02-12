@@ -220,12 +220,15 @@ impl SessionScorer {
         if matched_ai && was_profitable {
             format!(
                 "Excellent! Your {:?} matched AI and captured {:.1}% return.",
-                decision.action, actual.abs()
+                decision.action,
+                actual.abs()
             )
         } else if was_profitable && !matched_ai {
             format!(
                 "Good call! Your {:?} beat AI's {:?} recommendation with {:.1}% return.",
-                decision.action, decision.ai_recommendation, actual.abs()
+                decision.action,
+                decision.ai_recommendation,
+                actual.abs()
             )
         } else if matched_ai && !was_profitable {
             format!(

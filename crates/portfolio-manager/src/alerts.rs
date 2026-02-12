@@ -1,5 +1,5 @@
-use crate::models::*;
 use crate::db::PortfolioDb;
+use crate::models::*;
 use anyhow::Result;
 use rust_decimal::prelude::*;
 
@@ -45,7 +45,7 @@ impl AlertManager {
             WHERE status = 'active'
             AND (expires_at IS NULL OR expires_at > ?)
             ORDER BY created_at DESC
-            "#
+            "#,
         )
         .bind(chrono::Utc::now().to_rfc3339())
         .fetch_all(self.db.pool())
@@ -61,7 +61,7 @@ impl AlertManager {
             SELECT * FROM alerts
             WHERE symbol = ? AND status = 'active'
             ORDER BY created_at DESC
-            "#
+            "#,
         )
         .bind(symbol)
         .fetch_all(self.db.pool())
@@ -72,12 +72,10 @@ impl AlertManager {
 
     /// Get alert by ID
     pub async fn get_alert(&self, id: i64) -> Result<Option<Alert>> {
-        let alert = sqlx::query_as::<_, Alert>(
-            "SELECT * FROM alerts WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(self.db.pool())
-        .await?;
+        let alert = sqlx::query_as::<_, Alert>("SELECT * FROM alerts WHERE id = ?")
+            .bind(id)
+            .fetch_optional(self.db.pool())
+            .await?;
 
         Ok(alert)
     }
@@ -85,14 +83,12 @@ impl AlertManager {
     /// Update alert status
     pub async fn update_alert_status(&self, id: i64, status: &str) -> Result<()> {
         if status == "completed" {
-            sqlx::query(
-                "UPDATE alerts SET status = ?, completed_at = ? WHERE id = ?"
-            )
-            .bind(status)
-            .bind(chrono::Utc::now().to_rfc3339())
-            .bind(id)
-            .execute(self.db.pool())
-            .await?;
+            sqlx::query("UPDATE alerts SET status = ?, completed_at = ? WHERE id = ?")
+                .bind(status)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .bind(id)
+                .execute(self.db.pool())
+                .await?;
         } else {
             sqlx::query("UPDATE alerts SET status = ? WHERE id = ?")
                 .bind(status)
@@ -106,13 +102,11 @@ impl AlertManager {
 
     /// Mark alert as completed
     pub async fn complete_alert(&self, id: i64) -> Result<()> {
-        sqlx::query(
-            "UPDATE alerts SET status = 'completed', completed_at = ? WHERE id = ?"
-        )
-        .bind(chrono::Utc::now().to_rfc3339())
-        .bind(id)
-        .execute(self.db.pool())
-        .await?;
+        sqlx::query("UPDATE alerts SET status = 'completed', completed_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(id)
+            .execute(self.db.pool())
+            .await?;
 
         Ok(())
     }
@@ -135,7 +129,7 @@ impl AlertManager {
     /// Clean up expired alerts
     pub async fn cleanup_expired_alerts(&self) -> Result<u64> {
         let result = sqlx::query(
-            "UPDATE alerts SET status = 'expired' WHERE status = 'active' AND expires_at <= ?"
+            "UPDATE alerts SET status = 'expired' WHERE status = 'active' AND expires_at <= ?",
         )
         .bind(chrono::Utc::now().to_rfc3339())
         .execute(self.db.pool())
@@ -154,7 +148,9 @@ impl AlertManager {
         execution_price: f64,
     ) -> Result<i64> {
         // Get alert details
-        let alert = self.get_alert(alert_id).await?
+        let alert = self
+            .get_alert(alert_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Alert not found: {}", alert_id))?;
 
         let (id,): (i64,) = sqlx::query_as(
@@ -213,14 +209,14 @@ impl AlertManager {
         let executions = if let Some(d) = days {
             let cutoff = (chrono::Utc::now() - chrono::Duration::days(d)).to_rfc3339();
             sqlx::query_as::<_, AlertExecution>(
-                "SELECT * FROM alert_executions WHERE created_at >= ? ORDER BY created_at DESC"
+                "SELECT * FROM alert_executions WHERE created_at >= ? ORDER BY created_at DESC",
             )
             .bind(&cutoff)
             .fetch_all(self.db.pool())
             .await?
         } else {
             sqlx::query_as::<_, AlertExecution>(
-                "SELECT * FROM alert_executions ORDER BY created_at DESC"
+                "SELECT * FROM alert_executions ORDER BY created_at DESC",
             )
             .fetch_all(self.db.pool())
             .await?
@@ -238,20 +234,30 @@ impl AlertManager {
             0.0
         };
 
-        let closed_execs: Vec<&AlertExecution> = executions.iter().filter(|e| e.outcome != "open").collect();
+        let closed_execs: Vec<&AlertExecution> =
+            executions.iter().filter(|e| e.outcome != "open").collect();
         let avg_pnl = if !closed_execs.is_empty() {
-            closed_execs.iter().filter_map(|e| e.outcome_pnl).sum::<f64>() / closed_execs.len() as f64
+            closed_execs
+                .iter()
+                .filter_map(|e| e.outcome_pnl)
+                .sum::<f64>()
+                / closed_execs.len() as f64
         } else {
             0.0
         };
         let avg_pnl_pct = if !closed_execs.is_empty() {
-            closed_execs.iter().filter_map(|e| e.outcome_pnl_percent).sum::<f64>() / closed_execs.len() as f64
+            closed_execs
+                .iter()
+                .filter_map(|e| e.outcome_pnl_percent)
+                .sum::<f64>()
+                / closed_execs.len() as f64
         } else {
             0.0
         };
 
         // By signal
-        let mut by_signal: std::collections::HashMap<String, SignalAccuracy> = std::collections::HashMap::new();
+        let mut by_signal: std::collections::HashMap<String, SignalAccuracy> =
+            std::collections::HashMap::new();
         for exec in &executions {
             if exec.outcome == "open" {
                 continue;
@@ -292,7 +298,7 @@ impl AlertManager {
     /// Get executions for a specific alert.
     pub async fn get_executions_for_alert(&self, alert_id: i64) -> Result<Vec<AlertExecution>> {
         let executions = sqlx::query_as::<_, AlertExecution>(
-            "SELECT * FROM alert_executions WHERE alert_id = ? ORDER BY created_at DESC"
+            "SELECT * FROM alert_executions WHERE alert_id = ? ORDER BY created_at DESC",
         )
         .bind(alert_id)
         .fetch_all(self.db.pool())
@@ -304,18 +310,14 @@ impl AlertManager {
     /// Get all alerts (including inactive)
     pub async fn get_all_alerts(&self, limit: Option<i64>) -> Result<Vec<Alert>> {
         let alerts = if let Some(lim) = limit {
-            sqlx::query_as::<_, Alert>(
-                "SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?"
-            )
-            .bind(lim)
-            .fetch_all(self.db.pool())
-            .await?
+            sqlx::query_as::<_, Alert>("SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?")
+                .bind(lim)
+                .fetch_all(self.db.pool())
+                .await?
         } else {
-            sqlx::query_as::<_, Alert>(
-                "SELECT * FROM alerts ORDER BY created_at DESC"
-            )
-            .fetch_all(self.db.pool())
-            .await?
+            sqlx::query_as::<_, Alert>("SELECT * FROM alerts ORDER BY created_at DESC")
+                .fetch_all(self.db.pool())
+                .await?
         };
 
         Ok(alerts)

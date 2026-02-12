@@ -17,10 +17,7 @@ pub fn conditional_drawdown_at_risk(equity_curve: &[EquityPoint], alpha: f64) ->
     }
 
     // Collect all drawdown values
-    let drawdowns: Vec<f64> = equity_curve
-        .iter()
-        .map(|p| p.drawdown_percent)
-        .collect();
+    let drawdowns: Vec<f64> = equity_curve.iter().map(|p| p.drawdown_percent).collect();
 
     // Sort descending (largest drawdowns first)
     let mut sorted_dd = drawdowns.clone();
@@ -77,10 +74,7 @@ pub fn pain_index(equity_curve: &[EquityPoint]) -> Option<f64> {
 /// Gain-to-Pain Ratio - total return divided by Pain Index.
 ///
 /// Measures reward per unit of drawdown pain. Higher is better.
-pub fn gain_to_pain_ratio(
-    total_return_percent: f64,
-    equity_curve: &[EquityPoint],
-) -> Option<f64> {
+pub fn gain_to_pain_ratio(total_return_percent: f64, equity_curve: &[EquityPoint]) -> Option<f64> {
     let pain = pain_index(equity_curve)?;
     if pain > 1e-10 {
         Some(total_return_percent / pain)
@@ -117,12 +111,10 @@ pub fn burke_ratio(
             } else {
                 max_dd_in_current = max_dd_in_current.max(dd);
             }
-        } else {
-            if in_drawdown {
-                drawdown_magnitudes.push(max_dd_in_current);
-                in_drawdown = false;
-                max_dd_in_current = 0.0;
-            }
+        } else if in_drawdown {
+            drawdown_magnitudes.push(max_dd_in_current);
+            in_drawdown = false;
+            max_dd_in_current = 0.0;
         }
     }
 
@@ -177,12 +169,10 @@ pub fn sterling_ratio(
             } else {
                 max_dd_in_current = max_dd_in_current.max(dd);
             }
-        } else {
-            if in_drawdown {
-                drawdown_magnitudes.push(max_dd_in_current);
-                in_drawdown = false;
-                max_dd_in_current = 0.0;
-            }
+        } else if in_drawdown {
+            drawdown_magnitudes.push(max_dd_in_current);
+            in_drawdown = false;
+            max_dd_in_current = 0.0;
         }
     }
 
@@ -252,13 +242,11 @@ pub fn drawdown_recovery_analysis(equity_curve: &[EquityPoint]) -> Option<Drawdo
                     trough_idx = i;
                 }
             }
-        } else {
-            if in_drawdown {
-                // Recovery — measure time from trough to recovery
-                let recovery_bars = (i as i64) - (trough_idx as i64);
-                recovery_times.push(recovery_bars);
-                in_drawdown = false;
-            }
+        } else if in_drawdown {
+            // Recovery — measure time from trough to recovery
+            let recovery_bars = (i as i64) - (trough_idx as i64);
+            recovery_times.push(recovery_bars);
+            in_drawdown = false;
         }
     }
 
@@ -273,8 +261,7 @@ pub fn drawdown_recovery_analysis(equity_curve: &[EquityPoint]) -> Option<Drawdo
 
     let max_recovery_days = recovery_times.iter().copied().max().unwrap_or(0);
 
-    let time_in_drawdown_percent =
-        (bars_in_drawdown as f64 / equity_curve.len() as f64) * 100.0;
+    let time_in_drawdown_percent = (bars_in_drawdown as f64 / equity_curve.len() as f64) * 100.0;
 
     Some(DrawdownRecovery {
         avg_recovery_days,
@@ -377,7 +364,7 @@ mod tests {
             make_equity_point("2024-01-03", 90000.0, 10.0), // Trough
             make_equity_point("2024-01-04", 95000.0, 5.0),
             make_equity_point("2024-01-05", 100000.0, 0.0), // Recovered (2 bars from trough)
-            make_equity_point("2024-01-06", 98000.0, 2.0), // DD starts again
+            make_equity_point("2024-01-06", 98000.0, 2.0),  // DD starts again
             make_equity_point("2024-01-07", 100000.0, 0.0), // Recovered (1 bar from trough)
         ];
 

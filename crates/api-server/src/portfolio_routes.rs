@@ -9,59 +9,69 @@ use serde::Deserialize;
 
 use crate::{ApiResponse, AppError, AppState};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct AddPositionRequest {
     pub symbol: String,
+    #[schema(value_type = f64)]
     pub shares: Decimal,
+    #[schema(value_type = f64)]
     pub entry_price: Decimal,
     pub entry_date: String,
     pub notes: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdatePositionRequest {
+    #[schema(value_type = f64)]
     pub shares: Decimal,
+    #[schema(value_type = f64)]
     pub entry_price: Decimal,
     pub entry_date: String,
     pub notes: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct LogTradeRequest {
     pub symbol: String,
     pub action: String,
+    #[schema(value_type = f64)]
     pub shares: Decimal,
+    #[schema(value_type = f64)]
     pub price: Decimal,
     pub trade_date: String,
+    #[schema(value_type = Option<f64>)]
     pub commission: Option<Decimal>,
     pub notes: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateAlertRequest {
     pub symbol: String,
     pub alert_type: String,
     pub signal: String,
     pub confidence: f64, // Confidence is a ratio, not money - stays f64
+    #[schema(value_type = Option<f64>)]
     pub current_price: Option<Decimal>,
+    #[schema(value_type = Option<f64>)]
     pub target_price: Option<Decimal>,
+    #[schema(value_type = Option<f64>)]
     pub stop_loss_price: Option<Decimal>,
     pub reason: Option<String>,
     pub expires_at: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct WatchlistRequest {
     pub symbol: String,
     pub notes: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct SnapshotsQuery {
     pub days: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct PerformanceQuery {
     pub days: Option<i64>,
 }
@@ -99,10 +109,22 @@ pub fn portfolio_routes() -> Router<AppState> {
 }
 
 // Portfolio handlers
+#[utoipa::path(
+    get,
+    path = "/api/portfolio",
+    tag = "Portfolio",
+    responses(
+        (status = 200, description = "Portfolio summary with total value and P&L"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_portfolio_summary(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<PortfolioSummary>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
     // Create price fetcher closure
@@ -115,22 +137,38 @@ async fn get_portfolio_summary(
         let orch = orchestrator.clone();
 
         rt.block_on(async move {
-            let bars = orch.get_bars(&symbol, analysis_core::Timeframe::Day1, 1).await?;
+            let bars = orch
+                .get_bars(&symbol, analysis_core::Timeframe::Day1, 1)
+                .await?;
             bars.last()
                 .map(|bar| bar.close)
                 .ok_or_else(|| anyhow::anyhow!("No price data available for {}", symbol))
         })
     };
 
-    let summary = portfolio_manager.get_portfolio_summary(price_fetcher).await?;
+    let summary = portfolio_manager
+        .get_portfolio_summary(price_fetcher)
+        .await?;
 
     Ok(Json(ApiResponse::success(summary)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/portfolio/positions",
+    tag = "Portfolio",
+    responses(
+        (status = 200, description = "List of all portfolio positions"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_positions(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<Position>>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
     let positions = portfolio_manager.get_all_positions().await?;
@@ -138,11 +176,24 @@ async fn get_positions(
     Ok(Json(ApiResponse::success(positions)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/portfolio/positions",
+    tag = "Portfolio",
+    request_body = AddPositionRequest,
+    responses(
+        (status = 200, description = "Position added successfully"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn add_position(
     State(state): State<AppState>,
     Json(req): Json<AddPositionRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
     let position = Position {
@@ -160,30 +211,65 @@ async fn add_position(
     Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/portfolio/positions/{symbol}",
+    tag = "Portfolio",
+    params(
+        ("symbol" = String, Path, description = "Stock ticker symbol (e.g. AAPL)"),
+    ),
+    responses(
+        (status = 200, description = "Position details for the given symbol"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_position(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Result<Json<ApiResponse<Option<Position>>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
-    let position = portfolio_manager.get_position(&symbol.to_uppercase()).await?;
+    let position = portfolio_manager
+        .get_position(&symbol.to_uppercase())
+        .await?;
 
     Ok(Json(ApiResponse::success(position)))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/portfolio/positions/{symbol}",
+    tag = "Portfolio",
+    params(
+        ("symbol" = String, Path, description = "Stock ticker symbol (e.g. AAPL)"),
+    ),
+    request_body = UpdatePositionRequest,
+    responses(
+        (status = 200, description = "Position updated successfully"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn update_position(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
     Json(req): Json<UpdatePositionRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
     let symbol = symbol.to_uppercase();
 
     // Get existing position to find ID
-    let existing = portfolio_manager.get_position(&symbol).await?
+    let existing = portfolio_manager
+        .get_position(&symbol)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Position not found: {}", symbol))?;
 
     let position = Position {
@@ -196,30 +282,67 @@ async fn update_position(
         created_at: existing.created_at,
     };
 
-    let position_id = existing.id
+    let position_id = existing
+        .id
         .ok_or_else(|| anyhow::anyhow!("Position has no ID"))?;
-    portfolio_manager.update_position(position_id, position).await?;
+    portfolio_manager
+        .update_position(position_id, position)
+        .await?;
 
-    Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Position updated" }))))
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "message": "Position updated" }),
+    )))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/portfolio/positions/{symbol}",
+    tag = "Portfolio",
+    params(
+        ("symbol" = String, Path, description = "Stock ticker symbol (e.g. AAPL)"),
+    ),
+    responses(
+        (status = 200, description = "Position deleted successfully"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn delete_position(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
-    portfolio_manager.delete_position(&symbol.to_uppercase()).await?;
+    portfolio_manager
+        .delete_position(&symbol.to_uppercase())
+        .await?;
 
-    Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Position deleted" }))))
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "message": "Position deleted" }),
+    )))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/portfolio/snapshots",
+    tag = "Portfolio",
+    params(SnapshotsQuery),
+    responses(
+        (status = 200, description = "Portfolio snapshots over time"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_snapshots(
     State(state): State<AppState>,
     Query(query): Query<SnapshotsQuery>,
 ) -> Result<Json<ApiResponse<Vec<PortfolioSnapshot>>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
     let days = query.days.unwrap_or(30);
@@ -228,10 +351,22 @@ async fn get_snapshots(
     Ok(Json(ApiResponse::success(snapshots)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/portfolio/snapshots",
+    tag = "Portfolio",
+    responses(
+        (status = 200, description = "Portfolio snapshot saved"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn save_snapshot(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
     // Get current portfolio summary
@@ -242,24 +377,40 @@ async fn save_snapshot(
         let orch = orchestrator.clone();
 
         rt.block_on(async move {
-            let bars = orch.get_bars(&symbol, analysis_core::Timeframe::Day1, 1).await?;
+            let bars = orch
+                .get_bars(&symbol, analysis_core::Timeframe::Day1, 1)
+                .await?;
             bars.last()
                 .map(|bar| bar.close)
                 .ok_or_else(|| anyhow::anyhow!("No price data available for {}", symbol))
         })
     };
 
-    let summary = portfolio_manager.get_portfolio_summary(price_fetcher).await?;
+    let summary = portfolio_manager
+        .get_portfolio_summary(price_fetcher)
+        .await?;
     let id = portfolio_manager.save_snapshot(&summary).await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
 }
 
 // Trade handlers
+#[utoipa::path(
+    get,
+    path = "/api/trades",
+    tag = "Portfolio",
+    responses(
+        (status = 200, description = "List of all trades (up to 100)"),
+        (status = 500, description = "Trade logger error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_all_trades(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<Trade>>>, AppError> {
-    let trade_logger = state.trade_logger.as_ref()
+    let trade_logger = state
+        .trade_logger
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Trade logger not initialized"))?;
 
     let trades = trade_logger.get_all_trades(Some(100)).await?;
@@ -267,11 +418,24 @@ async fn get_all_trades(
     Ok(Json(ApiResponse::success(trades)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/trades",
+    tag = "Portfolio",
+    request_body = LogTradeRequest,
+    responses(
+        (status = 200, description = "Trade logged and portfolio updated"),
+        (status = 500, description = "Trade logger error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn log_trade(
     State(state): State<AppState>,
     Json(req): Json<LogTradeRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let trade_logger = state.trade_logger.as_ref()
+    let trade_logger = state
+        .trade_logger
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Trade logger not initialized"))?;
 
     let symbol = req.symbol.to_uppercase();
@@ -315,11 +479,26 @@ async fn log_trade(
     Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/trades/{id}",
+    tag = "Portfolio",
+    params(
+        ("id" = i64, Path, description = "Trade ID"),
+    ),
+    responses(
+        (status = 200, description = "Trade details"),
+        (status = 500, description = "Trade logger error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_trade(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<Option<Trade>>>, AppError> {
-    let trade_logger = state.trade_logger.as_ref()
+    let trade_logger = state
+        .trade_logger
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Trade logger not initialized"))?;
 
     let trade = trade_logger.get_trade(id).await?;
@@ -327,12 +506,28 @@ async fn get_trade(
     Ok(Json(ApiResponse::success(trade)))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/trades/{id}",
+    tag = "Portfolio",
+    params(
+        ("id" = i64, Path, description = "Trade ID"),
+    ),
+    request_body = LogTradeRequest,
+    responses(
+        (status = 200, description = "Trade updated successfully"),
+        (status = 500, description = "Trade logger error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn update_trade(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(req): Json<LogTradeRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let trade_logger = state.trade_logger.as_ref()
+    let trade_logger = state
+        .trade_logger
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Trade logger not initialized"))?;
 
     let trade = TradeInput {
@@ -349,26 +544,58 @@ async fn update_trade(
 
     trade_logger.update_trade(id, trade).await?;
 
-    Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Trade updated" }))))
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "message": "Trade updated" }),
+    )))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/trades/{id}",
+    tag = "Portfolio",
+    params(
+        ("id" = i64, Path, description = "Trade ID"),
+    ),
+    responses(
+        (status = 200, description = "Trade deleted successfully"),
+        (status = 500, description = "Trade logger error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn delete_trade(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let trade_logger = state.trade_logger.as_ref()
+    let trade_logger = state
+        .trade_logger
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Trade logger not initialized"))?;
 
     trade_logger.delete_trade(id).await?;
 
-    Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Trade deleted" }))))
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "message": "Trade deleted" }),
+    )))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/trades/performance",
+    tag = "Portfolio",
+    params(PerformanceQuery),
+    responses(
+        (status = 200, description = "Trade performance metrics"),
+        (status = 500, description = "Trade logger error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_performance(
     State(state): State<AppState>,
     Query(query): Query<PerformanceQuery>,
 ) -> Result<Json<ApiResponse<PerformanceMetrics>>, AppError> {
-    let trade_logger = state.trade_logger.as_ref()
+    let trade_logger = state
+        .trade_logger
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Trade logger not initialized"))?;
 
     let metrics = trade_logger.get_performance_metrics(query.days).await?;
@@ -377,10 +604,22 @@ async fn get_performance(
 }
 
 // Alert handlers
+#[utoipa::path(
+    get,
+    path = "/api/alerts",
+    tag = "Portfolio",
+    responses(
+        (status = 200, description = "List of active alerts"),
+        (status = 500, description = "Alert manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_active_alerts(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<Alert>>>, AppError> {
-    let alert_manager = state.alert_manager.as_ref()
+    let alert_manager = state
+        .alert_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Alert manager not initialized"))?;
 
     let alerts = alert_manager.get_active_alerts().await?;
@@ -388,11 +627,24 @@ async fn get_active_alerts(
     Ok(Json(ApiResponse::success(alerts)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/alerts",
+    tag = "Portfolio",
+    request_body = CreateAlertRequest,
+    responses(
+        (status = 200, description = "Alert created successfully"),
+        (status = 500, description = "Alert manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn create_alert(
     State(state): State<AppState>,
     Json(req): Json<CreateAlertRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let alert_manager = state.alert_manager.as_ref()
+    let alert_manager = state
+        .alert_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Alert manager not initialized"))?;
 
     let alert = AlertInput {
@@ -412,11 +664,26 @@ async fn create_alert(
     Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/alerts/{id}",
+    tag = "Portfolio",
+    params(
+        ("id" = i64, Path, description = "Alert ID"),
+    ),
+    responses(
+        (status = 200, description = "Alert details"),
+        (status = 500, description = "Alert manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_alert(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<Option<Alert>>>, AppError> {
-    let alert_manager = state.alert_manager.as_ref()
+    let alert_manager = state
+        .alert_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Alert manager not initialized"))?;
 
     let alert = alert_manager.get_alert(id).await?;
@@ -424,46 +691,109 @@ async fn get_alert(
     Ok(Json(ApiResponse::success(alert)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/alerts/{id}/complete",
+    tag = "Portfolio",
+    params(
+        ("id" = i64, Path, description = "Alert ID"),
+    ),
+    responses(
+        (status = 200, description = "Alert marked as completed"),
+        (status = 500, description = "Alert manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn complete_alert(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let alert_manager = state.alert_manager.as_ref()
+    let alert_manager = state
+        .alert_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Alert manager not initialized"))?;
 
     alert_manager.complete_alert(id).await?;
 
-    Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Alert completed" }))))
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "message": "Alert completed" }),
+    )))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/alerts/{id}/ignore",
+    tag = "Portfolio",
+    params(
+        ("id" = i64, Path, description = "Alert ID"),
+    ),
+    responses(
+        (status = 200, description = "Alert marked as ignored"),
+        (status = 500, description = "Alert manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn ignore_alert(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let alert_manager = state.alert_manager.as_ref()
+    let alert_manager = state
+        .alert_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Alert manager not initialized"))?;
 
     alert_manager.ignore_alert(id).await?;
 
-    Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Alert ignored" }))))
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "message": "Alert ignored" }),
+    )))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/alerts/{id}",
+    tag = "Portfolio",
+    params(
+        ("id" = i64, Path, description = "Alert ID"),
+    ),
+    responses(
+        (status = 200, description = "Alert deleted successfully"),
+        (status = 500, description = "Alert manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn delete_alert(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let alert_manager = state.alert_manager.as_ref()
+    let alert_manager = state
+        .alert_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Alert manager not initialized"))?;
 
     alert_manager.delete_alert(id).await?;
 
-    Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Alert deleted" }))))
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "message": "Alert deleted" }),
+    )))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/alerts/actions",
+    tag = "Portfolio",
+    responses(
+        (status = 200, description = "Prioritized action items derived from alerts"),
+        (status = 500, description = "Alert manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_action_items(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<ActionItem>>>, AppError> {
-    let alert_manager = state.alert_manager.as_ref()
+    let alert_manager = state
+        .alert_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Alert manager not initialized"))?;
 
     let portfolio_manager = state.portfolio_manager.as_ref();
@@ -478,10 +808,8 @@ async fn get_action_items(
         Vec::new()
     };
 
-    let position_map: std::collections::HashMap<String, &Position> = positions
-        .iter()
-        .map(|p| (p.symbol.clone(), p))
-        .collect();
+    let position_map: std::collections::HashMap<String, &Position> =
+        positions.iter().map(|p| (p.symbol.clone(), p)).collect();
 
     // Convert alerts to action items
     let mut action_items: Vec<ActionItem> = alerts
@@ -520,12 +848,18 @@ async fn get_action_items(
                 "stop_loss" => (
                     1,
                     format!("⚠️ Stop Loss Warning: {}", alert.symbol),
-                    format!("Price approaching stop loss at ${:.2}", alert.stop_loss_price.unwrap_or(0.0)),
+                    format!(
+                        "Price approaching stop loss at ${:.2}",
+                        alert.stop_loss_price.unwrap_or(0.0)
+                    ),
                 ),
                 "take_profit" => (
                     1,
                     format!("🎯 Take Profit: {}", alert.symbol),
-                    format!("Target price ${:.2} reached!", alert.target_price.unwrap_or(0.0)),
+                    format!(
+                        "Target price ${:.2} reached!",
+                        alert.target_price.unwrap_or(0.0)
+                    ),
                 ),
                 _ => (
                     3,
@@ -542,9 +876,9 @@ async fn get_action_items(
                 description,
                 signal: alert.signal.clone(),
                 confidence: alert.confidence,
-                current_price: alert.current_price.and_then(|p| Decimal::from_f64_retain(p)),
-                target_price: alert.target_price.and_then(|p| Decimal::from_f64_retain(p)),
-                stop_loss_price: alert.stop_loss_price.and_then(|p| Decimal::from_f64_retain(p)),
+                current_price: alert.current_price.and_then(Decimal::from_f64_retain),
+                target_price: alert.target_price.and_then(Decimal::from_f64_retain),
+                stop_loss_price: alert.stop_loss_price.and_then(Decimal::from_f64_retain),
                 in_portfolio,
                 position_pnl,
                 alert_id: alert.id,
@@ -559,10 +893,22 @@ async fn get_action_items(
 }
 
 // Watchlist handlers
+#[utoipa::path(
+    get,
+    path = "/api/watchlist",
+    tag = "Portfolio",
+    responses(
+        (status = 200, description = "List of watchlist items"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn get_watchlist(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<WatchlistItem>>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
     let watchlist = portfolio_manager.get_watchlist().await?;
@@ -570,26 +916,60 @@ async fn get_watchlist(
     Ok(Json(ApiResponse::success(watchlist)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/watchlist",
+    tag = "Portfolio",
+    request_body = WatchlistRequest,
+    responses(
+        (status = 200, description = "Symbol added to watchlist"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn add_to_watchlist(
     State(state): State<AppState>,
     Json(req): Json<WatchlistRequest>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
-    let id = portfolio_manager.add_to_watchlist(&req.symbol.to_uppercase(), req.notes).await?;
+    let id = portfolio_manager
+        .add_to_watchlist(&req.symbol.to_uppercase(), req.notes)
+        .await?;
 
     Ok(Json(ApiResponse::success(serde_json::json!({ "id": id }))))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/watchlist/{symbol}",
+    tag = "Portfolio",
+    params(
+        ("symbol" = String, Path, description = "Stock ticker symbol to remove"),
+    ),
+    responses(
+        (status = 200, description = "Symbol removed from watchlist"),
+        (status = 500, description = "Portfolio manager error"),
+    ),
+    security(("api_key" = []), ("bearer" = [])),
+)]
 async fn remove_from_watchlist(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let portfolio_manager = state.portfolio_manager.as_ref()
+    let portfolio_manager = state
+        .portfolio_manager
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Portfolio manager not initialized"))?;
 
-    portfolio_manager.remove_from_watchlist(&symbol.to_uppercase()).await?;
+    portfolio_manager
+        .remove_from_watchlist(&symbol.to_uppercase())
+        .await?;
 
-    Ok(Json(ApiResponse::success(serde_json::json!({ "message": "Removed from watchlist" }))))
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "message": "Removed from watchlist" }),
+    )))
 }

@@ -1,12 +1,12 @@
+use super::{get_int_opt, get_string_opt, resolve_subcommand};
 use crate::embeds;
-use crate::Handler;
 use crate::respond_ephemeral;
-use super::{get_string_opt, get_int_opt, resolve_subcommand};
+use crate::Handler;
 
 use serenity::all::{
-    CommandDataOption, CommandInteraction, ComponentInteractionDataKind,
-    CreateActionRow, CreateButton, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse,
+    CommandDataOption, CommandInteraction, ComponentInteractionDataKind, CreateActionRow,
+    CreateButton, CreateInteractionResponse, CreateInteractionResponseMessage,
+    EditInteractionResponse,
 };
 use serenity::builder::CreateEmbed;
 use serenity::collector::ComponentInteractionCollector;
@@ -27,8 +27,14 @@ impl Handler {
         };
 
         match sub_name {
-            "buy" => self.handle_trade_execute(ctx, command, sub_opt, "buy").await,
-            "sell" => self.handle_trade_execute(ctx, command, sub_opt, "sell").await,
+            "buy" => {
+                self.handle_trade_execute(ctx, command, sub_opt, "buy")
+                    .await
+            }
+            "sell" => {
+                self.handle_trade_execute(ctx, command, sub_opt, "sell")
+                    .await
+            }
             "close" => self.handle_trade_close(ctx, command, sub_opt).await,
             "orders" => self.handle_trade_orders(ctx, command).await,
             _ => {
@@ -46,7 +52,12 @@ impl Handler {
     ) {
         // Check live trading key
         if self.live_trading_key.is_none() {
-            let _ = respond_ephemeral(ctx, command, "Live trading key not configured. Set `LIVE_TRADING_KEY` env var.").await;
+            let _ = respond_ephemeral(
+                ctx,
+                command,
+                "Live trading key not configured. Set `LIVE_TRADING_KEY` env var.",
+            )
+            .await;
             return;
         }
 
@@ -64,7 +75,10 @@ impl Handler {
         // Fetch current price for confirmation
         let price_info = match self.polygon_client.get_snapshot(&symbol).await {
             Ok(snap) => {
-                let price = snap.last_trade.as_ref().and_then(|t| t.p)
+                let price = snap
+                    .last_trade
+                    .as_ref()
+                    .and_then(|t| t.p)
                     .or_else(|| snap.day.as_ref().and_then(|d| d.c))
                     .unwrap_or(0.0);
                 format!("~${:.2} (est. ${:.2} total)", price, price * shares as f64)
@@ -74,7 +88,10 @@ impl Handler {
 
         let desc = format!(
             "**{}** {} x {} shares\n{}",
-            side.to_uppercase(), symbol, shares, price_info
+            side.to_uppercase(),
+            symbol,
+            shares,
+            price_info
         );
 
         let confirm_id = format!("trade_confirm_{}_{}_{}", side, symbol, command.id);
@@ -82,7 +99,10 @@ impl Handler {
 
         let components = vec![CreateActionRow::Buttons(vec![
             CreateButton::new(&confirm_id)
-                .label(format!("Confirm {}", if side == "buy" { "Buy" } else { "Sell" }))
+                .label(format!(
+                    "Confirm {}",
+                    if side == "buy" { "Buy" } else { "Sell" }
+                ))
                 .style(if side == "buy" {
                     serenity::all::ButtonStyle::Success
                 } else {
@@ -97,9 +117,12 @@ impl Handler {
             CreateInteractionResponseMessage::new()
                 .embed(
                     CreateEmbed::new()
-                        .title(format!("Confirm {} Order", if side == "buy" { "Buy" } else { "Sell" }))
+                        .title(format!(
+                            "Confirm {} Order",
+                            if side == "buy" { "Buy" } else { "Sell" }
+                        ))
                         .description(&desc)
-                        .color(Colour::from(0xFFD700))
+                        .color(Colour::from(0xFFD700)),
                 )
                 .components(components)
                 .ephemeral(true),
@@ -128,43 +151,70 @@ impl Handler {
                 });
                 match self.api_post_with_trading_key(&execute_url, &body).await {
                     Ok(resp) if resp.status().is_success() => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Order Submitted")
-                                    .description(desc)
-                                    .color(Colour::from(0x00FF00)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Order Submitted")
+                                            .description(desc)
+                                            .color(Colour::from(0x00FF00)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                     Ok(resp) => {
                         let body = resp.text().await.unwrap_or_default();
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Order Failed")
-                                    .description(format!("Error: {}", &body[..body.len().min(200)]))
-                                    .color(Colour::from(0xFF0000)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Order Failed")
+                                            .description(format!(
+                                                "Error: {}",
+                                                &body[..body.len().min(200)]
+                                            ))
+                                            .color(Colour::from(0xFF0000)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Order Failed")
-                                    .description(format!("Error: {}", e))
-                                    .color(Colour::from(0xFF0000)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Order Failed")
+                                            .description(format!("Error: {}", e))
+                                            .color(Colour::from(0xFF0000)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                 }
             }
             _ => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new()
-                        .embed(CreateEmbed::new()
-                            .title("Cancelled")
-                            .description("Order cancelled.")
-                            .color(Colour::from(0x808080)))
-                        .components(vec![])).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .embed(
+                                CreateEmbed::new()
+                                    .title("Cancelled")
+                                    .description("Order cancelled.")
+                                    .color(Colour::from(0x808080)),
+                            )
+                            .components(vec![]),
+                    )
+                    .await;
             }
         }
     }
@@ -205,7 +255,7 @@ impl Handler {
                     CreateEmbed::new()
                         .title("Close Position?")
                         .description(&desc)
-                        .color(Colour::from(0xFFD700))
+                        .color(Colour::from(0xFFD700)),
                 )
                 .components(components)
                 .ephemeral(true),
@@ -228,43 +278,70 @@ impl Handler {
                 let close_url = format!("{}/api/broker/positions/{}", self.api_base, symbol);
                 match self.api_delete_with_trading_key(&close_url).await {
                     Ok(resp) if resp.status().is_success() => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Position Closed")
-                                    .description(desc)
-                                    .color(Colour::from(0x00FF00)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Position Closed")
+                                            .description(desc)
+                                            .color(Colour::from(0x00FF00)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                     Ok(resp) => {
                         let body = resp.text().await.unwrap_or_default();
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Close Failed")
-                                    .description(format!("Error: {}", &body[..body.len().min(200)]))
-                                    .color(Colour::from(0xFF0000)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Close Failed")
+                                            .description(format!(
+                                                "Error: {}",
+                                                &body[..body.len().min(200)]
+                                            ))
+                                            .color(Colour::from(0xFF0000)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new()
-                                .embed(CreateEmbed::new()
-                                    .title("Close Failed")
-                                    .description(format!("Error: {}", e))
-                                    .color(Colour::from(0xFF0000)))
-                                .components(vec![])).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .embed(
+                                        CreateEmbed::new()
+                                            .title("Close Failed")
+                                            .description(format!("Error: {}", e))
+                                            .color(Colour::from(0xFF0000)),
+                                    )
+                                    .components(vec![]),
+                            )
+                            .await;
                     }
                 }
             }
             _ => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new()
-                        .embed(CreateEmbed::new()
-                            .title("Cancelled")
-                            .description("Close cancelled.")
-                            .color(Colour::from(0x808080)))
-                        .components(vec![])).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .embed(
+                                CreateEmbed::new()
+                                    .title("Cancelled")
+                                    .description("Close cancelled.")
+                                    .color(Colour::from(0x808080)),
+                            )
+                            .components(vec![]),
+                    )
+                    .await;
             }
         }
     }
@@ -277,26 +354,42 @@ impl Handler {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<serde_json::Value>().await {
                     Ok(json) => {
-                        let orders = json.get("data")
+                        let orders = json
+                            .get("data")
                             .and_then(|d| d.as_array())
                             .cloned()
                             .unwrap_or_default();
                         let embed = embeds::build_orders_embed(&orders);
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().embed(embed)).await;
+                        let _ = command
+                            .edit_response(&ctx.http, EditInteractionResponse::new().embed(embed))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = command.edit_response(&ctx.http,
-                            EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                        let _ = command
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!("Error: {}", e)),
+                            )
+                            .await;
                     }
                 }
             }
             Ok(resp) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("API error: {}", resp.status()))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new()
+                            .content(format!("API error: {}", resp.status())),
+                    )
+                    .await;
             }
             Err(e) => {
-                let _ = command.edit_response(&ctx.http,
-                    EditInteractionResponse::new().content(format!("Error: {}", e))).await;
+                let _ = command
+                    .edit_response(
+                        &ctx.http,
+                        EditInteractionResponse::new().content(format!("Error: {}", e)),
+                    )
+                    .await;
             }
         }
     }

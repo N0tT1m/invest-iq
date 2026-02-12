@@ -1,4 +1,6 @@
-use analysis_core::{adaptive, AnalysisError, AnalysisResult, Bar, SignalStrength, TechnicalAnalyzer};
+use analysis_core::{
+    adaptive, AnalysisError, AnalysisResult, Bar, SignalStrength, TechnicalAnalyzer,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use rayon;
@@ -243,26 +245,40 @@ impl TechnicalAnalysisEngine {
         data: &SignalData,
         extra: Option<serde_json::Value>,
     ) -> serde_json::Value {
-        let detected_patterns: Vec<serde_json::Value> = data.patterns.iter().map(|p| {
-            json!({
-                "name": pattern_name(&p.pattern),
-                "index": p.index,
-                "strength": p.strength,
-                "bullish": p.bullish,
+        let detected_patterns: Vec<serde_json::Value> = data
+            .patterns
+            .iter()
+            .map(|p| {
+                json!({
+                    "name": pattern_name(&p.pattern),
+                    "index": p.index,
+                    "strength": p.strength,
+                    "bullish": p.bullish,
+                })
             })
-        }).collect();
+            .collect();
 
-        let (bb_width_val, bb_percent_b_val) = if !data.bb.upper.is_empty() && !data.bb.middle.is_empty() && !data.bb.lower.is_empty() {
-            let upper = *data.bb.upper.last().unwrap();
-            let middle = *data.bb.middle.last().unwrap();
-            let lower = *data.bb.lower.last().unwrap();
-            let current_price = *data.closes.last().unwrap();
-            let width = if middle != 0.0 { (upper - lower) / middle } else { 0.0 };
-            let percent_b = if (upper - lower) != 0.0 { (current_price - lower) / (upper - lower) } else { 0.5 };
-            (Some(width), Some(percent_b))
-        } else {
-            (None, None)
-        };
+        let (bb_width_val, bb_percent_b_val) =
+            if !data.bb.upper.is_empty() && !data.bb.middle.is_empty() && !data.bb.lower.is_empty()
+            {
+                let upper = *data.bb.upper.last().unwrap();
+                let middle = *data.bb.middle.last().unwrap();
+                let lower = *data.bb.lower.last().unwrap();
+                let current_price = *data.closes.last().unwrap();
+                let width = if middle != 0.0 {
+                    (upper - lower) / middle
+                } else {
+                    0.0
+                };
+                let percent_b = if (upper - lower) != 0.0 {
+                    (current_price - lower) / (upper - lower)
+                } else {
+                    0.5
+                };
+                (Some(width), Some(percent_b))
+            } else {
+                (None, None)
+            };
 
         let mut metrics = json!({
             "rsi": data.rsi_values.last(),
@@ -282,7 +298,8 @@ impl TechnicalAnalysisEngine {
 
         // Merge extra metrics if provided
         if let Some(extra) = extra {
-            if let (Some(base_map), Some(extra_map)) = (metrics.as_object_mut(), extra.as_object()) {
+            if let (Some(base_map), Some(extra_map)) = (metrics.as_object_mut(), extra.as_object())
+            {
                 for (k, v) in extra_map {
                     base_map.insert(k.clone(), v.clone());
                 }
@@ -311,11 +328,10 @@ impl TechnicalAnalysisEngine {
         let signal = SignalStrength::from_score(normalized_score as i32);
         let confidence = compute_confidence(&data.signals, bars.len());
 
-        let reason = data.signals
+        let reason = data
+            .signals
             .iter()
-            .map(|(name, _, bullish)| {
-                format!("{} {}", if *bullish { "+" } else { "-" }, name)
-            })
+            .map(|(name, _, bullish)| format!("{} {}", if *bullish { "+" } else { "-" }, name))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -332,7 +348,12 @@ impl TechnicalAnalysisEngine {
     }
 
     /// Enhanced technical analysis with frontier-level signals
-    pub fn analyze_enhanced(&self, symbol: &str, bars: &[Bar], spy_bars: Option<&[Bar]>) -> Result<AnalysisResult, AnalysisError> {
+    pub fn analyze_enhanced(
+        &self,
+        symbol: &str,
+        bars: &[Bar],
+        spy_bars: Option<&[Bar]>,
+    ) -> Result<AnalysisResult, AnalysisError> {
         let mut data = self.build_signals(bars)?;
 
         let closes = &data.closes;
@@ -353,7 +374,9 @@ impl TechnicalAnalysisEngine {
                 if price_tail[i] > price_tail[i - 1] && price_tail[i] > price_tail[i + 1] {
                     price_peaks.push((i, price_tail[i]));
                 }
-                if data.rsi_values[i] > data.rsi_values[i - 1] && data.rsi_values[i] > data.rsi_values[i + 1] {
+                if data.rsi_values[i] > data.rsi_values[i - 1]
+                    && data.rsi_values[i] > data.rsi_values[i + 1]
+                {
                     rsi_peaks.push((i, data.rsi_values[i]));
                 }
             }
@@ -383,7 +406,10 @@ impl TechnicalAnalysisEngine {
             let window = n.min(20);
             let start = n.saturating_sub(window);
             for i in (start + 1)..(n - 1) {
-                if price_tail.len() > i + 1 && price_tail[i] > price_tail[i - 1] && price_tail[i] > price_tail[i + 1] {
+                if price_tail.len() > i + 1
+                    && price_tail[i] > price_tail[i - 1]
+                    && price_tail[i] > price_tail[i + 1]
+                {
                     price_peaks.push((i, price_tail[i]));
                 }
                 if hist[i] > hist[i - 1] && hist[i] > hist[i + 1] {
@@ -409,26 +435,43 @@ impl TechnicalAnalysisEngine {
             let volumes: Vec<f64> = bars.iter().map(|b| b.volume).collect();
             let vol_sma = sma(&volumes, 20);
             if let (Some(&last_vol), Some(&last_vol_sma)) = (volumes.last(), vol_sma.last()) {
-                let volume_ratio = if last_vol_sma > 0.0 { last_vol / last_vol_sma } else { 1.0 };
-                let vol_z = adaptive::z_score_of(volume_ratio, &volumes.iter().enumerate()
-                    .filter_map(|(i, &v)| {
-                        if i >= 20 && i < volumes.len() {
-                            let sma_val = vol_sma.get(i - 20)?;
-                            Some(if *sma_val > 0.0 { v / sma_val } else { 1.0 })
-                        } else {
-                            None
-                        }
-                    }).collect::<Vec<_>>());
+                let volume_ratio = if last_vol_sma > 0.0 {
+                    last_vol / last_vol_sma
+                } else {
+                    1.0
+                };
+                let vol_z = adaptive::z_score_of(
+                    volume_ratio,
+                    &volumes
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, &v)| {
+                            if i >= 20 && i < volumes.len() {
+                                let sma_val = vol_sma.get(i - 20)?;
+                                Some(if *sma_val > 0.0 { v / sma_val } else { 1.0 })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                );
                 let high_volume = vol_z > 0.5; // z-score > 0.5 = above average
-                // Check if golden/death cross just fired (in the signals we already built)
-                let has_golden = data.signals.iter().any(|(name, _, _)| *name == "Golden Cross");
-                let has_death = data.signals.iter().any(|(name, _, _)| *name == "Death Cross");
+                                               // Check if golden/death cross just fired (in the signals we already built)
+                let has_golden = data
+                    .signals
+                    .iter()
+                    .any(|(name, _, _)| *name == "Golden Cross");
+                let has_death = data
+                    .signals
+                    .iter()
+                    .any(|(name, _, _)| *name == "Death Cross");
                 if has_golden && high_volume {
                     data.signals.push(("Volume Confirms Golden Cross", 2, true));
                 } else if has_death && high_volume {
                     data.signals.push(("Volume Confirms Death Cross", 2, false));
                 } else if (has_golden || has_death) && !high_volume {
-                    data.signals.push(("MA Cross on Low Volume (Weak)", 1, false));
+                    data.signals
+                        .push(("MA Cross on Low Volume (Weak)", 1, false));
                 }
             }
         }
@@ -451,18 +494,24 @@ impl TechnicalAnalysisEngine {
                 } else {
                     obv_trend_str = Some("diverging");
                     // OBV divergence is a warning — bearish if price rising but OBV falling
-                    data.signals.push(("OBV Divergence Warning", 2, !price_rising));
+                    data.signals
+                        .push(("OBV Divergence Warning", 2, !price_rising));
                 }
             }
         }
 
         // --- Enhanced Signal 4: Volume Spike (adaptive z-score)---
         let volume_sma = sma(&volumes, 20);
-        let volume_ratio = if let (Some(&last_vol), Some(&last_vol_sma)) = (volumes.last(), volume_sma.last()) {
-            if last_vol_sma > 0.0 { last_vol / last_vol_sma } else { 1.0 }
-        } else {
-            1.0
-        };
+        let volume_ratio =
+            if let (Some(&last_vol), Some(&last_vol_sma)) = (volumes.last(), volume_sma.last()) {
+                if last_vol_sma > 0.0 {
+                    last_vol / last_vol_sma
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
         let vol_z = adaptive::z_score_of(*volumes.last().unwrap(), &volumes);
         if vol_z > 2.0 {
             let bar_closed_up = if bars.len() >= 2 {
@@ -485,13 +534,18 @@ impl TechnicalAnalysisEngine {
                 let returns_20d: Vec<f64> = (20..closes.len())
                     .map(|i| (closes[i] - closes[i - 20]) / closes[i - 20] * 100.0)
                     .collect();
-                let current_return_20d = (closes[closes.len() - 1] - closes[closes.len() - 20]) / closes[closes.len() - 20] * 100.0;
+                let current_return_20d = (closes[closes.len() - 1] - closes[closes.len() - 20])
+                    / closes[closes.len() - 20]
+                    * 100.0;
                 let return_z = adaptive::z_score_of(current_return_20d, &returns_20d);
                 if return_z < -2.0 {
                     // Check if any of the last 3 bars show recovery
                     let recent_bars = &bars[bars.len().saturating_sub(3)..];
-                    let has_recovery = recent_bars.windows(2).any(|w| w.len() == 2 && w[1].close > w[0].close)
-                        || (bars.len() >= 4 && bars[bars.len() - 1].close > bars[bars.len() - 2].close);
+                    let has_recovery = recent_bars
+                        .windows(2)
+                        .any(|w| w.len() == 2 && w[1].close > w[0].close)
+                        || (bars.len() >= 4
+                            && bars[bars.len() - 1].close > bars[bars.len() - 2].close);
                     if has_recovery {
                         data.signals.push(("Oversold Bounce Setup", 3, true));
                     } else {
@@ -504,14 +558,21 @@ impl TechnicalAnalysisEngine {
         // --- Enhanced Signal 5: ATR Volatility (adaptive percentile-based) ---
         let atr_values = atr(bars, 14);
         let atr_sma = sma(&atr_values, 20);
-        let atr_ratio = if let (Some(&last_atr), Some(&last_atr_sma)) = (atr_values.last(), atr_sma.last()) {
-            if last_atr_sma > 0.0 { last_atr / last_atr_sma } else { 1.0 }
-        } else {
-            1.0
-        };
+        let atr_ratio =
+            if let (Some(&last_atr), Some(&last_atr_sma)) = (atr_values.last(), atr_sma.last()) {
+                if last_atr_sma > 0.0 {
+                    last_atr / last_atr_sma
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
         // Compute historical ATR ratios
-        let atr_ratios: Vec<f64> = if atr_sma.len() > 0 {
-            atr_values.iter().zip(atr_sma.iter())
+        let atr_ratios: Vec<f64> = if !atr_sma.is_empty() {
+            atr_values
+                .iter()
+                .zip(atr_sma.iter())
                 .map(|(atr, sma)| if *sma > 0.0 { atr / sma } else { 1.0 })
                 .collect()
         } else {
@@ -530,7 +591,9 @@ impl TechnicalAnalysisEngine {
             let last_sma_50 = *data.sma_50.last().unwrap();
             if last_sma_50 > 0.0 {
                 // Compute historical distances for all bars with SMA-50
-                let distances: Vec<f64> = closes.iter().zip(data.sma_50.iter())
+                let distances: Vec<f64> = closes
+                    .iter()
+                    .zip(data.sma_50.iter())
                     .filter_map(|(c, sma)| {
                         if *sma > 0.0 {
                             Some((c - sma) / sma * 100.0)
@@ -542,11 +605,13 @@ impl TechnicalAnalysisEngine {
                 let distance_pct = (current_price - last_sma_50) / last_sma_50 * 100.0;
                 let dist_z = adaptive::z_score_of(distance_pct, &distances);
                 if dist_z > 2.0 {
-                    data.signals.push(("Price Severely Extended Above 50-SMA", 3, false));
+                    data.signals
+                        .push(("Price Severely Extended Above 50-SMA", 3, false));
                 } else if dist_z > 1.5 {
                     data.signals.push(("Price Extended Above 50-SMA", 2, false));
                 } else if dist_z < -2.0 {
-                    data.signals.push(("Price Severely Extended Below 50-SMA", 3, true));
+                    data.signals
+                        .push(("Price Severely Extended Below 50-SMA", 3, true));
                 } else if dist_z < -1.5 {
                     data.signals.push(("Price Extended Below 50-SMA", 2, true));
                 }
@@ -561,7 +626,9 @@ impl TechnicalAnalysisEngine {
                 let returns_20d: Vec<f64> = (20..closes.len())
                     .map(|i| (closes[i] - closes[i - 20]) / closes[i - 20] * 100.0)
                     .collect();
-                let current_return_20d = (closes[closes.len() - 1] - closes[closes.len() - 20]) / closes[closes.len() - 20] * 100.0;
+                let current_return_20d = (closes[closes.len() - 1] - closes[closes.len() - 20])
+                    / closes[closes.len() - 20]
+                    * 100.0;
                 let return_z = adaptive::z_score_of(current_return_20d, &returns_20d);
                 if return_z > 2.0 {
                     let recent_bars = &bars[bars.len().saturating_sub(3)..];
@@ -576,11 +643,14 @@ impl TechnicalAnalysisEngine {
         // --- Rate of Change Deceleration (adaptive z-score) ---
         if closes.len() >= 20 {
             let roc_10 = if closes.len() >= 10 {
-                (closes[closes.len() - 1] - closes[closes.len() - 10]) / closes[closes.len() - 10] * 100.0
+                (closes[closes.len() - 1] - closes[closes.len() - 10]) / closes[closes.len() - 10]
+                    * 100.0
             } else {
                 0.0
             };
-            let roc_20 = (closes[closes.len() - 1] - closes[closes.len() - 20]) / closes[closes.len() - 20] * 100.0;
+            let roc_20 = (closes[closes.len() - 1] - closes[closes.len() - 20])
+                / closes[closes.len() - 20]
+                * 100.0;
 
             // Compute all 20-day RoC values for z-score
             let roc_20_values: Vec<f64> = (20..closes.len())
@@ -597,7 +667,9 @@ impl TechnicalAnalysisEngine {
 
         // --- Recency: 5-Day Short-Term Momentum (adaptive percentile-based) ---
         if closes.len() >= 6 {
-            let five_day_return = (closes[closes.len() - 1] - closes[closes.len() - 6]) / closes[closes.len() - 6] * 100.0;
+            let five_day_return = (closes[closes.len() - 1] - closes[closes.len() - 6])
+                / closes[closes.len() - 6]
+                * 100.0;
             // Compute all 5-day rolling returns
             let returns_5d: Vec<f64> = (6..closes.len())
                 .map(|i| (closes[i] - closes[i - 5]) / closes[i - 5] * 100.0)
@@ -622,31 +694,38 @@ impl TechnicalAnalysisEngine {
             rsi_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
             let (p_oversold, p_overbought) = match data.trend {
-                Trend::Uptrend => (0.05, 0.95),   // Shift bounds: less sensitive to oversold, more to overbought
+                Trend::Uptrend => (0.05, 0.95), // Shift bounds: less sensitive to oversold, more to overbought
                 Trend::Downtrend => (0.05, 0.95), // Mirror: more sensitive to oversold
-                Trend::Sideways => (0.10, 0.90),  // Standard bounds
+                Trend::Sideways => (0.10, 0.90), // Standard bounds
             };
 
             let oversold_threshold = if !rsi_sorted.is_empty() {
-                let idx = ((rsi_sorted.len() as f64 * p_oversold).floor() as usize).min(rsi_sorted.len() - 1);
+                let idx = ((rsi_sorted.len() as f64 * p_oversold).floor() as usize)
+                    .min(rsi_sorted.len() - 1);
                 rsi_sorted[idx]
             } else {
                 30.0
             };
 
             let overbought_threshold = if !rsi_sorted.is_empty() {
-                let idx = ((rsi_sorted.len() as f64 * p_overbought).floor() as usize).min(rsi_sorted.len() - 1);
+                let idx = ((rsi_sorted.len() as f64 * p_overbought).floor() as usize)
+                    .min(rsi_sorted.len() - 1);
                 rsi_sorted[idx]
             } else {
                 70.0
             };
 
             // Remove any static RSI signals that build_signals added
-            data.signals.retain(|(name, _, _)| !name.contains("RSI Deeply Oversold") && !name.contains("RSI Oversold") && !name.contains("RSI Overbought"));
+            data.signals.retain(|(name, _, _)| {
+                !name.contains("RSI Deeply Oversold")
+                    && !name.contains("RSI Oversold")
+                    && !name.contains("RSI Overbought")
+            });
 
             let rsi_pct = adaptive::percentile_rank(last_rsi, &data.rsi_values);
             if rsi_pct < p_oversold / 2.0 {
-                data.signals.push(("RSI Deeply Oversold (Adaptive)", 3, true));
+                data.signals
+                    .push(("RSI Deeply Oversold (Adaptive)", 3, true));
             } else if last_rsi < oversold_threshold {
                 data.signals.push(("RSI Oversold (Adaptive)", 2, true));
             } else if last_rsi > overbought_threshold {
@@ -680,10 +759,14 @@ impl TechnicalAnalysisEngine {
                         data.signals.push(("Weekly Confirms Downtrend", 3, false));
                     }
                     (Trend::Uptrend, Trend::Downtrend) | (Trend::Downtrend, Trend::Uptrend) => {
-                        data.signals.push(("Weekly Contradicts Daily Trend", 2, match data.trend {
-                            Trend::Uptrend => false, // weekly disagrees with daily bull
-                            _ => true,               // weekly disagrees with daily bear
-                        }));
+                        data.signals.push((
+                            "Weekly Contradicts Daily Trend",
+                            2,
+                            match data.trend {
+                                Trend::Uptrend => false, // weekly disagrees with daily bull
+                                _ => true,               // weekly disagrees with daily bear
+                            },
+                        ));
                     }
                     _ => {}
                 }
@@ -702,7 +785,11 @@ impl TechnicalAnalysisEngine {
                     if last_rs > last_rs_sma {
                         data.signals.push(("Outperforming Market (RS)", 2, true));
                         // Check for new RS highs
-                        let rs_max = rs_line.iter().take(rs_line.len() - 1).cloned().fold(f64::NEG_INFINITY, f64::max);
+                        let rs_max = rs_line
+                            .iter()
+                            .take(rs_line.len() - 1)
+                            .cloned()
+                            .fold(f64::NEG_INFINITY, f64::max);
                         if last_rs > rs_max {
                             data.signals.push(("New Relative Strength High", 2, true));
                         }
@@ -719,7 +806,9 @@ impl TechnicalAnalysisEngine {
             let ichi = ichimoku(bars);
             let current_price = *closes.last().unwrap();
             // Price vs Cloud: use the last span_a and span_b values
-            if let (Some(&span_a), Some(&span_b)) = (ichi.senkou_span_a.last(), ichi.senkou_span_b.last()) {
+            if let (Some(&span_a), Some(&span_b)) =
+                (ichi.senkou_span_a.last(), ichi.senkou_span_b.last())
+            {
                 let cloud_top = span_a.max(span_b);
                 let cloud_bottom = span_a.min(span_b);
                 if current_price > cloud_top {
@@ -733,9 +822,11 @@ impl TechnicalAnalysisEngine {
                 }
                 // Future cloud color
                 if span_a > span_b {
-                    data.signals.push(("Ichimoku Cloud Bullish (Green)", 1, true));
+                    data.signals
+                        .push(("Ichimoku Cloud Bullish (Green)", 1, true));
                 } else {
-                    data.signals.push(("Ichimoku Cloud Bearish (Red)", 1, false));
+                    data.signals
+                        .push(("Ichimoku Cloud Bearish (Red)", 1, false));
                 }
             }
             // Tenkan/Kijun cross
@@ -758,8 +849,10 @@ impl TechnicalAnalysisEngine {
         if let Some(fib) = fibonacci_retracement(bars, 60.min(bars.len())) {
             let current_price = *closes.last().unwrap();
             let levels = [
-                ("23.6%", fib.level_236), ("38.2%", fib.level_382),
-                ("50.0%", fib.level_500), ("61.8%", fib.level_618),
+                ("23.6%", fib.level_236),
+                ("38.2%", fib.level_382),
+                ("50.0%", fib.level_500),
+                ("61.8%", fib.level_618),
                 ("78.6%", fib.level_786),
             ];
             for (label, level) in &levels {
@@ -769,7 +862,7 @@ impl TechnicalAnalysisEngine {
                     let weight = if is_key_level { 2 } else { 1 };
                     // Near a fib level can act as support (in uptrend) or resistance (in downtrend)
                     let bullish = match data.trend {
-                        Trend::Uptrend => true,   // fib as support in uptrend
+                        Trend::Uptrend => true,    // fib as support in uptrend
                         Trend::Downtrend => false, // fib as resistance in downtrend
                         Trend::Sideways => current_price > *level,
                     };
@@ -805,12 +898,16 @@ impl TechnicalAnalysisEngine {
         let mut near_pivot: Option<&str> = None;
         let mut market_struct_signal: Option<&str> = None;
         let mut divergence_quality: Option<&str> = None;
+        #[allow(clippy::needless_late_init)]
         let trend_strength_score: f64;
 
         if bars.len() >= 50 {
             // Volume-at-price: bucket prices and find highest-volume levels
             let price_min = bars.iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
-            let price_max = bars.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
+            let price_max = bars
+                .iter()
+                .map(|b| b.high)
+                .fold(f64::NEG_INFINITY, f64::max);
             let range = price_max - price_min;
             if range > 0.0 {
                 let num_buckets = 20;
@@ -829,7 +926,9 @@ impl TechnicalAnalysisEngine {
 
                 // Find highest volume bucket below current price (support)
                 if current_bucket > 0 {
-                    let (sup_idx, _) = buckets[..current_bucket].iter().enumerate()
+                    let (sup_idx, _) = buckets[..current_bucket]
+                        .iter()
+                        .enumerate()
                         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap_or((0, &0.0));
                     let sup_price = price_min + (sup_idx as f64 + 0.5) * bucket_size;
@@ -842,10 +941,13 @@ impl TechnicalAnalysisEngine {
 
                 // Find highest volume bucket above current price (resistance)
                 if current_bucket < num_buckets - 1 {
-                    let (res_idx, _) = buckets[current_bucket + 1..].iter().enumerate()
+                    let (res_idx, _) = buckets[current_bucket + 1..]
+                        .iter()
+                        .enumerate()
                         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap_or((0, &0.0));
-                    let res_price = price_min + ((current_bucket + 1 + res_idx) as f64 + 0.5) * bucket_size;
+                    let res_price =
+                        price_min + ((current_bucket + 1 + res_idx) as f64 + 0.5) * bucket_size;
                     vol_profile_resistance = Some(res_price);
                     let dist_pct = (res_price - current) / current * 100.0;
                     if dist_pct < 3.0 && dist_pct > 0.0 {
@@ -883,7 +985,8 @@ impl TechnicalAnalysisEngine {
                         let bb_width = data.bb.upper[bb_idx] - data.bb.lower[bb_idx];
                         if bb_width < kc_width {
                             keltner_squeeze = Some(true);
-                            data.signals.push(("Volatility Squeeze (Keltner/BB)", 2, true));
+                            data.signals
+                                .push(("Volatility Squeeze (Keltner/BB)", 2, true));
                         }
                     }
                 }
@@ -923,21 +1026,26 @@ impl TechnicalAnalysisEngine {
             if rsi_divergence.is_some() || macd_divergence.is_some() {
                 let vol_confirmation = if volumes.len() >= 20 {
                     let vol_sma = sma(&volumes, 10);
-                    if let (Some(&last_vol), Some(&last_vol_sma)) = (volumes.last(), vol_sma.last()) {
+                    if let (Some(&last_vol), Some(&last_vol_sma)) = (volumes.last(), vol_sma.last())
+                    {
                         last_vol > last_vol_sma * 1.2
-                    } else { false }
-                } else { false };
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 let sr_confirmation = data.support.is_some() || data.resistance.is_some();
                 if vol_confirmation && sr_confirmation {
                     divergence_quality = Some("high");
-                    data.signals.push(("High-Quality Divergence", 3, rsi_divergence.is_some()));
+                    data.signals
+                        .push(("High-Quality Divergence", 3, rsi_divergence.is_some()));
                 } else if vol_confirmation || sr_confirmation {
                     divergence_quality = Some("moderate");
                 } else {
                     divergence_quality = Some("low");
                 }
             }
-
         }
 
         // --- Trend Strength Composite (must be outside if block) ---
@@ -952,17 +1060,29 @@ impl TechnicalAnalysisEngine {
                 let sma_20 = *data.sma_20.last().unwrap();
                 let sma_50 = *data.sma_50.last().unwrap();
                 let current = *closes.last().unwrap();
-                let alignment = if current > sma_20 && sma_20 > sma_50 { 1.0 }
-                    else if current < sma_20 && sma_20 < sma_50 { 0.0 }
-                    else { 0.5 };
+                let alignment = if current > sma_20 && sma_20 > sma_50 {
+                    1.0
+                } else if current < sma_20 && sma_20 < sma_50 {
+                    0.0
+                } else {
+                    0.5
+                };
                 score += alignment;
                 components += 1.0;
             }
             if market_struct_signal.is_some() {
-                score += if market_struct_signal == Some("bullish") { 1.0 } else { 0.0 };
+                score += if market_struct_signal == Some("bullish") {
+                    1.0
+                } else {
+                    0.0
+                };
                 components += 1.0;
             }
-            if components > 0.0 { score / components } else { 0.5 }
+            if components > 0.0 {
+                score / components
+            } else {
+                0.5
+            }
         };
 
         // Calculate overall signal
@@ -982,11 +1102,10 @@ impl TechnicalAnalysisEngine {
         let signal = SignalStrength::from_score(normalized_score as i32);
         let confidence = compute_confidence(&data.signals, bars.len());
 
-        let reason = data.signals
+        let reason = data
+            .signals
             .iter()
-            .map(|(name, _, bullish)| {
-                format!("{} {}", if *bullish { "+" } else { "-" }, name)
-            })
+            .map(|(name, _, bullish)| format!("{} {}", if *bullish { "+" } else { "-" }, name))
             .collect::<Vec<_>>()
             .join(", ");
 

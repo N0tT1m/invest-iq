@@ -8,10 +8,10 @@ pub mod history;
 pub mod uncertainty;
 
 pub use calibrator::{
-    CalibrationMethod, CalibratedPrediction, ConfidenceCalibrator, CalibrationStats,
+    CalibratedPrediction, CalibrationMethod, CalibrationStats, ConfidenceCalibrator,
 };
 pub use history::{CalibrationHistory, CalibrationHistoryStore, PredictionOutcome};
 pub use uncertainty::{
-    UncertaintyAnalysis, UncertaintyDecomposition, UncertaintyEstimator, UncertaintyLevel,
-    PredictionContext,
+    PredictionContext, UncertaintyAnalysis, UncertaintyDecomposition, UncertaintyEstimator,
+    UncertaintyLevel,
 };

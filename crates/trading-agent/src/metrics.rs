@@ -95,7 +95,8 @@ impl AgentMetrics {
         self.cycles_run += 1;
 
         // Emit structured metrics periodically
-        if self.log_interval_cycles > 0 && self.cycles_run % self.log_interval_cycles == 0 {
+        if self.log_interval_cycles > 0 && self.cycles_run.is_multiple_of(self.log_interval_cycles)
+        {
             self.log_metrics();
         }
     }
@@ -195,6 +196,9 @@ impl AgentMetrics {
         if let Some(v) = json.get("losing_trades").and_then(|v| v.as_u64()) {
             self.losing_trades = v;
         }
-        tracing::info!("Restored metrics from persisted state (cycles={})", self.cycles_run);
+        tracing::info!(
+            "Restored metrics from persisted state (cycles={})",
+            self.cycles_run
+        );
     }
 }

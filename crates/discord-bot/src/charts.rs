@@ -18,10 +18,8 @@ pub async fn generate_chart(
     let bars = bars.to_vec();
     let signal = *signal;
 
-    let result = tokio::task::spawn_blocking(move || {
-        generate_chart_py(&symbol, &bars, &signal)
-    })
-    .await??;
+    let result =
+        tokio::task::spawn_blocking(move || generate_chart_py(&symbol, &bars, &signal)).await??;
 
     Ok(result)
 }
@@ -55,7 +53,10 @@ fn generate_chart_py(symbol: &str, bars: &[Bar], signal: &SignalStrength) -> Res
         chrono::Utc::now().timestamp()
     );
 
-    let dates: Vec<String> = bars.iter().map(|b| b.timestamp.format("%Y-%m-%d").to_string()).collect();
+    let dates: Vec<String> = bars
+        .iter()
+        .map(|b| b.timestamp.format("%Y-%m-%d").to_string())
+        .collect();
     let opens: Vec<f64> = bars.iter().map(|b| b.open).collect();
     let highs: Vec<f64> = bars.iter().map(|b| b.high).collect();
     let lows: Vec<f64> = bars.iter().map(|b| b.low).collect();
@@ -67,31 +68,18 @@ fn generate_chart_py(symbol: &str, bars: &[Bar], signal: &SignalStrength) -> Res
     let title = format!("{} - {}", symbol, label);
 
     Python::attach(|py| -> Result<()> {
-        let code = CStr::from_bytes_with_nul(
-            concat!(include_str!("chart_render.py"), "\0").as_bytes()
-        ).expect("chart_render.py contains null byte");
+        let code =
+            CStr::from_bytes_with_nul(concat!(include_str!("chart_render.py"), "\0").as_bytes())
+                .expect("chart_render.py contains null byte");
 
-        let module = PyModule::from_code(
-            py,
-            code,
-            c"chart_render.py",
-            c"chart_render",
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to load chart_render.py: {}", e))?;
+        let module = PyModule::from_code(py, code, c"chart_render.py", c"chart_render")
+            .map_err(|e| anyhow::anyhow!("Failed to load chart_render.py: {}", e))?;
 
         module
             .getattr("render_chart")
             .map_err(|e| anyhow::anyhow!("Missing render_chart function: {}", e))?
             .call1((
-                &filename,
-                &title,
-                color,
-                dates,
-                opens,
-                highs,
-                lows,
-                closes,
-                volumes,
+                &filename, &title, color, dates, opens, highs, lows, closes, volumes,
             ))
             .map_err(|e| anyhow::anyhow!("Chart render failed: {}", e))?;
 

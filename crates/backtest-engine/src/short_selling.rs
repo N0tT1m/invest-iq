@@ -5,7 +5,11 @@ use rust_decimal::Decimal;
 /// Short value = entry_price * shares + (entry_price - current_price) * shares
 /// Which simplifies to: 2 * entry_price * shares - current_price * shares
 /// The first term is the initial cash received, the second is unrealized P&L.
-pub fn short_position_mtm(entry_price: Decimal, current_price: Decimal, shares: Decimal) -> Decimal {
+pub fn short_position_mtm(
+    entry_price: Decimal,
+    current_price: Decimal,
+    shares: Decimal,
+) -> Decimal {
     // Cash received from short sale + unrealized gain/loss
     // If current_price < entry_price, this is positive (profit)
     // The notional value tied up is approximately entry_price * shares

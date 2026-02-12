@@ -7,14 +7,14 @@ use serde::Serialize;
 
 use crate::{ApiResponse, AppError, AppState};
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct InsiderNewsItem {
     pub title: String,
     pub published: String,
     pub url: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct InsiderData {
     pub symbol: String,
     pub available: bool,
@@ -28,7 +28,7 @@ pub struct InsiderData {
     pub message: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct InsiderTransactionEntry {
     pub date: String,
     pub name: String,
@@ -40,13 +40,22 @@ pub struct InsiderTransactionEntry {
 }
 
 pub fn insider_routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/insiders/:symbol", get(get_insiders))
+    Router::new().route("/api/insiders/:symbol", get(get_insiders))
 }
 
 const INSIDER_KEYWORDS: &[&str] = &[
-    "insider", "ceo", "cfo", "director", "form 4", "bought", "sold",
-    "executive", "officer", "chairman", "purchase", "acquisition",
+    "insider",
+    "ceo",
+    "cfo",
+    "director",
+    "form 4",
+    "bought",
+    "sold",
+    "executive",
+    "officer",
+    "chairman",
+    "purchase",
+    "acquisition",
 ];
 
 fn is_insider_related(title: &str, desc: &str) -> bool {
@@ -54,16 +63,32 @@ fn is_insider_related(title: &str, desc: &str) -> bool {
     INSIDER_KEYWORDS.iter().any(|kw| text.contains(kw))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/insiders/{symbol}",
+    params(("symbol" = String, Path, description = "Stock ticker symbol")),
+    responses((status = 200, description = "Insider transaction data with buy/sell sentiment")),
+    tag = "Market Data"
+)]
 async fn get_insiders(
     State(state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Result<Json<ApiResponse<InsiderData>>, AppError> {
-    let transactions = state.orchestrator.get_insider_transactions(&symbol).await.unwrap_or_default();
+    let transactions = state
+        .orchestrator
+        .get_insider_transactions(&symbol)
+        .await
+        .unwrap_or_default();
 
     if transactions.is_empty() {
         // Fallback: fetch insider-related news
-        let articles = state.orchestrator.get_news(&symbol, 30).await.unwrap_or_default();
-        let insider_news: Vec<InsiderNewsItem> = articles.iter()
+        let articles = state
+            .orchestrator
+            .get_news(&symbol, 30)
+            .await
+            .unwrap_or_default();
+        let insider_news: Vec<InsiderNewsItem> = articles
+            .iter()
             .filter(|a| is_insider_related(&a.title, a.description.as_deref().unwrap_or("")))
             .take(10)
             .map(|a| InsiderNewsItem {
@@ -106,21 +131,29 @@ async fn get_insiders(
 
     for t in &transactions {
         let tx_type = t.transaction_type.clone().unwrap_or_default();
-        let is_buy = tx_type.to_lowercase().contains("purchase") || tx_type.to_lowercase().contains("buy");
-        let is_sell = tx_type.to_lowercase().contains("sale") || tx_type.to_lowercase().contains("sell");
+        let is_buy =
+            tx_type.to_lowercase().contains("purchase") || tx_type.to_lowercase().contains("buy");
+        let is_sell =
+            tx_type.to_lowercase().contains("sale") || tx_type.to_lowercase().contains("sell");
 
-        if is_buy { total_buys += 1; }
-        if is_sell { total_sells += 1; }
+        if is_buy {
+            total_buys += 1;
+        }
+        if is_sell {
+            total_sells += 1;
+        }
 
-        let value = t.total_value.or_else(|| {
-            match (t.shares, t.price_per_share) {
-                (Some(s), Some(p)) => Some(s * p),
-                _ => None,
-            }
+        let value = t.total_value.or(match (t.shares, t.price_per_share) {
+            (Some(s), Some(p)) => Some(s * p),
+            _ => None,
         });
 
-        if is_buy { buy_value += value.unwrap_or(0.0); }
-        if is_sell { sell_value += value.unwrap_or(0.0); }
+        if is_buy {
+            buy_value += value.unwrap_or(0.0);
+        }
+        if is_sell {
+            sell_value += value.unwrap_or(0.0);
+        }
 
         entries.push(InsiderTransactionEntry {
             date: t.filing_date.clone().unwrap_or_default(),

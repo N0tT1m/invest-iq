@@ -1,5 +1,5 @@
+use crate::{AnalysisError, AnalysisResult, Bar, Financials, NewsArticle};
 use async_trait::async_trait;
-use crate::{AnalysisResult, Bar, Financials, NewsArticle, AnalysisError};
 
 /// Trait for technical analysis engines
 #[async_trait]
@@ -10,7 +10,11 @@ pub trait TechnicalAnalyzer: Send + Sync {
 /// Trait for fundamental analysis engines
 #[async_trait]
 pub trait FundamentalAnalyzer: Send + Sync {
-    async fn analyze(&self, symbol: &str, financials: &Financials) -> Result<AnalysisResult, AnalysisError>;
+    async fn analyze(
+        &self,
+        symbol: &str,
+        financials: &Financials,
+    ) -> Result<AnalysisResult, AnalysisError>;
 }
 
 /// Trait for quantitative analysis engines
@@ -22,5 +26,9 @@ pub trait QuantAnalyzer: Send + Sync {
 /// Trait for sentiment analysis engines
 #[async_trait]
 pub trait SentimentAnalyzer: Send + Sync {
-    async fn analyze(&self, symbol: &str, news: &[NewsArticle]) -> Result<AnalysisResult, AnalysisError>;
+    async fn analyze(
+        &self,
+        symbol: &str,
+        news: &[NewsArticle],
+    ) -> Result<AnalysisResult, AnalysisError>;
 }
