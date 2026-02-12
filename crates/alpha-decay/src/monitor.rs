@@ -260,7 +260,7 @@ impl AlphaDecayMonitor {
 }
 
 /// Metrics describing strategy decay
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct DecayMetrics {
     pub strategy_name: String,
     pub current_sharpe: f64,

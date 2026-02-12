@@ -4,9 +4,10 @@
 //! and aleatoric (data uncertainty) components.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Level of uncertainty classification
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum UncertaintyLevel {
     /// Very low uncertainty - high confidence in prediction
     VeryLow,
@@ -53,7 +54,7 @@ impl UncertaintyLevel {
 }
 
 /// Decomposition of uncertainty into components
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UncertaintyDecomposition {
     /// Epistemic uncertainty (model uncertainty)
     /// Can be reduced with more training data or better models
@@ -112,7 +113,7 @@ impl UncertaintyDecomposition {
 }
 
 /// Complete uncertainty analysis for a prediction
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UncertaintyAnalysis {
     /// The prediction value
     pub prediction: f64,
@@ -131,7 +132,7 @@ pub struct UncertaintyAnalysis {
 }
 
 /// A source contributing to uncertainty
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UncertaintySource {
     pub name: String,
     pub contribution: f64,
@@ -139,14 +140,14 @@ pub struct UncertaintySource {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum UncertaintyType {
     Epistemic,
     Aleatoric,
 }
 
 /// Overall reliability assessment
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReliabilityAssessment {
     pub score: f64,
     pub grade: String,

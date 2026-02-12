@@ -5,9 +5,10 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Represents the dynamics of sentiment change over time
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SentimentDynamics {
     /// Current absolute sentiment score (-100 to 100)
     pub current_sentiment: f64,
@@ -26,7 +27,7 @@ pub struct SentimentDynamics {
 }
 
 /// Signal types based on sentiment velocity analysis
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum VelocitySignal {
     /// Sentiment is rapidly improving
     AcceleratingPositive,
@@ -65,7 +66,7 @@ impl VelocitySignal {
 }
 
 /// Represents a shift in the dominant narrative
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct NarrativeShift {
     /// Previous dominant theme
     pub from_theme: String,

@@ -4,9 +4,10 @@
 //! into well-calibrated probability estimates.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Method used for calibration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum CalibrationMethod {
     /// Platt scaling - fits a sigmoid to the scores
     PlattScaling,
@@ -19,7 +20,7 @@ pub enum CalibrationMethod {
 }
 
 /// A prediction with calibration information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CalibratedPrediction {
     /// Original raw confidence from the model
     pub raw_confidence: f64,

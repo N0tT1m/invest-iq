@@ -2,9 +2,10 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Type of upcoming event
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum EventType {
     Earnings,
     Dividend,
@@ -28,7 +29,7 @@ impl EventType {
 }
 
 /// Signal type for an opportunity
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum OpportunitySignal {
     StrongBuy,
     Buy,
@@ -60,7 +61,7 @@ impl OpportunitySignal {
 }
 
 /// A trading opportunity detected by the scanner
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Opportunity {
     /// Stock symbol
     pub symbol: String,

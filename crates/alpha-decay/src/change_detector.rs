@@ -5,9 +5,10 @@
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Result of CUSUM analysis
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CusumResult {
     /// Upper CUSUM values (detecting upward shifts)
     pub upper_cusum: Vec<f64>,
@@ -22,7 +23,7 @@ pub struct CusumResult {
 }
 
 /// A detected change point in the time series
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChangePoint {
     pub index: usize,
     pub date: Option<NaiveDate>,
@@ -32,14 +33,14 @@ pub struct ChangePoint {
 }
 
 /// Direction of the detected change
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum ChangeDirection {
     Increase,
     Decrease,
 }
 
 /// Current state of the change detector
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum ChangeState {
     /// No significant change detected
     Stable,
