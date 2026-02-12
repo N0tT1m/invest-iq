@@ -126,10 +126,10 @@ python app.py
 ### Optional — API Server
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `API_KEYS` | - | Comma-separated API keys for auth |
+| `API_KEYS` | - | Comma-separated API keys with roles (`key1:admin,key2:trader,key3:viewer`) |
 | `REQUIRE_AUTH` | - | Set to `true` to enforce auth (exits if `API_KEYS` empty) |
-| `ALPACA_API_KEY` | - | Alpaca trading API key |
-| `ALPACA_SECRET_KEY` | - | Alpaca secret key |
+| `APCA_API_KEY_ID` | - | Alpaca trading API key (also accepts `ALPACA_API_KEY`) |
+| `APCA_API_SECRET_KEY` | - | Alpaca secret key (also accepts `ALPACA_SECRET_KEY`) |
 | `ALPACA_BASE_URL` | paper endpoint | Alpaca base URL (paper or live) |
 | `LIVE_TRADING_KEY` | - | Extra auth key for broker write endpoints (if unset, writes blocked) |
 | `LIVE_TRADING_APPROVED` | - | Set to `yes` to allow live (non-paper) trading |
@@ -137,13 +137,27 @@ python app.py
 | `ALPHA_VANTAGE_API_KEY` | - | For validation features |
 | `FINNHUB_API_KEY` | - | Finnhub API key for supplemental news (free tier: 60 calls/min) |
 | `POLYGON_RATE_LIMIT` | `3000` | Max Polygon requests per minute (free tier: set to 5) |
-| `RATE_LIMIT_PER_MINUTE` | `60` | HTTP request rate limit per IP |
+| `RATE_LIMIT_PER_MINUTE` | `120` | HTTP request rate limit per IP |
+| `ALLOWED_ORIGINS` | `localhost:3000,...` | Comma-separated CORS origins |
 | `ML_SIGNAL_MODELS_URL` | `http://localhost:8004` | Signal models service URL |
-| `REDIS_URL` | `redis://localhost:6379` | Redis cache (optional) |
+| `REDIS_URL` | - | Redis cache URL (falls back to in-memory) |
 | `DATABASE_URL` | `sqlite:portfolio.db` | SQLite database path |
-| `API_PORT` | `3000` | API server port |
 | `RUST_LOG` | `info` | Log level (trace/debug/info/warn/error) |
 | `RUST_LOG_FORMAT` | `text` | Set to `json` for structured JSON logging |
+
+### Optional — API Server Security
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TLS_CERT_PATH` | - | Path to PEM certificate (enables native HTTPS) |
+| `TLS_KEY_PATH` | - | Path to PEM private key (requires `TLS_CERT_PATH`) |
+| `ENABLE_HSTS` | `false` | Add HSTS header (set `true` when TLS is terminated) |
+| `REQUEST_TIMEOUT_SECS` | `30` | Hard request timeout |
+| `AUTH_MAX_FAILURES` | `5` | Auth failures before IP lockout |
+| `AUTH_FAILURE_WINDOW_SECS` | `300` | Window for counting auth failures |
+| `AUTH_LOCKOUT_SECS` | `900` | IP lockout duration after brute-force |
+| `ADMIN_IP_ALLOWLIST` | - | Comma-separated CIDRs for admin/risk endpoints (e.g. `10.0.0.0/8,::1/128`) |
+| `RUST_ENV` | - | Set to `production` to sanitize error responses |
+| `SHUTDOWN_TIMEOUT_SECS` | `30` | Graceful shutdown drain timeout |
 
 ### Optional — Frontend
 | Variable | Default | Description |
@@ -385,7 +399,7 @@ The Dash frontend (`frontend/app.py`) provides a single-page dashboard with 21 i
 
 ## ML Services
 
-Four Python microservices providing ML capabilities. All degrade gracefully when unavailable.
+Four Python microservices providing ML capabilities. All degrade gracefully when unavailable. Each service includes shared production hardening middleware (`ml-services/shared/middleware.py`): request timeouts, body size limits, request-ID propagation, Prometheus `/metrics` endpoint, and error sanitization.
 
 ### Service Overview
 
@@ -427,7 +441,7 @@ cd ml-services
 
 ### Rust Data Loader
 
-Rust binary for bulk-loading historical data from Polygon to train ML models. Fetches bars + financials, runs all analysis engines on sliding windows, computes forward returns, and writes labeled feature vectors to SQLite.
+Rust binary for bulk-loading historical data from Polygon to train ML models. Fetches bars + financials, runs all analysis engines on sliding windows, computes forward returns, and writes labeled feature vectors to SQLite. Supports graceful shutdown (SIGINT/SIGTERM), retry with exponential backoff for Polygon API calls, and progress logging every 10 symbols.
 
 ```bash
 # Fetch all active US stocks from Polygon (dynamic discovery)
@@ -533,18 +547,37 @@ curl http://localhost:3000/health
 
 ### Production Safety
 
-- If `ALPACA_BASE_URL` points to live trading (not `paper-api`), the server requires `LIVE_TRADING_APPROVED=yes` to start
-- Broker write endpoints (execute, close, cancel) require `X-Live-Trading-Key` header; if `LIVE_TRADING_KEY` env is unset, all writes are blocked
-- Circuit breakers auto-halt trading on consecutive losses, daily loss limits, or account drawdown thresholds
-- Request body size limited to 1 MB
-- Rate limiting per IP via `RATE_LIMIT_PER_MINUTE` (default 60)
+**Authentication & Authorization**
+- 3-tier RBAC: `viewer`, `trader`, `admin` roles via `API_KEYS=key1:admin,key2:trader`
 - Auth enforced when `REQUIRE_AUTH=true` (exits if `API_KEYS` empty)
+- Broker write endpoints require `X-Live-Trading-Key` header; if `LIVE_TRADING_KEY` env is unset, all writes are blocked
+- If `ALPACA_BASE_URL` points to live trading (not `paper-api`), the server requires `LIVE_TRADING_APPROVED=yes` to start
+- Brute-force protection: IP lockout after configurable failed auth attempts (default 5 in 5 min, 15 min lockout)
+
+**Network Security**
+- Native TLS via `axum-server` + rustls (set `TLS_CERT_PATH` + `TLS_KEY_PATH`)
+- OWASP security headers on all responses (CSP, X-Frame-Options, X-Content-Type-Options, HSTS, Cache-Control: no-store, Referrer-Policy, Permissions-Policy)
+- CORS with explicit origin allowlist and 1-hour preflight cache
+- Rate limiting per IP via `RATE_LIMIT_PER_MINUTE` (default 120)
+- Request body size limited to 1 MB
+- Request timeouts (default 30s) prevent slow-loris attacks
+- `X-Request-Id` propagation for distributed tracing
+
+**Access Control**
+- IP allowlist for admin and risk management endpoints (`ADMIN_IP_ALLOWLIST` CIDR ranges)
+- Error messages sanitized in production (`RUST_ENV=production` hides internal details)
+
+**Operational**
+- Graceful shutdown with configurable drain timeout (SIGINT/SIGTERM across all services)
+- Circuit breakers auto-halt trading on consecutive losses, daily loss limits, or account drawdown thresholds
+- Hash-chained audit logging for tamper detection
 - Structured JSON logging with `RUST_LOG_FORMAT=json`
 - DB backup via `scripts/backup-db.sh` (SQLite backup + 7-day rotation)
+- Parameterized SQL everywhere (no string interpolation)
 
 ## Discord Bot
 
-Rich Discord integration with slash commands and formatted embeds:
+Rich Discord integration with slash commands and formatted embeds. Includes a circuit breaker for API server calls (5 consecutive failures triggers 30s cooldown) and graceful shutdown via shard manager.
 
 - `/analyze AAPL` — Full 4-engine analysis with conviction tier, time horizons, supplementary signals
 - `/price AAPL` — Quick price snapshot with day change and volume
