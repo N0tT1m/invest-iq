@@ -52,6 +52,8 @@ dirs = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 rust_decimal = { workspace = true }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+ipnet = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

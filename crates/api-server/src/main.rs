@@ -1,8 +1,12 @@
 mod auth;
+mod brute_force;
 mod embedded_frontend;
+mod ip_allowlist;
 mod portfolio_routes;
 mod broker_routes;
+mod request_id;
 mod risk_routes;
+mod security_headers;
 mod backtest_routes;
 mod analytics_routes;
 mod sentiment_routes;
@@ -50,8 +54,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tower::ServiceBuilder;
+use tower::timeout::TimeoutLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use axum::error_handling::HandleErrorLayer;
+use std::time::Duration;
 use tower_governor::{
     governor::GovernorConfigBuilder,
     GovernorLayer,
@@ -151,6 +158,9 @@ struct AppState {
     performance_tracker: Option<Arc<PerformanceTracker>>,
     signal_analyzer: Option<Arc<SignalAnalyzer>>,
     metrics: Arc<Metrics>,
+    brute_force_guard: Arc<brute_force::BruteForceGuard>,
+    #[allow(dead_code)] // Accessed via middleware's own state, not through AppState
+    ip_allowlist: Option<ip_allowlist::IpAllowlist>,
 }
 
 /// Get cached ETF bars, fetching and caching on miss.
@@ -516,6 +526,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let metrics = Arc::new(Metrics::new());
+    let brute_force_guard = Arc::new(brute_force::BruteForceGuard::new());
+    let ip_allowlist = ip_allowlist::IpAllowlist::from_env();
 
     let state = AppState {
         orchestrator,
@@ -532,6 +544,8 @@ async fn main() -> anyhow::Result<()> {
         performance_tracker,
         signal_analyzer,
         metrics,
+        brute_force_guard: brute_force_guard.clone(),
+        ip_allowlist: ip_allowlist.clone(),
     };
 
     // --- Startup environment validation ---
@@ -564,6 +578,14 @@ async fn main() -> anyhow::Result<()> {
         if std::env::var("LIVE_TRADING_KEY").is_err() && state.alpaca_client.is_some() {
             tracing::info!("LIVE_TRADING_KEY not set — broker write endpoints disabled (safe default)");
         }
+
+        // Warn if CORS is wide open in production
+        if require_auth {
+            let origins_raw = std::env::var("ALLOWED_ORIGINS").unwrap_or_default();
+            if origins_raw.contains('*') || origins_raw.is_empty() {
+                tracing::warn!("REQUIRE_AUTH=true but ALLOWED_ORIGINS is wildcard or empty — consider restricting CORS origins");
+            }
+        }
     }
 
     // Get allowed origins from environment (comma-separated)
@@ -592,7 +614,8 @@ async fn main() -> anyhow::Result<()> {
             axum::http::header::AUTHORIZATION,
             axum::http::HeaderName::from_static("x-api-key"),
             axum::http::HeaderName::from_static("x-live-trading-key"),
-        ]);
+        ])
+        .max_age(Duration::from_secs(3600));
 
     // Rate limiting: uses SmartIpKeyExtractor (X-Forwarded-For → X-Real-Ip → Forwarded → peer IP)
     let rate_limit_per_minute = std::env::var("RATE_LIMIT_PER_MINUTE")
@@ -620,6 +643,26 @@ async fn main() -> anyhow::Result<()> {
         "Rate limiting enabled: {} req/min, burst size {}, replenish every {}ms",
         rate_limit_per_minute, burst, replenish_interval_ms
     );
+
+    // Background brute-force guard cleanup (every 5 minutes)
+    {
+        let guard = brute_force_guard.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                guard.cleanup();
+            }
+        });
+    }
+
+    // Request timeout
+    let request_timeout_secs = std::env::var("REQUEST_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(30);
+    let request_timeout = Duration::from_secs(request_timeout_secs);
+    tracing::info!("Request timeout: {}s", request_timeout_secs);
 
     // Pre-warm ETF bar caches in the background — all 6 fire in parallel.
     // With Starter plan (unlimited API calls), this completes in ~1-2s.
@@ -673,7 +716,13 @@ async fn main() -> anyhow::Result<()> {
                 .layer(middleware::from_fn(auth::require_trader_middleware))
         )
         .merge(agent_trade_routes::agent_trade_routes())
-        .merge(risk_routes::risk_routes())
+        .merge(
+            risk_routes::risk_routes()
+                .layer(middleware::from_fn_with_state(
+                    ip_allowlist.clone(),
+                    ip_allowlist::ip_allowlist_middleware,
+                ))
+        )
         .merge(backtest_routes::backtest_routes())
         .merge(analytics_routes::analytics_routes())
         .merge(sentiment_routes::sentiment_routes())
@@ -694,17 +743,27 @@ async fn main() -> anyhow::Result<()> {
         .merge(
             retention_routes::retention_routes()
                 .layer(middleware::from_fn(auth::require_admin_middleware))
+                .layer(middleware::from_fn_with_state(
+                    ip_allowlist.clone(),
+                    ip_allowlist::ip_allowlist_middleware,
+                ))
         )
         .layer(
             ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(|_: tower::BoxError| async {
+                    (StatusCode::REQUEST_TIMEOUT, Json(ApiResponse::<()>::error("Request timeout".to_string())))
+                }))
+                .layer(TimeoutLayer::new(request_timeout))
                 .layer(axum::extract::DefaultBodyLimit::max(1_048_576)) // 1MB
                 .layer(TraceLayer::new_for_http())
+                .layer(middleware::from_fn(request_id::request_id_middleware))
+                .layer(middleware::from_fn(security_headers::security_headers_middleware))
                 .layer(GovernorLayer { config: governor_conf })
                 .layer(middleware::from_fn_with_state(state.clone(), metrics_middleware))
-                .layer(middleware::from_fn(auth::auth_middleware))
+                .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware))
                 .layer(cors)
         )
-        .with_state(state);
+        .with_state(state.clone());
 
     // Parse CLI flags
     let no_frontend = std::env::args().any(|a| a == "--no-frontend");
@@ -729,17 +788,42 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Start server with graceful shutdown
+    // Start server with optional TLS and graceful shutdown
     let addr = "0.0.0.0:3000";
-    tracing::info!("🚀 API Server starting on {}", addr);
+    let shutdown_timeout_secs = std::env::var("SHUTDOWN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(30);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
+    if let (Ok(cert_path), Ok(key_path)) = (
+        std::env::var("TLS_CERT_PATH"),
+        std::env::var("TLS_KEY_PATH"),
+    ) {
+        tracing::info!("🔒 TLS enabled: cert={}, key={}", cert_path, key_path);
+        tracing::info!("🚀 API Server starting on https://{}", addr);
+        let config =
+            axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
+        let handle = axum_server::Handle::new();
+        let shutdown_handle = handle.clone();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            shutdown_handle
+                .graceful_shutdown(Some(Duration::from_secs(shutdown_timeout_secs)));
+        });
+        axum_server::bind_rustls(addr.parse::<SocketAddr>()?, config)
+            .handle(handle)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await?;
+    } else {
+        tracing::info!("🚀 API Server starting on http://{}", addr);
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    }
 
     // Shutdown: abort the frontend supervisor (which kills the child)
     if let Some(handle) = frontend_handle {
@@ -1462,13 +1546,20 @@ struct AppError(anyhow::Error);
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        tracing::error!("❌ API error: {}", self.0);
+        tracing::error!("API error: {:#}", self.0);
 
-        let error_message = self.0.to_string();
+        let is_production = std::env::var("RUST_ENV")
+            .map(|v| v == "production")
+            .unwrap_or(false);
+        let message = if is_production {
+            "Internal server error".to_string()
+        } else {
+            self.0.to_string()
+        };
 
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<()>::error(error_message)),
+            Json(ApiResponse::<()>::error(message)),
         )
             .into_response()
     }
@@ -1582,6 +1673,8 @@ mod tests {
             performance_tracker: None,
             signal_analyzer: None,
             metrics,
+            brute_force_guard: Arc::new(brute_force::BruteForceGuard::new()),
+            ip_allowlist: None,
         };
 
         let cors = CorsLayer::permissive();
@@ -1599,7 +1692,7 @@ mod tests {
                     .layer(axum::extract::DefaultBodyLimit::max(1_048_576))
                     .layer(TraceLayer::new_for_http())
                     .layer(middleware::from_fn_with_state(state.clone(), metrics_middleware))
-                    .layer(middleware::from_fn(auth::auth_middleware))
+                    .layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware))
                     .layer(cors)
             )
             .with_state(state)
@@ -1667,6 +1760,10 @@ mod tests {
 
     #[tokio::test]
     async fn broker_write_requires_live_key() {
+        // Set ALPACA_BASE_URL to a non-paper URL so live_trading_auth_middleware
+        // checks for LIVE_TRADING_KEY (which is not set → 403).
+        std::env::set_var("ALPACA_BASE_URL", "https://api.alpaca.markets");
+        std::env::remove_var("LIVE_TRADING_KEY");
         let app = create_test_app().await;
         let resp = app
             .oneshot(
@@ -1680,8 +1777,10 @@ mod tests {
             )
             .await
             .unwrap();
-        // 403 because LIVE_TRADING_KEY is not set
+        // 403 because LIVE_TRADING_KEY is not set and URL is live
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // Clean up
+        std::env::remove_var("ALPACA_BASE_URL");
     }
 
     #[tokio::test]

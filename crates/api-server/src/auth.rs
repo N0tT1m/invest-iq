@@ -1,5 +1,5 @@
 use axum::{
-    extract::Request,
+    extract::{ConnectInfo, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -7,6 +7,7 @@ use axum::{
 };
 use serde_json::json;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 #[cfg(test)]
 #[path = "auth_tests.rs"]
@@ -41,14 +42,17 @@ impl std::fmt::Display for Role {
     }
 }
 
-/// API key authentication middleware
+/// API key authentication middleware with brute-force protection.
 ///
 /// Checks for API key in:
 /// 1. X-API-Key header (recommended)
 /// 2. Authorization: Bearer <token> header
 ///
 /// If API_KEYS env var is not set, authentication is skipped (development mode).
+/// Uses `from_fn_with_state` so it can access `AppState.brute_force_guard`.
 pub async fn auth_middleware(
+    State(state): State<crate::AppState>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     mut request: Request,
     next: Next,
@@ -66,14 +70,27 @@ pub async fn auth_middleware(
         return Ok(next.run(request).await);
     }
 
+    let ip = connect_info
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Check brute-force lockout before attempting validation
+    if state.brute_force_guard.is_locked(&ip) {
+        return Err(AuthError::Locked);
+    }
+
     // Try to extract API key from various sources
     let api_key = extract_api_key(&headers, &request)?;
 
     // Validate the API key and get role
     let role = match valid_keys.get(api_key.as_str()) {
-        Some(role) => *role,
+        Some(role) => {
+            state.brute_force_guard.record_success(&ip);
+            *role
+        }
         None => {
             tracing::warn!("Invalid API key attempted: {}", mask_api_key(&api_key));
+            state.brute_force_guard.record_failure(&ip);
             return Err(AuthError::InvalidApiKey);
         }
     };
@@ -212,6 +229,7 @@ pub enum AuthError {
     MissingApiKey,
     InvalidApiKey,
     InsufficientRole(Role),
+    Locked,
     LiveTradingNotConfigured,
     MissingLiveTradingKey,
     InvalidLiveTradingKey,
@@ -223,6 +241,7 @@ impl std::fmt::Display for AuthError {
             AuthError::MissingApiKey => write!(f, "Missing API key"),
             AuthError::InvalidApiKey => write!(f, "Invalid API key"),
             AuthError::InsufficientRole(role) => write!(f, "Insufficient permissions. Required role: {}", role),
+            AuthError::Locked => write!(f, "Too many failed authentication attempts"),
             AuthError::LiveTradingNotConfigured => write!(f, "Live trading key not configured"),
             AuthError::MissingLiveTradingKey => write!(f, "Missing live trading key"),
             AuthError::InvalidLiveTradingKey => write!(f, "Invalid live trading key"),
@@ -242,6 +261,10 @@ impl IntoResponse for AuthError {
             AuthError::InvalidApiKey => (
                 StatusCode::FORBIDDEN,
                 "Invalid API key.".to_string(),
+            ),
+            AuthError::Locked => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many failed authentication attempts. Please try again later.".to_string(),
             ),
             AuthError::InsufficientRole(required_role) => (
                 StatusCode::FORBIDDEN,
