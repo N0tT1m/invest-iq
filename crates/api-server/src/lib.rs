@@ -1072,7 +1072,7 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     // Get allowed origins from environment (comma-separated)
     let allowed_origins = std::env::var("ALLOWED_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:8050,http://localhost:8051,http://localhost:8052".to_string());
+        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:1420,tauri://localhost,http://localhost:8050,http://localhost:8051,http://localhost:8052".to_string());
 
     let origins: Vec<_> = allowed_origins
         .split(',')

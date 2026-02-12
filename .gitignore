@@ -69,6 +69,10 @@ node_modules/
 *.dmg
 *.AppImage
 
+# Desktop frontend
+crates/desktop-frontend/node_modules/
+crates/desktop-frontend/dist/
+
 # Tauri signing keys
 *.key
 *.key.pub
