@@ -286,11 +286,11 @@ fn calculate_quick_health_score(metrics: &DecayMetrics, status: &HealthStatus) -
 
 // Extension trait to get DB pool from AppState
 trait AppStateExt {
-    fn get_db_pool(&self) -> anyhow::Result<sqlx::SqlitePool>;
+    fn get_db_pool(&self) -> anyhow::Result<sqlx::AnyPool>;
 }
 
 impl AppStateExt for AppState {
-    fn get_db_pool(&self) -> anyhow::Result<sqlx::SqlitePool> {
+    fn get_db_pool(&self) -> anyhow::Result<sqlx::AnyPool> {
         // Get pool from portfolio manager if available
         self.portfolio_manager
             .as_ref()

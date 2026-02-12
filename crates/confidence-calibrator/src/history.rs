@@ -6,7 +6,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::FromRow;
 
 /// A recorded prediction outcome
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +34,7 @@ pub struct PredictionOutcome {
 }
 
 /// Complete calibration history entry (matching DB schema)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalibrationHistory {
     pub id: Option<i64>,
     pub symbol: String,
@@ -47,6 +47,41 @@ pub struct CalibrationHistory {
     pub outcome_date: Option<DateTime<Utc>>,
     pub timeframe: String,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+/// Internal DB row type with String dates (compatible with sqlx Any backend)
+#[derive(Debug, FromRow)]
+struct CalibrationRow {
+    id: Option<i64>,
+    symbol: String,
+    prediction_type: String,
+    predicted_confidence: f64,
+    actual_outcome: Option<bool>,
+    actual_return: Option<f64>,
+    source: String,
+    prediction_date: String,
+    outcome_date: Option<String>,
+    timeframe: String,
+    created_at: Option<String>,
+}
+
+impl CalibrationRow {
+    fn into_history(self) -> CalibrationHistory {
+        CalibrationHistory {
+            id: self.id,
+            symbol: self.symbol,
+            prediction_type: self.prediction_type,
+            predicted_confidence: self.predicted_confidence,
+            actual_outcome: self.actual_outcome,
+            actual_return: self.actual_return,
+            source: self.source,
+            prediction_date: self.prediction_date.parse::<DateTime<Utc>>()
+                .unwrap_or_else(|_| Utc::now()),
+            outcome_date: self.outcome_date.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+            timeframe: self.timeframe,
+            created_at: self.created_at.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+        }
+    }
 }
 
 impl From<PredictionOutcome> for CalibrationHistory {
@@ -69,12 +104,12 @@ impl From<PredictionOutcome> for CalibrationHistory {
 
 /// Store for calibration history data
 pub struct CalibrationHistoryStore {
-    pool: SqlitePool,
+    pool: sqlx::AnyPool,
 }
 
 impl CalibrationHistoryStore {
     /// Create a new history store
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: sqlx::AnyPool) -> Self {
         Self { pool }
     }
 
@@ -94,7 +129,7 @@ impl CalibrationHistoryStore {
         .bind(&prediction.prediction_type)
         .bind(prediction.predicted_confidence)
         .bind(&prediction.source)
-        .bind(prediction.prediction_date)
+        .bind(prediction.prediction_date.to_rfc3339())
         .bind(&prediction.timeframe)
         .fetch_one(&self.pool)
         .await?;
@@ -109,7 +144,7 @@ impl CalibrationHistoryStore {
         outcome: bool,
         actual_return: Option<f64>,
     ) -> Result<()> {
-        let now = Utc::now();
+        let now = Utc::now().to_rfc3339();
 
         sqlx::query(
             r#"
@@ -120,7 +155,7 @@ impl CalibrationHistoryStore {
         )
         .bind(outcome)
         .bind(actual_return)
-        .bind(now)
+        .bind(&now)
         .bind(prediction_id)
         .execute(&self.pool)
         .await?;
@@ -134,7 +169,7 @@ impl CalibrationHistoryStore {
         source: Option<&str>,
         limit: i64,
     ) -> Result<Vec<CalibrationHistory>> {
-        let history: Vec<CalibrationHistory> = if let Some(source) = source {
+        let rows: Vec<CalibrationRow> = if let Some(source) = source {
             sqlx::query_as(
                 r#"
                 SELECT
@@ -169,12 +204,12 @@ impl CalibrationHistoryStore {
             .await?
         };
 
-        Ok(history)
+        Ok(rows.into_iter().map(|r| r.into_history()).collect())
     }
 
     /// Get pending predictions (no outcome yet)
     pub async fn get_pending_predictions(&self) -> Result<Vec<CalibrationHistory>> {
-        let pending: Vec<CalibrationHistory> = sqlx::query_as(
+        let rows: Vec<CalibrationRow> = sqlx::query_as(
             r#"
             SELECT
                 id, symbol, prediction_type, predicted_confidence,
@@ -188,7 +223,7 @@ impl CalibrationHistoryStore {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(pending)
+        Ok(rows.into_iter().map(|r| r.into_history()).collect())
     }
 
     /// Get predictions for a specific symbol
@@ -197,7 +232,7 @@ impl CalibrationHistoryStore {
         symbol: &str,
         limit: i64,
     ) -> Result<Vec<CalibrationHistory>> {
-        let history: Vec<CalibrationHistory> = sqlx::query_as(
+        let rows: Vec<CalibrationRow> = sqlx::query_as(
             r#"
             SELECT
                 id, symbol, prediction_type, predicted_confidence,
@@ -214,7 +249,7 @@ impl CalibrationHistoryStore {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(history)
+        Ok(rows.into_iter().map(|r| r.into_history()).collect())
     }
 
     /// Get calibration data as (confidence, outcome) pairs for fitting

@@ -1,14 +1,13 @@
 use anyhow::Result;
-use sqlx::SqlitePool;
 
 use crate::models::{StrategyPerformance, PerformanceOverview};
 
 pub struct PerformanceTracker {
-    pool: SqlitePool,
+    pool: sqlx::AnyPool,
 }
 
 impl PerformanceTracker {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: sqlx::AnyPool) -> Self {
         Self { pool }
     }
 

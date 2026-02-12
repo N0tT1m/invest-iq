@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod tests {
     use crate::manager::RiskManager;
-    use sqlx::sqlite::SqlitePoolOptions;
 
     async fn setup_test_db() -> RiskManager {
-        let pool = SqlitePoolOptions::new()
+        sqlx::any::install_default_drivers();
+        let pool = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await

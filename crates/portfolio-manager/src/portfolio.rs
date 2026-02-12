@@ -183,7 +183,7 @@ impl PortfolioManager {
         let (id,): (i64,) = sqlx::query_as(
             r#"
             INSERT INTO portfolio_snapshots (total_value, total_cost, total_pnl, total_pnl_percent, snapshot_date)
-            VALUES (?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?)
             RETURNING id
             "#
         )
@@ -191,6 +191,7 @@ impl PortfolioManager {
         .bind(summary.total_cost.to_f64().unwrap_or(0.0))
         .bind(summary.total_pnl.to_f64().unwrap_or(0.0))
         .bind(summary.total_pnl_percent)
+        .bind(chrono::Utc::now().to_rfc3339())
         .fetch_one(self.db.pool())
         .await?;
 
@@ -199,10 +200,11 @@ impl PortfolioManager {
 
     /// Get portfolio snapshots for equity curve
     pub async fn get_snapshots(&self, days: i64) -> Result<Vec<PortfolioSnapshot>> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
         let snapshots = sqlx::query_as::<_, PortfolioSnapshot>(
-            "SELECT * FROM portfolio_snapshots WHERE snapshot_date >= datetime('now', '-' || ? || ' days') ORDER BY snapshot_date"
+            "SELECT * FROM portfolio_snapshots WHERE snapshot_date >= ? ORDER BY snapshot_date"
         )
-        .bind(days)
+        .bind(&cutoff)
         .fetch_all(self.db.pool())
         .await?;
 
@@ -212,7 +214,7 @@ impl PortfolioManager {
     /// Add to watchlist
     pub async fn add_to_watchlist(&self, symbol: &str, notes: Option<String>) -> Result<i64> {
         let (id,): (i64,) = sqlx::query_as(
-            "INSERT OR IGNORE INTO watchlist (symbol, notes) VALUES (?, ?) RETURNING id"
+            "INSERT INTO watchlist (symbol, notes) VALUES (?, ?) ON CONFLICT(symbol) DO UPDATE SET notes = excluded.notes RETURNING id"
         )
         .bind(symbol)
         .bind(&notes)
@@ -237,6 +239,53 @@ impl PortfolioManager {
     pub async fn remove_from_watchlist(&self, symbol: &str) -> Result<()> {
         sqlx::query("DELETE FROM watchlist WHERE symbol = ?")
             .bind(symbol)
+            .execute(self.db.pool())
+            .await?;
+
+        Ok(())
+    }
+
+    // ======== Target Allocation CRUD ========
+
+    /// Get all target allocations
+    pub async fn get_target_allocations(&self) -> Result<Vec<TargetAllocation>> {
+        let targets = sqlx::query_as::<_, TargetAllocation>(
+            "SELECT * FROM target_allocations ORDER BY target_weight_percent DESC"
+        )
+        .fetch_all(self.db.pool())
+        .await?;
+
+        Ok(targets)
+    }
+
+    /// Set (create or update) a target allocation
+    pub async fn set_target_allocation(&self, target: TargetAllocation) -> Result<i64> {
+        let (id,): (i64,) = sqlx::query_as(
+            r#"
+            INSERT INTO target_allocations (symbol, sector, target_weight_percent, drift_tolerance_percent, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, sector) DO UPDATE SET
+                target_weight_percent = excluded.target_weight_percent,
+                drift_tolerance_percent = excluded.drift_tolerance_percent,
+                updated_at = excluded.updated_at
+            RETURNING id
+            "#
+        )
+        .bind(&target.symbol)
+        .bind(&target.sector)
+        .bind(target.target_weight_percent)
+        .bind(target.drift_tolerance_percent)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .fetch_one(self.db.pool())
+        .await?;
+
+        Ok(id)
+    }
+
+    /// Delete a target allocation by ID
+    pub async fn delete_target_allocation(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM target_allocations WHERE id = ?")
+            .bind(id)
             .execute(self.db.pool())
             .await?;
 

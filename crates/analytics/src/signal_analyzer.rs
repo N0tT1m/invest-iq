@@ -1,14 +1,13 @@
 use anyhow::Result;
-use sqlx::SqlitePool;
 
 use crate::models::{SignalQuality, SignalQualityReport};
 
 pub struct SignalAnalyzer {
-    pool: SqlitePool,
+    pool: sqlx::AnyPool,
 }
 
 impl SignalAnalyzer {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: sqlx::AnyPool) -> Self {
         Self { pool }
     }
 

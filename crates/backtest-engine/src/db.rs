@@ -1,16 +1,15 @@
-use sqlx::SqlitePool;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{ToPrimitive, FromPrimitive};
 
 use crate::models::{BacktestResult, BacktestTrade, BenchmarkComparison, EquityPoint, SymbolResult};
 
-/// Persists backtest results and trades to SQLite.
+/// Persists backtest results and trades to the database.
 pub struct BacktestDb {
-    pool: SqlitePool,
+    pool: sqlx::AnyPool,
 }
 
 impl BacktestDb {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: sqlx::AnyPool) -> Self {
         Self { pool }
     }
 

@@ -1,13 +1,14 @@
 use anyhow::Result;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
-use std::str::FromStr;
+
+/// Type alias for the database pool used across the application.
+pub type DbPool = sqlx::AnyPool;
 
 /// Database backend abstraction.
-/// Currently uses SQLite directly. Postgres support can be added by switching to AnyPool.
+/// Uses sqlx AnyPool for runtime backend selection (SQLite or PostgreSQL).
 #[derive(Clone, Debug)]
 pub struct PortfolioDb {
-    pool: SqlitePool,
+    pool: sqlx::AnyPool,
     db_type: DbType,
 }
 
@@ -21,52 +22,61 @@ impl PortfolioDb {
     /// Create a new database connection.
     /// Supports both SQLite (`sqlite:...`) and PostgreSQL (`postgres://...`) URLs.
     pub async fn new(database_url: &str) -> Result<Self> {
+        sqlx::any::install_default_drivers();
+
         let db_type = if database_url.starts_with("postgres://") || database_url.starts_with("postgresql://") {
             DbType::Postgres
         } else {
             DbType::Sqlite
         };
 
-        match db_type {
+        let (max_conns, url) = match db_type {
+            DbType::Postgres => (20, database_url.to_string()),
             DbType::Sqlite => {
-                let options = SqliteConnectOptions::from_str(database_url)?
-                    .create_if_missing(true);
-
-                let pool = SqlitePoolOptions::new()
-                    .max_connections(5)
-                    .connect_with(options)
-                    .await?;
-
-                let db = Self { pool, db_type };
-                db.run_migrations().await?;
-
-                Ok(db)
+                // Ensure create-if-missing for SQLite via mode=rwc
+                let u = if database_url.contains(":memory:") || database_url.contains("mode=") {
+                    database_url.to_string()
+                } else if database_url.contains('?') {
+                    format!("{}&mode=rwc", database_url)
+                } else {
+                    format!("{}?mode=rwc", database_url)
+                };
+                (5, u)
             }
-            DbType::Postgres => {
-                // For Postgres, we still create a SQLite pool for the migration macro,
-                // but in a real deployment you'd use sqlx::postgres::PgPool.
-                // This is a stepping stone — full Postgres support requires AnyPool
-                // or separate pool types behind a trait.
-                anyhow::bail!(
-                    "PostgreSQL support requires the 'postgres' feature. \
-                     Set DATABASE_URL=sqlite:... for SQLite, or see docs/deployment.md \
-                     for PostgreSQL setup instructions."
-                );
-            }
-        }
+        };
+
+        let pool = sqlx::any::AnyPoolOptions::new()
+            .max_connections(max_conns)
+            .connect(&url)
+            .await?;
+
+        let db = Self { pool, db_type };
+        db.run_migrations().await?;
+
+        Ok(db)
     }
 
     /// Run sqlx migrations from the workspace migrations/ directory
     async fn run_migrations(&self) -> Result<()> {
-        sqlx::migrate!("../../migrations")
-            .run(&self.pool)
-            .await
-            .map_err(|e| anyhow::anyhow!("Migration failed: {}", e))?;
+        match self.db_type {
+            DbType::Sqlite => {
+                sqlx::migrate!("../../migrations/sqlite")
+                    .run(&self.pool)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("SQLite migration failed: {}", e))?;
+            }
+            DbType::Postgres => {
+                sqlx::migrate!("../../migrations/postgres")
+                    .run(&self.pool)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("PostgreSQL migration failed: {}", e))?;
+            }
+        }
         Ok(())
     }
 
     /// Get the database pool
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &sqlx::AnyPool {
         &self.pool
     }
 
@@ -96,10 +106,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_postgres_url_detection() {
-        // Should fail gracefully with a clear error
-        let result = PortfolioDb::new("postgres://localhost/test").await;
+        // PostgreSQL URL should be detected but will fail to connect (no server)
+        let result = PortfolioDb::new("postgres://localhost:59999/nonexistent").await;
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("PostgreSQL"));
     }
 }

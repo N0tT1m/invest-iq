@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::FromRow;
 use std::collections::HashMap;
 
 use crate::models::{InteractionType, SymbolInteraction, UserPreference};
@@ -14,7 +14,7 @@ use crate::models::{InteractionType, SymbolInteraction, UserPreference};
 struct InteractionRow {
     symbol: String,
     action: String,
-    created_at: DateTime<Utc>,
+    created_at: String,
 }
 
 /// Row returned from preferences query
@@ -27,14 +27,14 @@ struct PreferenceRow {
 
 /// Learns and manages user preferences
 pub struct PreferenceLearner {
-    pool: SqlitePool,
+    pool: sqlx::AnyPool,
     /// Decay factor for older interactions (per day)
     decay_factor: f64,
 }
 
 impl PreferenceLearner {
     /// Create a new preference learner
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: sqlx::AnyPool) -> Self {
         Self {
             pool,
             decay_factor: 0.99, // 1% decay per day
@@ -55,7 +55,7 @@ impl PreferenceLearner {
         .bind(&interaction.user_id)
         .bind(&interaction.symbol)
         .bind(action_str)
-        .bind(interaction.created_at)
+        .bind(interaction.created_at.to_rfc3339())
         .fetch_one(&self.pool)
         .await?;
 
@@ -122,7 +122,7 @@ impl PreferenceLearner {
         .bind(&prefs.user_id)
         .bind(&sectors_json)
         .bind(prefs.risk_tolerance)
-        .bind(prefs.updated_at)
+        .bind(prefs.updated_at.to_rfc3339())
         .execute(&self.pool)
         .await?;
 
@@ -135,16 +135,18 @@ impl PreferenceLearner {
         user_id: &str,
     ) -> Result<(HashMap<String, f64>, HashMap<String, f64>)> {
         // Get recent interactions (last 90 days)
+        let cutoff = (Utc::now() - chrono::Duration::days(90)).to_rfc3339();
         let interactions: Vec<InteractionRow> = sqlx::query_as(
             r#"
             SELECT symbol, action, created_at
             FROM symbol_interactions
             WHERE user_id = ?
-            AND created_at > datetime('now', '-90 days')
+            AND created_at > ?
             ORDER BY created_at DESC
             "#,
         )
         .bind(user_id)
+        .bind(&cutoff)
         .fetch_all(&self.pool)
         .await?;
 
@@ -155,7 +157,8 @@ impl PreferenceLearner {
             let weight = action.preference_weight();
 
             // Apply time decay
-            let duration = Utc::now().signed_duration_since(row.created_at);
+            let created_at = row.created_at.parse::<DateTime<Utc>>().unwrap_or_else(|_| Utc::now());
+            let duration = Utc::now().signed_duration_since(created_at);
             let age_days = duration.num_days().max(0) as u32;
             let decay = self.decay_factor.powi(age_days as i32);
 

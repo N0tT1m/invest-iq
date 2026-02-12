@@ -5,10 +5,10 @@
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::FromRow;
 
 /// A performance snapshot at a point in time
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceSnapshot {
     pub id: Option<i64>,
     pub strategy_name: String,
@@ -17,11 +17,44 @@ pub struct PerformanceSnapshot {
     pub win_rate: f64,
     pub profit_factor: f64,
     pub trades_count: i32,
-    #[sqlx(default)]
     pub cumulative_return: f64,
-    #[sqlx(default)]
     pub max_drawdown: f64,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+/// Internal DB row type with String dates (compatible with sqlx Any backend)
+#[derive(Debug, FromRow)]
+struct SnapshotRow {
+    id: Option<i64>,
+    strategy_name: String,
+    snapshot_date: String,
+    rolling_sharpe: f64,
+    win_rate: f64,
+    profit_factor: f64,
+    trades_count: i32,
+    #[sqlx(default)]
+    cumulative_return: f64,
+    #[sqlx(default)]
+    max_drawdown: f64,
+    created_at: Option<String>,
+}
+
+impl SnapshotRow {
+    fn into_snapshot(self) -> PerformanceSnapshot {
+        PerformanceSnapshot {
+            id: self.id,
+            strategy_name: self.strategy_name,
+            snapshot_date: NaiveDate::parse_from_str(&self.snapshot_date, "%Y-%m-%d")
+                .unwrap_or_else(|_| NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()),
+            rolling_sharpe: self.rolling_sharpe,
+            win_rate: self.win_rate,
+            profit_factor: self.profit_factor,
+            trades_count: self.trades_count,
+            cumulative_return: self.cumulative_return,
+            max_drawdown: self.max_drawdown,
+            created_at: self.created_at.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+        }
+    }
 }
 
 /// Current performance metrics for a strategy
@@ -47,12 +80,12 @@ struct StrategyNameRow {
 
 /// Alpha Decay Monitor for tracking strategy health
 pub struct AlphaDecayMonitor {
-    pool: SqlitePool,
+    pool: sqlx::AnyPool,
 }
 
 impl AlphaDecayMonitor {
     /// Create a new monitor
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: sqlx::AnyPool) -> Self {
         Self { pool }
     }
 
@@ -69,7 +102,7 @@ impl AlphaDecayMonitor {
             "#,
         )
         .bind(&snapshot.strategy_name)
-        .bind(snapshot.snapshot_date)
+        .bind(snapshot.snapshot_date.format("%Y-%m-%d").to_string())
         .bind(snapshot.rolling_sharpe)
         .bind(snapshot.win_rate)
         .bind(snapshot.profit_factor)
@@ -86,7 +119,7 @@ impl AlphaDecayMonitor {
         strategy_name: &str,
         limit: i64,
     ) -> Result<Vec<PerformanceSnapshot>> {
-        let snapshots: Vec<PerformanceSnapshot> = sqlx::query_as(
+        let rows: Vec<SnapshotRow> = sqlx::query_as(
             r#"
             SELECT
                 id, strategy_name, snapshot_date, rolling_sharpe, win_rate,
@@ -104,7 +137,7 @@ impl AlphaDecayMonitor {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(snapshots)
+        Ok(rows.into_iter().map(|r| r.into_snapshot()).collect())
     }
 
     /// Get current performance summary for a strategy

@@ -46,7 +46,7 @@ pub struct ReviewTrade {
 }
 
 /// Initialize the pending_trades table
-pub async fn init_pending_trades_table(_pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
+pub async fn init_pending_trades_table(_pool: &sqlx::AnyPool) -> Result<(), sqlx::Error> {
     // Table is now created by sqlx migrations.
     Ok(())
 }
@@ -200,8 +200,9 @@ async fn review_trade(
             let order = alpaca_client.submit_market_order(market_order).await?;
 
             sqlx::query(
-                "UPDATE pending_trades SET status = 'executed', reviewed_at = datetime('now'), order_id = ? WHERE id = ?"
+                "UPDATE pending_trades SET status = 'executed', reviewed_at = ?, order_id = ? WHERE id = ?"
             )
+            .bind(chrono::Utc::now().to_rfc3339())
             .bind(&order.id)
             .bind(id)
             .execute(pool)
@@ -222,17 +223,19 @@ async fn review_trade(
         }
         "reject" => {
             sqlx::query(
-                "UPDATE pending_trades SET status = 'rejected', reviewed_at = datetime('now') WHERE id = ?"
+                "UPDATE pending_trades SET status = 'rejected', reviewed_at = ? WHERE id = ?"
             )
+            .bind(chrono::Utc::now().to_rfc3339())
             .bind(id)
             .execute(pool)
             .await?;
 
             // Record rejection in trade context
             sqlx::query(
-                "UPDATE agent_trade_context_v2 SET exit_reason='REJECTED', outcome='rejected', exit_date=datetime('now')
+                "UPDATE agent_trade_context_v2 SET exit_reason='REJECTED', outcome='rejected', exit_date=?
                  WHERE pending_trade_id = ?"
             )
+            .bind(chrono::Utc::now().to_rfc3339())
             .bind(id)
             .execute(pool)
             .await

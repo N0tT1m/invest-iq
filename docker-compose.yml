@@ -30,7 +30,11 @@ services:
       - REDIS_URL=redis://redis:6379
       - RUST_LOG=${RUST_LOG:-info}
       - RUST_LOG_FORMAT=${RUST_LOG_FORMAT:-json}
+      # Database: switch between SQLite and PostgreSQL (no rebuild needed)
+      # SQLite (default):
       - DATABASE_URL=sqlite:/app/data/portfolio.db
+      # PostgreSQL (uncomment below, comment out SQLite above, run with --profile postgres):
+      # - DATABASE_URL=postgres://investiq:investiq_dev@postgres:5432/investiq
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-120}
       - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
       - ML_SIGNAL_MODELS_URL=http://signal-models:8004
@@ -96,7 +100,9 @@ services:
       - .env
     environment:
       - RUST_LOG=${RUST_LOG:-info}
+      # Database: match api-server's DATABASE_URL setting
       - DATABASE_URL=sqlite:/app/data/portfolio.db
+      # - DATABASE_URL=postgres://investiq:investiq_dev@postgres:5432/investiq
       - ML_SIGNAL_MODELS_URL=http://signal-models:8004
     volumes:
       - db_data:/app/data

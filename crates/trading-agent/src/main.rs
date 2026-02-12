@@ -102,7 +102,8 @@ async fn main() -> Result<()> {
     }
 
     // 5. Initialize DB for risk manager + trade logging
-    let db_pool = sqlx::SqlitePool::connect(&config.database_url).await?;
+    sqlx::any::install_default_drivers();
+    let db_pool = sqlx::AnyPool::connect(&config.database_url).await?;
     let risk_manager = Arc::new(RiskManager::new(db_pool.clone()));
     risk_manager.init_circuit_breaker_tables().await?;
     tracing::info!("Risk manager initialized with circuit breakers");

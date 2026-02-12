@@ -39,6 +39,7 @@ from components.tax_dashboard import TaxDashboardComponent
 from components.agent_trades import AgentTradesComponent
 from components.agent_analytics import AgentAnalyticsComponent
 from components.symbol_search import SymbolSearchComponent
+from components.portfolio_analytics import PortfolioAnalyticsComponent
 
 # Initialize the Dash app with a modern theme
 app = dash.Dash(
@@ -343,6 +344,8 @@ app.layout = dbc.Container([
                         label_style={"color": "#dc3545", "fontWeight": "bold"}),
                 dbc.Tab(label="Agent Trades", tab_id="tab-agent-trades",
                         label_style={"color": "#ffc107"}),
+                dbc.Tab(label="Analytics", tab_id="tab-analytics",
+                        label_style={"color": "#636EFA"}),
             ], id="trading-tabs", active_tab="tab-trade", className="card-header-tabs")
         ),
         dbc.CardBody([
@@ -426,6 +429,9 @@ app.layout = dbc.Container([
                 dcc.Loading(html.Div(id='agent-trades-section'), type="circle"),
                 dcc.Loading(html.Div(id='agent-analytics-section'), type="circle"),
             ], id='tab-agent-trades-content', style={'display': 'none'}),
+            html.Div([
+                dcc.Loading(html.Div(id='portfolio-analytics-section'), type="circle"),
+            ], id='tab-analytics-content', style={'display': 'none'}),
         ]),
     ], className="mb-4"),
 
@@ -2525,23 +2531,26 @@ def render_watchlist_page(opportunities, page):
      Output('tab-portfolio-content', 'style'),
      Output('tab-backtest-content', 'style'),
      Output('tab-live-trade-content', 'style'),
-     Output('tab-agent-trades-content', 'style')],
+     Output('tab-agent-trades-content', 'style'),
+     Output('tab-analytics-content', 'style')],
     Input('trading-tabs', 'active_tab'),
 )
 def switch_trading_tab(active_tab):
     show = {'display': 'block'}
     hide = {'display': 'none'}
     if active_tab == 'tab-trade':
-        return show, hide, hide, hide, hide
+        return show, hide, hide, hide, hide, hide
     elif active_tab == 'tab-portfolio':
-        return hide, show, hide, hide, hide
+        return hide, show, hide, hide, hide, hide
     elif active_tab == 'tab-backtest':
-        return hide, hide, show, hide, hide
+        return hide, hide, show, hide, hide, hide
     elif active_tab == 'tab-live-trade':
-        return hide, hide, hide, show, hide
+        return hide, hide, hide, show, hide, hide
     elif active_tab == 'tab-agent-trades':
-        return hide, hide, hide, hide, show
-    return show, hide, hide, hide, hide
+        return hide, hide, hide, hide, show, hide
+    elif active_tab == 'tab-analytics':
+        return hide, hide, hide, hide, hide, show
+    return show, hide, hide, hide, hide, hide
 
 
 # ============================================================================
@@ -3171,6 +3180,56 @@ def _validate_symbol(symbol: str) -> str | None:
 def _health():
     from flask import jsonify
     return jsonify(status='ok'), 200
+
+
+# ============================================================================
+# PORTFOLIO ANALYTICS CALLBACKS
+# ============================================================================
+
+@app.callback(
+    Output('portfolio-analytics-section', 'children'),
+    [Input('trading-tabs', 'active_tab'),
+     Input('analyze-button', 'n_clicks'),
+     Input('refresh-button', 'n_clicks')],
+    prevent_initial_call=True
+)
+def update_analytics_tab(active_tab, analyze_clicks, refresh_clicks):
+    if active_tab != 'tab-analytics':
+        return html.Div()
+
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            risk_future = executor.submit(PortfolioAnalyticsComponent.fetch_risk_metrics)
+            perf_future = executor.submit(PortfolioAnalyticsComponent.fetch_performance)
+            bench_future = executor.submit(PortfolioAnalyticsComponent.fetch_benchmark)
+            drift_future = executor.submit(PortfolioAnalyticsComponent.fetch_drift)
+
+            risk_data = risk_future.result()
+            perf_data = perf_future.result()
+            bench_data = bench_future.result()
+            drift_data = drift_future.result()
+
+        rebal_data = None
+        if drift_data:
+            rebal_data = PortfolioAnalyticsComponent.fetch_rebalance()
+
+        return html.Div([
+            html.H5("Risk Metrics", style={"color": "#636EFA", "marginTop": "8px"}),
+            PortfolioAnalyticsComponent.create_risk_panel(risk_data),
+            html.Hr(style={"borderColor": "#333"}),
+            html.H5("Performance", style={"color": "#636EFA"}),
+            PortfolioAnalyticsComponent.create_performance_panel(perf_data),
+            html.Hr(style={"borderColor": "#333"}),
+            html.H5("Benchmark Comparison", style={"color": "#636EFA"}),
+            PortfolioAnalyticsComponent.create_benchmark_panel(bench_data),
+            html.Hr(style={"borderColor": "#333"}),
+            html.H5("Rebalancing", style={"color": "#636EFA"}),
+            PortfolioAnalyticsComponent.create_rebalance_panel(rebal_data, drift_data),
+        ])
+    except Exception as e:
+        return html.Div(f"Error loading analytics: {e}", style={"color": "#EF553B"})
 
 
 if __name__ == '__main__':

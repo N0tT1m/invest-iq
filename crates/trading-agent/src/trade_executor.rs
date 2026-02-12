@@ -6,8 +6,6 @@ use chrono::Utc;
 use risk_manager::RiskManager;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
-use sqlx::SqlitePool;
-
 use crate::config::AgentConfig;
 use crate::portfolio_guard::PortfolioGuard;
 use crate::types::{PositionAction, TradeExecution, TradeProposal, TradingSignal};
@@ -17,7 +15,7 @@ pub struct TradeExecutor {
     alpaca: Arc<AlpacaClient>,
     risk_manager: Arc<RiskManager>,
     portfolio_guard: PortfolioGuard,
-    db_pool: SqlitePool,
+    db_pool: sqlx::AnyPool,
 }
 
 impl TradeExecutor {
@@ -25,7 +23,7 @@ impl TradeExecutor {
         config: AgentConfig,
         alpaca: Arc<AlpacaClient>,
         risk_manager: Arc<RiskManager>,
-        db_pool: SqlitePool,
+        db_pool: sqlx::AnyPool,
     ) -> Self {
         let portfolio_guard = PortfolioGuard::new(&config);
         Self {

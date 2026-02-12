@@ -86,9 +86,10 @@ async fn execute_trade(
     // --- Idempotency check ---
     if let (Some(ref idem_key), Some(ref pool)) = (&req.idempotency_key, &pool) {
         let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT response_json FROM trade_idempotency WHERE idempotency_key = ? AND expires_at > datetime('now')"
+            "SELECT response_json FROM trade_idempotency WHERE idempotency_key = ? AND expires_at > ?"
         )
         .bind(idem_key)
+        .bind(chrono::Utc::now().to_rfc3339())
         .fetch_optional(pool)
         .await
         .unwrap_or(None);
@@ -299,6 +300,8 @@ async fn execute_trade(
                     trade_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
                     commission: Some(Decimal::ZERO),
                     notes: req.notes.clone().or(Some(format!("Auto-logged from Alpaca order {}", filled_order.id))),
+                    alert_id: None,
+                    analysis_id: None,
                 };
                 if trade_logger.log_trade(trade).await.is_ok() {
                     // Increment trade counter metric
@@ -376,6 +379,8 @@ async fn close_broker_position(
                     trade_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
                     commission: Some(Decimal::ZERO),
                     notes: req.notes.or(Some(format!("Closed position via Alpaca order {}", filled_order.id))),
+                    alert_id: None,
+                    analysis_id: None,
                 };
 
                 if trade_logger.log_trade(trade).await.is_ok() {

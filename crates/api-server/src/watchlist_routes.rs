@@ -498,7 +498,7 @@ async fn add_to_watchlist(
 
     // Insert into watchlist table (ignore if already exists)
     sqlx::query(
-        "INSERT OR IGNORE INTO watchlist (symbol, notes) VALUES (?, ?)"
+        "INSERT INTO watchlist (symbol, notes) VALUES (?, ?) ON CONFLICT DO NOTHING"
     )
     .bind(&symbol)
     .bind(&req.notes)

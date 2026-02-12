@@ -30,8 +30,8 @@ pub struct AnalysisOrchestrator {
     sentiment_analyzer: SentimentAnalysisEngine,
     /// Optional ML signal models client for dynamic weights
     signal_models_client: Option<SignalModelsClient>,
-    /// Optional SQLite pool for logging analysis features
-    db_pool: Option<sqlx::SqlitePool>,
+    /// Optional database pool for logging analysis features
+    db_pool: Option<sqlx::AnyPool>,
     /// Cache news articles per symbol (5-min TTL)
     news_cache: DashMap<String, CacheEntry<Vec<NewsArticle>>>,
     /// Cache bars per (symbol, timeframe_key, days) (5-min TTL)
@@ -75,8 +75,8 @@ impl AnalysisOrchestrator {
         }
     }
 
-    /// Set the SQLite pool for logging analysis features
-    pub fn with_db_pool(mut self, pool: sqlx::SqlitePool) -> Self {
+    /// Set the database pool for logging analysis features
+    pub fn with_db_pool(mut self, pool: sqlx::AnyPool) -> Self {
         self.db_pool = Some(pool);
         self
     }

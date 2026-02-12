@@ -186,9 +186,9 @@ async fn run_retention(
 
     // Archive trades (copy to archive, then delete)
     let trades_result = sqlx::query(
-        "INSERT OR IGNORE INTO trades_archive (id, symbol, action, shares, price, total_value, order_id, status, trade_date, notes)
+        "INSERT INTO trades_archive (id, symbol, action, shares, price, total_value, order_id, status, trade_date, notes)
          SELECT id, symbol, action, shares, price, total_value, order_id, status, trade_date, notes
-         FROM trades WHERE trade_date < ?"
+         FROM trades WHERE trade_date < ? ON CONFLICT DO NOTHING"
     )
     .bind(&cutoff_str)
     .execute(pool)
@@ -202,9 +202,9 @@ async fn run_retention(
 
     // Archive audit log
     let audit_result = sqlx::query(
-        "INSERT OR IGNORE INTO audit_log_archive (id, event_type, symbol, action, details, user_id, order_id, created_at)
+        "INSERT INTO audit_log_archive (id, event_type, symbol, action, details, user_id, order_id, created_at)
          SELECT id, event_type, symbol, action, details, user_id, order_id, created_at
-         FROM audit_log WHERE created_at < ?"
+         FROM audit_log WHERE created_at < ? ON CONFLICT DO NOTHING"
     )
     .bind(&cutoff_str)
     .execute(pool)
@@ -240,11 +240,12 @@ async fn run_retention(
     // Record the retention run
     sqlx::query(
         "INSERT INTO retention_runs (trades_archived, audit_entries_archived, backtest_results_archived, completed_at)
-         VALUES (?, ?, ?, datetime('now'))"
+         VALUES (?, ?, ?, ?)"
     )
     .bind(trades_archived)
     .bind(audit_archived)
     .bind(backtest_deleted)
+    .bind(chrono::Utc::now().to_rfc3339())
     .execute(pool)
     .await?;
 

@@ -2,19 +2,17 @@ use std::collections::HashMap;
 
 use analysis_core::UnifiedAnalysis;
 use anyhow::Result;
-use sqlx::SqlitePool;
-
 use crate::metrics::AgentMetrics;
 use crate::types::{GateDecision, TradingSignal};
 
 /// Persistent state manager for the trading agent (P8).
 /// Stores key-value state and trade entry context for post-trade analysis.
 pub struct StateManager {
-    pub(crate) db_pool: SqlitePool,
+    pub(crate) db_pool: sqlx::AnyPool,
 }
 
 impl StateManager {
-    pub fn new(db_pool: SqlitePool) -> Self {
+    pub fn new(db_pool: sqlx::AnyPool) -> Self {
         Self { db_pool }
     }
 
@@ -119,11 +117,12 @@ impl StateManager {
     /// Save a state key-value pair.
     pub async fn save_state(&self, key: &str, value: &str) -> Result<()> {
         sqlx::query(
-            "INSERT INTO agent_state (key, value, updated_at) VALUES (?, ?, datetime('now'))
+            "INSERT INTO agent_state (key, value, updated_at) VALUES (?, ?, ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         )
         .bind(key)
         .bind(value)
+        .bind(chrono::Utc::now().to_rfc3339())
         .execute(&self.db_pool)
         .await?;
         Ok(())
@@ -225,12 +224,13 @@ impl StateManager {
 
         sqlx::query(
             "UPDATE agent_trade_context_v2
-             SET exit_reason = ?, exit_price = ?, exit_date = datetime('now'),
+             SET exit_reason = ?, exit_price = ?, exit_date = ?,
                  pnl = ?, pnl_percent = ?, exit_regime = ?, outcome = ?
              WHERE pending_trade_id = ?",
         )
         .bind(exit_reason)
         .bind(exit_price)
+        .bind(chrono::Utc::now().to_rfc3339())
         .bind(pnl)
         .bind(pnl_percent)
         .bind(exit_regime)
@@ -245,9 +245,10 @@ impl StateManager {
     pub async fn record_trade_rejected(&self, pending_trade_id: i64) -> Result<()> {
         sqlx::query(
             "UPDATE agent_trade_context_v2
-             SET exit_reason = 'REJECTED', outcome = 'rejected', exit_date = datetime('now')
+             SET exit_reason = 'REJECTED', outcome = 'rejected', exit_date = ?
              WHERE pending_trade_id = ?",
         )
+        .bind(chrono::Utc::now().to_rfc3339())
         .bind(pending_trade_id)
         .execute(&self.db_pool)
         .await?;

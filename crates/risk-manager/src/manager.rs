@@ -1,21 +1,20 @@
 use anyhow::Result;
-use sqlx::SqlitePool;
 use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
 
 use crate::models::*;
 
 pub struct RiskManager {
-    pool: SqlitePool,
+    pool: sqlx::AnyPool,
 }
 
 impl RiskManager {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: sqlx::AnyPool) -> Self {
         Self { pool }
     }
 
     /// Get a reference to the underlying database pool
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &sqlx::AnyPool {
         &self.pool
     }
 
@@ -534,7 +533,7 @@ impl RiskManager {
                     min_win_rate_threshold, daily_loss_limit_percent,
                     max_consecutive_losses, account_drawdown_limit_percent,
                     trading_halted, halt_reason, halted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 "#
             )
             .bind(params.max_risk_per_trade_percent)
@@ -550,6 +549,7 @@ impl RiskManager {
             .bind(params.max_consecutive_losses)
             .bind(params.account_drawdown_limit_percent)
             .bind(reason.unwrap_or("Manual halt"))
+            .bind(chrono::Utc::now().to_rfc3339())
             .execute(&self.pool)
             .await?;
         } else {

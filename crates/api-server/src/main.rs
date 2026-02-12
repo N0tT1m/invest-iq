@@ -27,6 +27,7 @@ mod agent_trade_routes;
 mod audit;
 mod retention_routes;
 mod symbol_routes;
+mod portfolio_analytics_routes;
 mod python_manager;
 
 use analysis_core::{Bar, Timeframe, UnifiedAnalysis};
@@ -740,6 +741,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(correlation_routes::correlation_routes())
         .merge(macro_routes::macro_routes())
         .merge(symbol_routes::symbol_routes())
+        .merge(portfolio_analytics_routes::portfolio_analytics_routes())
         .merge(
             retention_routes::retention_routes()
                 .layer(middleware::from_fn(auth::require_admin_middleware))
@@ -1590,7 +1592,8 @@ mod tests {
         let screener = Arc::new(StockScreener::new(Arc::clone(&orchestrator)));
 
         // In-memory SQLite
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        sqlx::any::install_default_drivers();
+        let pool = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await

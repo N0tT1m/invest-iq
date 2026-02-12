@@ -20,7 +20,6 @@ use fundamental_analysis::FundamentalAnalysisEngine;
 use polygon_client::PolygonClient;
 use quant_analysis::QuantAnalysisEngine;
 use technical_analysis::TechnicalAnalysisEngine;
-use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
@@ -198,16 +197,20 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Open DB (migrations handle table schema via sqlx::migrate!())
-    let pool = Arc::new(SqlitePool::connect(&format!("sqlite:{}?mode=rwc", db_path)).await?);
+    sqlx::any::install_default_drivers();
+    let db_url = format!("sqlite:{}?mode=rwc", db_path);
+    let pool = Arc::new(sqlx::AnyPool::connect(&db_url).await?);
 
     // Bulk-load SQLite optimizations — use NORMAL sync to avoid corruption risk
-    sqlx::query("PRAGMA journal_mode=WAL").execute(pool.as_ref()).await?;
-    sqlx::query("PRAGMA synchronous=NORMAL").execute(pool.as_ref()).await?;
-    sqlx::query("PRAGMA temp_store=MEMORY").execute(pool.as_ref()).await?;
-    sqlx::query("PRAGMA cache_size=-64000").execute(pool.as_ref()).await?; // 64MB cache
+    if db_url.starts_with("sqlite") {
+        sqlx::query("PRAGMA journal_mode=WAL").execute(pool.as_ref()).await?;
+        sqlx::query("PRAGMA synchronous=NORMAL").execute(pool.as_ref()).await?;
+        sqlx::query("PRAGMA temp_store=MEMORY").execute(pool.as_ref()).await?;
+        sqlx::query("PRAGMA cache_size=-64000").execute(pool.as_ref()).await?; // 64MB cache
+    }
 
     // Run migrations to ensure training tables exist
-    sqlx::migrate!("../../migrations").run(pool.as_ref()).await?;
+    sqlx::migrate!("../../migrations/sqlite").run(pool.as_ref()).await?;
 
     // Graceful shutdown: SIGINT + SIGTERM set a flag so in-flight tasks finish
     let shutdown_flag = Arc::new(AtomicBool::new(false));
@@ -380,7 +383,7 @@ async fn process_symbol(
     quant_engine: &QuantAnalysisEngine,
     symbol: &str,
     spy_bars: &[Bar],
-    pool: &SqlitePool,
+    pool: &sqlx::AnyPool,
     dry_run: bool,
     store_flags: StoreFlags,
     timespan: &str,
@@ -542,7 +545,7 @@ async fn process_symbol(
 
 /// Store OHLCV bars into `training_bars` table using a transaction for efficiency.
 async fn store_training_bars(
-    pool: &SqlitePool,
+    pool: &sqlx::AnyPool,
     symbol: &str,
     bars: &[Bar],
     timespan: &str,
@@ -577,7 +580,7 @@ async fn store_training_bars(
 /// Fetch news and compute 5-day price change labels, then store into `training_news`.
 /// Uses the already-fetched bars array to compute labels without extra API calls.
 async fn store_training_news(
-    pool: &SqlitePool,
+    pool: &sqlx::AnyPool,
     symbol: &str,
     bars: &[Bar],
     news: &[NewsArticle],

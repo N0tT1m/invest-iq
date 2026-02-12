@@ -288,6 +288,8 @@ async fn log_trade(
         trade_date: trade_date.clone(),
         commission: req.commission,
         notes: req.notes,
+        alert_id: None,
+        analysis_id: None,
     };
 
     let id = trade_logger.log_trade(trade).await?;
@@ -341,6 +343,8 @@ async fn update_trade(
         trade_date: req.trade_date,
         commission: req.commission,
         notes: req.notes,
+        alert_id: None,
+        analysis_id: None,
     };
 
     trade_logger.update_trade(id, trade).await?;

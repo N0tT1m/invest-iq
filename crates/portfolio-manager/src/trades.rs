@@ -112,13 +112,179 @@ impl TradeLogger {
         Ok(())
     }
 
+    /// Get trades within date range (ascending order for lot matching)
+    async fn get_trades_ascending(&self, days: Option<i64>) -> Result<Vec<Trade>> {
+        let trades = if let Some(d) = days {
+            let cutoff = (chrono::Utc::now() - chrono::Duration::days(d)).format("%Y-%m-%d").to_string();
+            sqlx::query_as::<_, Trade>(
+                "SELECT * FROM trades WHERE trade_date >= ? ORDER BY trade_date ASC, created_at ASC"
+            )
+            .bind(&cutoff)
+            .fetch_all(self.db.pool())
+            .await?
+        } else {
+            sqlx::query_as::<_, Trade>(
+                "SELECT * FROM trades ORDER BY trade_date ASC, created_at ASC"
+            )
+            .fetch_all(self.db.pool())
+            .await?
+        };
+        Ok(trades)
+    }
+
+    /// Enhanced performance metrics with cost basis method selection.
+    pub async fn get_enhanced_metrics(
+        &self,
+        days: Option<i64>,
+        method: CostBasisMethod,
+    ) -> Result<EnhancedPerformanceMetrics> {
+        let base = self.get_performance_metrics(days).await?;
+        let trades = self.get_trades_ascending(days).await?;
+
+        // Calculate lot matching with selected method
+        let mut trade_pnl: Vec<(f64, i64)> = Vec::new(); // (pnl, holding_days)
+        let mut position_map: std::collections::HashMap<String, Vec<(Decimal, Decimal, String)>> =
+            std::collections::HashMap::new(); // (shares, price, date)
+
+        for trade in trades.iter() {
+            let entry = position_map.entry(trade.symbol.clone()).or_default();
+
+            if trade.action == "buy" {
+                entry.push((trade.shares, trade.price, trade.trade_date.clone()));
+            } else if trade.action == "sell" {
+                let sell_date = chrono::NaiveDate::parse_from_str(&trade.trade_date, "%Y-%m-%d")
+                    .unwrap_or_else(|_| chrono::Utc::now().date_naive());
+                let mut remaining = trade.shares;
+                let mut total_cost = Decimal::ZERO;
+
+                match method {
+                    CostBasisMethod::Fifo => {
+                        while remaining > Decimal::from_f64(0.0001).unwrap_or_default() && !entry.is_empty() {
+                            let (buy_shares, buy_price, buy_date_str) = entry[0].clone();
+                            let shares_to_sell = remaining.min(buy_shares);
+                            total_cost += shares_to_sell * buy_price;
+
+                            let buy_date = chrono::NaiveDate::parse_from_str(&buy_date_str, "%Y-%m-%d")
+                                .unwrap_or(sell_date);
+                            let hold_days = (sell_date - buy_date).num_days();
+                            trade_pnl.push(((shares_to_sell * trade.price - shares_to_sell * buy_price).to_f64().unwrap_or(0.0), hold_days));
+
+                            remaining -= shares_to_sell;
+                            if shares_to_sell >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default() {
+                                entry.remove(0);
+                            } else {
+                                entry[0].0 -= shares_to_sell;
+                            }
+                        }
+                    }
+                    CostBasisMethod::Lifo => {
+                        while remaining > Decimal::from_f64(0.0001).unwrap_or_default() && !entry.is_empty() {
+                            let last = entry.len() - 1;
+                            let (buy_shares, buy_price, buy_date_str) = entry[last].clone();
+                            let shares_to_sell = remaining.min(buy_shares);
+                            total_cost += shares_to_sell * buy_price;
+
+                            let buy_date = chrono::NaiveDate::parse_from_str(&buy_date_str, "%Y-%m-%d")
+                                .unwrap_or(sell_date);
+                            let hold_days = (sell_date - buy_date).num_days();
+                            trade_pnl.push(((shares_to_sell * trade.price - shares_to_sell * buy_price).to_f64().unwrap_or(0.0), hold_days));
+
+                            remaining -= shares_to_sell;
+                            if shares_to_sell >= buy_shares - Decimal::from_f64(0.0001).unwrap_or_default() {
+                                entry.remove(last);
+                            } else {
+                                entry[last].0 -= shares_to_sell;
+                            }
+                        }
+                    }
+                    CostBasisMethod::AverageCost => {
+                        let total_shares: Decimal = entry.iter().map(|(s, _, _)| s).sum();
+                        let total_value: Decimal = entry.iter().map(|(s, p, _)| *s * *p).sum();
+                        let avg_price = if total_shares > Decimal::ZERO {
+                            total_value / total_shares
+                        } else {
+                            Decimal::ZERO
+                        };
+
+                        let shares_sold = remaining.min(total_shares);
+                        total_cost = shares_sold * avg_price;
+                        let pnl = (shares_sold * trade.price - total_cost).to_f64().unwrap_or(0.0);
+                        trade_pnl.push((pnl, 0)); // avg cost doesn't track individual holding days
+
+                        // Reduce all lots proportionally
+                        let ratio = if total_shares > Decimal::ZERO {
+                            (total_shares - shares_sold) / total_shares
+                        } else {
+                            Decimal::ZERO
+                        };
+                        for lot in entry.iter_mut() {
+                            lot.0 = lot.0 * ratio;
+                        }
+                        entry.retain(|l| l.0 > Decimal::from_f64(0.0001).unwrap_or_default());
+                    }
+                }
+            }
+        }
+
+        // Holding period stats
+        let holding_days: Vec<i64> = trade_pnl.iter().map(|(_, d)| *d).collect();
+        let avg_holding = if !holding_days.is_empty() {
+            Some(holding_days.iter().sum::<i64>() as f64 / holding_days.len() as f64)
+        } else {
+            None
+        };
+        let median_holding = if !holding_days.is_empty() {
+            let mut sorted = holding_days.clone();
+            sorted.sort();
+            Some(sorted[sorted.len() / 2] as f64)
+        } else {
+            None
+        };
+
+        let distribution = HoldingDistribution {
+            under_7d: holding_days.iter().filter(|&&d| d < 7).count(),
+            d7_to_30: holding_days.iter().filter(|&&d| d >= 7 && d < 30).count(),
+            d30_to_90: holding_days.iter().filter(|&&d| d >= 30 && d < 90).count(),
+            over_90d: holding_days.iter().filter(|&&d| d >= 90).count(),
+        };
+
+        // Trade quality metrics
+        let wins: Vec<f64> = trade_pnl.iter().filter(|(p, _)| *p > 0.0).map(|(p, _)| *p).collect();
+        let losses: Vec<f64> = trade_pnl.iter().filter(|(p, _)| *p < 0.0).map(|(p, _)| p.abs()).collect();
+
+        let avg_win = if !wins.is_empty() { wins.iter().sum::<f64>() / wins.len() as f64 } else { 0.0 };
+        let avg_loss = if !losses.is_empty() { losses.iter().sum::<f64>() / losses.len() as f64 } else { 0.0 };
+        let total_win: f64 = wins.iter().sum();
+        let total_loss: f64 = losses.iter().sum();
+
+        let expectancy = if !trade_pnl.is_empty() {
+            trade_pnl.iter().map(|(p, _)| *p).sum::<f64>() / trade_pnl.len() as f64
+        } else {
+            0.0
+        };
+        let profit_factor = if total_loss > 0.0 { Some(total_win / total_loss) } else { None };
+        let payoff_ratio = if avg_loss > 0.0 { Some(avg_win / avg_loss) } else { None };
+
+        Ok(EnhancedPerformanceMetrics {
+            base,
+            cost_basis_method: format!("{:?}", method),
+            expectancy,
+            profit_factor,
+            payoff_ratio,
+            avg_holding_days: avg_holding,
+            median_holding_days: median_holding,
+            holding_distribution: distribution,
+        })
+    }
+
     /// Calculate performance metrics
     pub async fn get_performance_metrics(&self, days: Option<i64>) -> Result<PerformanceMetrics> {
         let trades = if let Some(d) = days {
+            let cutoff = (chrono::Utc::now() - chrono::Duration::days(d as i64)).format("%Y-%m-%d").to_string();
             sqlx::query_as::<_, Trade>(
-                "SELECT * FROM trades WHERE trade_date >= date('now', '-' || ? || ' days') ORDER BY trade_date DESC"
+                "SELECT * FROM trades WHERE trade_date >= ? ORDER BY trade_date DESC"
             )
-            .bind(d)
+            .bind(&cutoff)
             .fetch_all(self.db.pool())
             .await?
         } else {
@@ -236,6 +402,8 @@ mod tests {
             trade_date: "2025-01-01".to_string(),
             commission: Some(Decimal::from(1)),
             notes: Some("Test trade".to_string()),
+            alert_id: None,
+            analysis_id: None,
         };
 
         let id = logger.log_trade(trade).await.unwrap();
@@ -260,6 +428,8 @@ mod tests {
             trade_date: "2025-01-01".to_string(),
             commission: Some(Decimal::from(1)),
             notes: None,
+            alert_id: None,
+            analysis_id: None,
         }).await.unwrap();
 
         // Sell trade (profit)
@@ -271,6 +441,8 @@ mod tests {
             trade_date: "2025-01-15".to_string(),
             commission: Some(Decimal::from(1)),
             notes: None,
+            alert_id: None,
+            analysis_id: None,
         }).await.unwrap();
 
         let metrics = logger.get_performance_metrics(None).await.unwrap();

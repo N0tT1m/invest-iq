@@ -1,11 +1,10 @@
 use sha2::{Sha256, Digest};
-use sqlx::SqlitePool;
 
 /// Log an audit event to the audit_log table with tamper-evident hash chain.
 /// Each entry stores a SHA-256 hash of its contents plus the previous entry's hash,
 /// forming an append-only verifiable chain.
 pub async fn log_audit(
-    pool: &SqlitePool,
+    pool: &sqlx::AnyPool,
     event_type: &str,
     symbol: Option<&str>,
     action: Option<&str>,
@@ -86,7 +85,7 @@ fn compute_entry_hash(
 /// Verify the integrity of the audit chain.
 /// Walks all entries in sequence order and recomputes hashes.
 /// Returns (is_valid, total_entries, first_broken_sequence).
-pub async fn verify_audit_chain(pool: &SqlitePool) -> Result<AuditChainVerification, sqlx::Error> {
+pub async fn verify_audit_chain(pool: &sqlx::AnyPool) -> Result<AuditChainVerification, sqlx::Error> {
     let entries: Vec<AuditChainEntry> = sqlx::query_as(
         "SELECT sequence_number, event_type, symbol, action, details, created_at, prev_hash, entry_hash
          FROM audit_log
