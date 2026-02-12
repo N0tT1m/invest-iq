@@ -25,4 +25,4 @@ fi
 
 echo "=== InvestIQ Desktop ==="
 echo "Building and launching..."
-cargo run --package desktop-app $CARGO_FLAGS
+cargo run --package desktop-app --features devtools $CARGO_FLAGS

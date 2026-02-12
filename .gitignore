@@ -68,3 +68,7 @@ node_modules/
 *.msi
 *.dmg
 *.AppImage
+
+# Tauri signing keys
+*.key
+*.key.pub

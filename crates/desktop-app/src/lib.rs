@@ -52,6 +52,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             // --- System Tray ---
             let show = MenuItemBuilder::with_id("show", "Show InvestIQ").build(app)?;
@@ -107,9 +108,18 @@ pub fn run() {
                     }
 
                     // Spawn the API server (includes embedded Python frontend manager)
-                    let server_handle = tokio::spawn(async {
+                    let handle_err = handle.clone();
+                    let server_handle = tokio::spawn(async move {
                         if let Err(e) = api_server::run_server().await {
                             tracing::error!("[desktop] API server error: {}", e);
+                            if let Some(window) = handle_err.get_webview_window("main") {
+                                let msg = e.to_string().replace('\'', "\\'");
+                                let _ = window.eval(&format!(
+                                    "document.querySelector('.status span').textContent = 'Error: {}'",
+                                    msg
+                                ));
+                                let _ = window.show();
+                            }
                         }
                     });
 
@@ -157,6 +167,10 @@ pub fn run() {
                 }
                 RunEvent::ExitRequested { .. } | RunEvent::Exit => {
                     tracing::info!("[desktop] Shutting down...");
+                    #[cfg(unix)]
+                    unsafe {
+                        libc::kill(std::process::id() as i32, libc::SIGTERM);
+                    }
                 }
                 _ => {}
             }

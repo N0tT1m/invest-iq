@@ -30,7 +30,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg", "nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -40,7 +41,22 @@
     ],
     "resources": [],
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0NzYxNkYxNzEzRjI5NApSV1NVOGhNWGIyRkhCR3JsdVFXNTdDUi9OeWswR2JCYWtCTnNCRUpPNHZHU1dxZ0I2V25XUW9wYQo=",
+      "endpoints": [
+        "https://github.com/N0tT1m/invest-iq/releases/latest/download/latest.json"
+      ]
     }
   }
 }
