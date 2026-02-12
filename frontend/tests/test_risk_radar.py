@@ -44,9 +44,9 @@ class TestRiskRadarComponent:
         # beta * 50 = 57.5
         assert 50 <= risk_scores["market_risk"] <= 65
 
-        # Volatility risk should reflect volatility (0.22 in mock data) and max_drawdown
-        # 0.22 * 200 * 0.6 + 0.15 * 100 * 0.4 = 26.4 + 6 = 32.4
-        assert 30 <= risk_scores["volatility_risk"] <= 40
+        # Volatility risk should reflect volatility (22.0% in mock data) and max_drawdown (-15.0%)
+        # step1: 22.0 * 2 = 44.0, step2: 44.0 * 0.6 + 15.0 * 2 * 0.4 = 26.4 + 12.0 = 38.4
+        assert 35 <= risk_scores["volatility_risk"] <= 42
 
         # Sentiment risk should reflect confidence (0.68 in mock)
         # (1 - 0.68) * 100 * 0.5 + article_balance_component = ~44
@@ -90,13 +90,13 @@ class TestRiskRadarComponent:
         """Test that risk scores are clamped to 0-100 range."""
         from components.risk_radar import RiskRadarComponent
 
-        # Extreme values that would exceed range
+        # Extreme values that would exceed range (percentages)
         extreme_analysis = {
             "quantitative": {
                 "metrics": {
                     "beta": 5.0,  # Would give 250 without clamping
-                    "volatility": 2.0,  # Would give 400 without clamping
-                    "max_drawdown": -0.8  # -80%
+                    "volatility": 60.0,  # 60% vol, 60*2=120 clamped to 100
+                    "max_drawdown": -40.0  # -40%
                 }
             }
         }
@@ -105,7 +105,7 @@ class TestRiskRadarComponent:
 
         # Market risk should be clamped to 100
         assert risk_scores["market_risk"] == 100.0
-        # Volatility risk is blended: min(100, vol*200)*0.6 + abs(dd)*100*0.4 = 100*0.6 + 80*0.4 = 92
+        # Volatility risk is blended: min(100, 60*2)*0.6 + abs(-40)*2*0.4 = 60 + 32 = 92
         assert risk_scores["volatility_risk"] == 92.0
 
     @responses.activate

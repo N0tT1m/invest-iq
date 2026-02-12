@@ -55,8 +55,8 @@ def mock_analysis_response():
                     "sortino_ratio": 2.10,
                     "beta": 1.15,
                     "alpha": 0.025,
-                    "volatility": 0.22,
-                    "max_drawdown": -0.15,
+                    "volatility": 22.0,
+                    "max_drawdown": -15.0,
                     "var_95": -0.032,
                     "win_rate": 0.62,
                     "correlation_spy": 0.78
