@@ -463,40 +463,75 @@ impl PolygonClient {
             .build()
             .map_err(|e| AnalysisError::ApiError(e.to_string()))?;
 
-        let _permit = self.concurrency_limit.acquire().await
-            .map_err(|_| AnalysisError::ApiError("Concurrency semaphore closed".to_string()))?;
-        self.rate_limiter.acquire().await;
-        let response = heavy_client
-            .get(&url)
-            .query(&[("apiKey", &self.api_key)])
-            .send()
-            .await
-            .map_err(|e| AnalysisError::ApiError(format!("All snapshots request failed: {}", e)))?;
+        // Retry up to 3 times — this endpoint returns a very large payload (~5k tickers)
+        // and is prone to transient body-decoding failures from connection drops.
+        let mut last_err = None;
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                let backoff = Duration::from_secs(2u64.pow(attempt)); // 2s, 4s
+                tracing::warn!(
+                    "All snapshots retry #{} after {:.0}s backoff",
+                    attempt,
+                    backoff.as_secs_f64()
+                );
+                tokio::time::sleep(backoff).await;
+            }
 
-        if !response.status().is_success() {
-            return Err(AnalysisError::ApiError(format!(
-                "All snapshots HTTP {}: {}",
-                response.status(),
-                response.text().await.unwrap_or_default()
-            )));
+            let _permit = self.concurrency_limit.acquire().await
+                .map_err(|_| AnalysisError::ApiError("Concurrency semaphore closed".to_string()))?;
+            self.rate_limiter.acquire().await;
+
+            let response = match heavy_client
+                .get(&url)
+                .query(&[("apiKey", &self.api_key)])
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(format!("All snapshots request failed: {}", e));
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                last_err = Some(format!(
+                    "All snapshots HTTP {}: {}",
+                    response.status(),
+                    response.text().await.unwrap_or_default()
+                ));
+                continue;
+            }
+
+            // Read body as text first for better error diagnostics
+            let body = match response.text().await {
+                Ok(b) => b,
+                Err(e) => {
+                    last_err = Some(format!("All snapshots body read failed: {}", e));
+                    continue;
+                }
+            };
+
+            let snap_response: AllSnapshotsResponse =
+                match serde_json::from_str(&body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!(
+                            "All snapshots JSON parse failed: {}. Body starts with: {}",
+                            e,
+                            &body[..body.len().min(500)]
+                        );
+                        last_err = Some(format!("All snapshots parse error: {}", e));
+                        continue;
+                    }
+                };
+
+            return Ok(snap_response.tickers.unwrap_or_default());
         }
 
-        // Read body as text first for better error diagnostics
-        let body = response.text().await.map_err(|e| {
-            AnalysisError::ApiError(format!("All snapshots body read failed: {}", e))
-        })?;
-
-        let snap_response: AllSnapshotsResponse =
-            serde_json::from_str(&body).map_err(|e| {
-                tracing::error!(
-                    "All snapshots JSON parse failed: {}. Body starts with: {}",
-                    e,
-                    &body[..body.len().min(500)]
-                );
-                AnalysisError::ApiError(format!("All snapshots parse error: {}", e))
-            })?;
-
-        Ok(snap_response.tickers.unwrap_or_default())
+        Err(AnalysisError::ApiError(
+            last_err.unwrap_or_else(|| "All snapshots failed after retries".to_string()),
+        ))
     }
 
     /// Get SMA (Simple Moving Average) from Polygon technical indicators API
