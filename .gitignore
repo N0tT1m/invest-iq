@@ -1,5 +1,8 @@
 # Rust
 /target
+crates/invest-iq-data/target/
+crates/invest-iq-data/Cargo.lock
+ml-services/target/
 **/*.rs.bk
 
 # Environment
