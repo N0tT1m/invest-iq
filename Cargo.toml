@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["crates/invest-iq-data", "crates/desktop-app", "crates/desktop-frontend"]
+exclude = ["crates/invest-iq-data"]
 members = [
     "crates/analysis-core",
     "crates/polygon-client",
@@ -33,8 +33,10 @@ members = [
     "crates/notification-service",
     "crates/broker-trait",
     "crates/ibkr-broker",
+    "crates/desktop-app",
 ]
 
+default-members = ["crates/api-server"]
 resolver = "2"
 
 [workspace.package]
