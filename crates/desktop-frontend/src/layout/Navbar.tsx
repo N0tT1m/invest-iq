@@ -3,10 +3,12 @@ import { Menu as MenuIcon, Search as SearchIcon, Settings as SettingsIcon } from
 import { useState, type KeyboardEvent } from 'react';
 import { useAppStore } from '@/store/appStore';
 import { DRAWER_WIDTH } from './Sidebar';
+import SettingsDialog from '@/components/SettingsDialog';
 
 export default function Navbar() {
   const { symbol, setSymbol, sidebarOpen, toggleSidebar } = useAppStore();
   const [input, setInput] = useState(symbol);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const handleSubmit = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && input.trim()) {
@@ -63,10 +65,12 @@ export default function Navbar() {
 
         <Box sx={{ flexGrow: 1 }} />
 
-        <IconButton color="inherit">
+        <IconButton color="inherit" onClick={() => setSettingsOpen(true)}>
           <SettingsIcon />
         </IconButton>
       </Toolbar>
+
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </AppBar>
   );
 }

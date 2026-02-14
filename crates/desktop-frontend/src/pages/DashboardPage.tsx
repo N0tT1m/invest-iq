@@ -10,6 +10,9 @@ import EngineCard from '@/features/analysis/EngineCard';
 import PriceChart from '@/features/charts/PriceChart';
 import RSIChart from '@/features/charts/RSIChart';
 import MACDChart from '@/features/charts/MACDChart';
+import RiskRadarPanel from '@/features/core/RiskRadar';
+import ConfidenceGauge from '@/features/core/ConfidenceGauge';
+import SentimentVelocityPanel from '@/features/core/SentimentVelocity';
 
 export default function DashboardPage() {
   const { symbol, timeframe, daysBack } = useAppStore();
@@ -36,6 +39,19 @@ export default function DashboardPage() {
       {analysis.data && (
         <>
           <OverallSignalCard analysis={analysis.data} />
+
+          {/* Core Panels: Risk, Confidence, Sentiment */}
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 12, md: 4 }}>
+              <RiskRadarPanel symbol={symbol} />
+            </Grid>
+            <Grid size={{ xs: 12, md: 4 }}>
+              <ConfidenceGauge analysis={analysis.data} />
+            </Grid>
+            <Grid size={{ xs: 12, md: 4 }}>
+              <SentimentVelocityPanel symbol={symbol} />
+            </Grid>
+          </Grid>
 
           {/* Price Chart */}
           <Card>

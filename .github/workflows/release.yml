@@ -30,6 +30,54 @@ jobs:
             });
             return data.id;
 
+  build-api-server:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            artifact: api-server-macos-arm64
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            artifact: api-server-macos-x64
+          - platform: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: api-server-linux-x64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: api-server-windows-x64
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build api-server
+        run: cargo build --release --package api-server --target ${{ matrix.target }}
+
+      - name: Upload binary (Unix)
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp target/${{ matrix.target }}/release/api-server ${{ matrix.artifact }}
+          gh release upload "${{ github.ref_name }}" "${{ matrix.artifact }}" --repo ${{ github.repository }}
+
+      - name: Upload binary (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          copy target\${{ matrix.target }}\release\api-server.exe ${{ matrix.artifact }}.exe
+          gh release upload "${{ github.ref_name }}" "${{ matrix.artifact }}.exe" --repo ${{ github.repository }}
+        shell: cmd
+
   build-desktop:
     needs: create-release
     strategy:
@@ -114,7 +162,7 @@ jobs:
           args: ${{ matrix.args }}
 
   publish-release:
-    needs: [create-release, build-desktop]
+    needs: [create-release, build-api-server, build-desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Publish release
