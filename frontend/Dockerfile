@@ -21,7 +21,7 @@ EXPOSE 8050
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV API_ENDPOINT=http://localhost:3000
+ENV API_BASE_URL=http://api:3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

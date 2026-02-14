@@ -12,8 +12,8 @@ except ImportError:
     pass
 
 DEFAULT_BANK_ACCOUNTS = [
-    {"id": "pnc", "name": "PNC Bank", "lastFour": "4821", "balance": 0, "color": "#F58220"},
-    {"id": "cap1", "name": "Capital One", "lastFour": "7135", "balance": 0, "color": "#D03027"},
+    {"id": "bank1", "name": "Primary Bank", "lastFour": "0000", "balance": 0, "color": "#F58220"},
+    {"id": "bank2", "name": "Secondary Bank", "lastFour": "0000", "balance": 0, "color": "#D03027"},
 ]
 
 

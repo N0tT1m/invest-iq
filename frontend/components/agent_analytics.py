@@ -3,6 +3,7 @@ import requests
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from dash import dcc, html
+from concurrent.futures import ThreadPoolExecutor
 
 from components.config import API_BASE, get_headers, API_TIMEOUT
 
@@ -49,12 +50,22 @@ class AgentAnalyticsComponent:
     @staticmethod
     def create_panel():
         """Build the analytics dashboard from analysis_features data."""
-        summary = _fetch("/api/agent/analytics/analysis-summary") or {}
-        signal_dist = _fetch("/api/agent/analytics/signal-distribution") or []
-        regime_dist = _fetch("/api/agent/analytics/regime-distribution") or []
-        conviction_dist = _fetch("/api/agent/analytics/conviction-distribution") or []
-        top_symbols = _fetch("/api/agent/analytics/top-symbols") or []
-        history = _fetch("/api/agent/analytics/analysis-history", {"days": 30}) or []
+        # Fetch all analytics data in parallel (6 requests)
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {
+                'summary': executor.submit(_fetch, "/api/agent/analytics/analysis-summary"),
+                'signal_dist': executor.submit(_fetch, "/api/agent/analytics/signal-distribution"),
+                'regime_dist': executor.submit(_fetch, "/api/agent/analytics/regime-distribution"),
+                'conviction_dist': executor.submit(_fetch, "/api/agent/analytics/conviction-distribution"),
+                'top_symbols': executor.submit(_fetch, "/api/agent/analytics/top-symbols"),
+                'history': executor.submit(_fetch, "/api/agent/analytics/analysis-history", {"days": 30}),
+            }
+            summary = futures['summary'].result() or {}
+            signal_dist = futures['signal_dist'].result() or []
+            regime_dist = futures['regime_dist'].result() or []
+            conviction_dist = futures['conviction_dist'].result() or []
+            top_symbols = futures['top_symbols'].result() or []
+            history = futures['history'].result() or []
 
         total = summary.get("total_analyses", 0)
         if total == 0:

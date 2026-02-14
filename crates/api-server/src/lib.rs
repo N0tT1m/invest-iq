@@ -1209,9 +1209,51 @@ pub async fn run_server() -> anyhow::Result<()> {
         });
     }
 
+    // Background cache eviction: remove stale ETF bar entries and analysis cache entries
+    // every 5 minutes to prevent unbounded memory growth.
+    {
+        let evict_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                // Evict stale ETF bar cache entries (>30 min old)
+                let before = evict_state.etf_bar_cache.len();
+                evict_state.etf_bar_cache.retain(|_, (cached_at, _)| {
+                    (Utc::now() - *cached_at).num_minutes() < 30
+                });
+                let after = evict_state.etf_bar_cache.len();
+                if before > after {
+                    tracing::debug!("Cache eviction: removed {} stale ETF entries", before - after);
+                }
+
+                // Evict stale analysis cache entries (>10 min old)
+                if let CacheBackend::Memory(ref map) = evict_state.cache {
+                    let before = map.len();
+                    map.retain(|_, entry| {
+                        (Utc::now() - entry.timestamp).num_minutes() < 10
+                    });
+                    let after = map.len();
+                    if before > after {
+                        tracing::debug!("Cache eviction: removed {} stale analysis entries", before - after);
+                    }
+                }
+            }
+        });
+    }
+
     // Build routes
-    let app = Router::new()
-        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
+    let mut app = Router::new();
+
+    // Only enable Swagger UI when ENABLE_SWAGGER=true (disable in production)
+    if std::env::var("ENABLE_SWAGGER").unwrap_or_default() == "true"
+        || std::env::var("ENABLE_SWAGGER").is_err()
+    {
+        app = app.merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()));
+    }
+
+    let app = app
         .route("/", get(health_check))
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_endpoint))

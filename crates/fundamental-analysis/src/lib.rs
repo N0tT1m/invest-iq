@@ -82,6 +82,7 @@ impl FundamentalAnalysisEngine {
         Self
     }
 
+    #[allow(dead_code)]
     fn calculate_pe_ratio(&self, price: f64, eps: f64) -> Option<f64> {
         if eps > 0.0 {
             Some(price / eps)
@@ -560,7 +561,9 @@ impl FundamentalAnalysisEngine {
         ) {
             let invested_capital = equity + liabilities;
             if invested_capital > 0.0 {
-                let roic = (op_income * 0.79 / invested_capital) * 100.0; // 21% US corporate tax rate
+                // US statutory corporate tax rate (21% federal). State taxes vary;
+                // 0.79 after-tax factor is a reasonable default for US-listed stocks.
+                let roic = (op_income * 0.79 / invested_capital) * 100.0;
                 metrics_map.insert("roic".to_string(), json!(roic));
                 if roic > 15.0 {
                     signals.push(("Strong ROIC", 2, true));
@@ -649,7 +652,10 @@ impl FundamentalAnalysisEngine {
             }
         }
 
-        // --- Altman Z-Score (approximation — uses equity/assets as WC/TA proxy) ---
+        // --- Altman Z-Score (5-variable model) ---
+        // Z = 1.2*(WC/TA) + 1.4*(RE/TA) + 3.3*(EBIT/TA) + 0.6*(MVE/TL) + 1.0*(Sales/TA)
+        // WC estimated from fractions since Polygon lacks current assets/liabilities.
+        // RE approximated as shareholders_equity (upper bound).
         if let (Some(ta), Some(tl), Some(eq), Some(oi), Some(rev)) = (
             bs_total_assets,
             bs_total_liabilities,
@@ -658,7 +664,9 @@ impl FundamentalAnalysisEngine {
             ttm_revenue,
         ) {
             if ta > 0.0 && tl > 0.0 {
-                let wc_ta = eq / ta;
+                let est_wc = (ta * 0.40 - tl * 0.30).max(0.0);
+                let wc_ta = est_wc / ta;
+                let re_ta = eq.max(0.0) / ta; // RE approximated as equity
                 let ebit_ta = oi / ta;
                 let sales_ta = rev / ta;
                 let mve_tl = if let (Some(p), Some(s)) = (current_price, shares_outstanding) {
@@ -671,7 +679,7 @@ impl FundamentalAnalysisEngine {
                     0.0
                 };
 
-                let z_score = 1.2 * wc_ta + 3.3 * ebit_ta + 0.6 * mve_tl + 1.0 * sales_ta;
+                let z_score = 1.2 * wc_ta + 1.4 * re_ta + 3.3 * ebit_ta + 0.6 * mve_tl + 1.0 * sales_ta;
                 metrics_map.insert("altman_z_score".to_string(), json!(z_score));
                 data_fields_present += 1;
 
@@ -920,13 +928,16 @@ impl FundamentalAnalysisEngine {
                     metrics_map.insert("ev_ebitda".to_string(), json!(ev_ebitda));
                     data_fields_present += 1;
 
-                    // Use growth-implied fair EV/EBITDA (approximation from implied P/E)
+                    // Use growth-implied fair EV/EBITDA derived from implied P/E
+                    // adjusted for capital structure: EV/EBITDA ≈ P/E × (1 - tax) / (1 + D/E × 0.3)
                     let growth_rate = revenue_growth.unwrap_or(0.0) / 100.0;
                     let rf = risk_free_rate.unwrap_or(0.045);
                     let equity_risk_premium = 0.055;
                     let implied_pe =
                         (1.0 / (rf + equity_risk_premium - growth_rate.min(0.08))).clamp(5.0, 80.0);
-                    let implied_ev_ebitda = implied_pe * 0.7; // Rough approximation
+                    let de = metrics_map.get("debt_to_equity").and_then(|v| v.as_f64()).unwrap_or(0.5);
+                    let pe_to_ev_factor = 0.79 / (1.0 + de * 0.3); // after-tax, debt-adjusted
+                    let implied_ev_ebitda = implied_pe * pe_to_ev_factor;
                     let ev_ebitda_z = (ev_ebitda - implied_ev_ebitda) / implied_ev_ebitda.max(1.0);
 
                     metrics_map.insert("implied_ev_ebitda".to_string(), json!(implied_ev_ebitda));
@@ -998,9 +1009,12 @@ impl FundamentalAnalysisEngine {
         if let (Some(rev), Some(ta), Some(tl)) =
             (ttm_revenue, bs_total_assets, bs_total_liabilities)
         {
-            // Approximate working capital as net current assets (Total Assets - Total Liabilities)
-            // Note: Polygon doesn't provide current assets/liabilities separately
-            let working_capital = ta - tl;
+            // Estimate working capital from total assets/liabilities since Polygon
+            // doesn't provide current assets/current liabilities separately.
+            // Typical current assets ~40% of total, current liabilities ~30% of total.
+            let est_current_assets = ta * 0.40;
+            let est_current_liabilities = tl * 0.30;
+            let working_capital = est_current_assets - est_current_liabilities;
             if working_capital > 0.0 {
                 let wc_turnover = rev / working_capital;
                 metrics_map.insert("working_capital_turnover".to_string(), json!(wc_turnover));
@@ -1012,7 +1026,7 @@ impl FundamentalAnalysisEngine {
                     if let (Some(f_rev), Some(f_ta), Some(f_tl)) =
                         (f.revenue, f.total_assets, f.total_liabilities)
                     {
-                        let f_wc = f_ta - f_tl;
+                        let f_wc = f_ta * 0.40 - f_tl * 0.30;
                         if f_wc > 0.0 {
                             wc_turnover_history.push(f_rev / f_wc);
                         }
@@ -1625,6 +1639,10 @@ impl FundamentalAnalysisEngine {
         Ok(result)
     }
 
+    // NOTE: The legacy analyze_sync method previously used a hardcoded $100 price
+    // placeholder. Price-dependent metrics (P/E) are now skipped here.
+    // Callers should prefer analyze_enhanced() or analyze_with_consensus()
+    // which accept current_price as a parameter.
     fn analyze_sync(
         &self,
         symbol: &str,
@@ -1633,23 +1651,12 @@ impl FundamentalAnalysisEngine {
         let mut signals = Vec::new();
         let mut metrics_map = serde_json::Map::new();
 
-        // For this example, we'll use a hypothetical current price
-        // In production, you'd fetch the current price
-        let current_price = 100.0; // Placeholder
-
-        // P/E Ratio Analysis
-        if let (Some(eps), true) = (financials.eps, financials.eps.unwrap_or(0.0) > 0.0) {
-            if let Some(pe) = self.calculate_pe_ratio(current_price, eps) {
-                metrics_map.insert("pe_ratio".to_string(), json!(pe));
-
-                // Typical P/E ratios: <15 undervalued, 15-25 fair, >25 overvalued
-                if pe < 15.0 {
-                    signals.push(("Low P/E Ratio", 3, true));
-                } else if pe > 30.0 {
-                    signals.push(("High P/E Ratio", 2, false));
-                }
-            }
-        }
+        // No current_price available through this trait method.
+        // Price-dependent metrics (P/E, P/B, EV/EBITDA, DCF) are skipped.
+        metrics_map.insert(
+            "price_warning".to_string(),
+            json!("No current price available; price-dependent metrics omitted. Use analyze_enhanced() for full analysis."),
+        );
 
         // ROE Analysis
         if let (Some(net_income), Some(equity)) =

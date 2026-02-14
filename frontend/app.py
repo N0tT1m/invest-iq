@@ -67,9 +67,9 @@ app = dash.Dash(
     suppress_callback_exceptions=True,
 )
 
-# API Configuration
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:3000")
-API_KEY = os.getenv("API_KEY", "") or os.getenv("API_KEYS", "").split(",")[0].strip()
+# API Configuration — import from shared config (single source of truth)
+from components.config import API_BASE, API_KEY, API_TIMEOUT, get_headers
+API_BASE_URL = API_BASE  # alias for backward compat within this file
 
 # Shared frontend cache (diskcache so background processes can read/write)
 _frontend_cache = diskcache.Cache(os.path.join(os.path.dirname(__file__), ".cache", "app"))
@@ -84,23 +84,6 @@ def _cache_get(key):
 def _cache_set(key, data):
     """Store a value in the frontend cache"""
     _frontend_cache.set(key, data, expire=_FRONTEND_CACHE_TTL)
-
-# Production safety: require API_KEY if PRODUCTION=true
-_is_production = os.getenv("PRODUCTION", "").lower() in ("true", "1", "yes")
-if _is_production and not API_KEY:
-    raise RuntimeError("PRODUCTION=true but API_KEY is not set. Refusing to start.")
-
-# Warn if API key is not set
-if not API_KEY:
-    import warnings
-    warnings.warn("API_KEY not set. Set API_KEY in .env file.", stacklevel=2)
-
-# Headers for API requests
-def get_headers():
-    return {
-        "X-API-Key": API_KEY,
-        "Content-Type": "application/json"
-    }
 
 # Sector peer groups for comparison (mirrors backend tax-optimizer mappings)
 SECTOR_PEERS = {
@@ -356,8 +339,8 @@ app.layout = dbc.Container([
     dcc.Store(id='paper-trade-notification-store'),
     dcc.Store(id='live-trade-symbol-store', data=''),
     dcc.Store(id='bank-accounts-store', storage_type='local', data=[
-        {"id": "pnc", "name": "PNC Bank", "lastFour": "4821", "balance": 0, "color": "#F58220"},
-        {"id": "cap1", "name": "Capital One", "lastFour": "7135", "balance": 0, "color": "#D03027"},
+        {"id": "bank1", "name": "Primary Bank", "lastFour": "0000", "balance": 0, "color": "#F58220"},
+        {"id": "bank2", "name": "Secondary Bank", "lastFour": "0000", "balance": 0, "color": "#D03027"},
     ]),
     dcc.Store(id='transfer-history-store', storage_type='local', data=[]),
     dcc.Store(id='live-trade-notification-store'),
@@ -1929,7 +1912,7 @@ def create_mini_chart(df, symbol, timeframe_label):
 def _fetch_bars(symbol, timeframe, days):
     """Fetch bars for a given timeframe, return DataFrame or None"""
     try:
-        timeout = 300
+        timeout = 30
         resp = requests.get(
             f'{API_BASE_URL}/api/bars/{symbol}',
             params={'timeframe': timeframe, 'days': days},

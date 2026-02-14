@@ -10,7 +10,8 @@ use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::{audit, auth, ApiResponse, AppError, AppState};
+use crate::{audit, auth, auth::ValidatedApiKey, ApiResponse, AppError, AppState};
+use axum::Extension;
 use notification_service::{Alert, AlertType};
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -104,8 +105,13 @@ async fn account_daily_pl(broker: &dyn broker_trait::BrokerClient) -> f64 {
 /// Execute a trade through broker
 async fn execute_trade(
     State(state): State<AppState>,
+    auth_ext: Option<Extension<ValidatedApiKey>>,
     Json(req): Json<ExecuteTradeRequest>,
 ) -> Result<Json<ApiResponse<BrokerOrder>>, AppError> {
+    let user_id = auth_ext
+        .as_ref()
+        .map(|e| format!("{}:{}", e.role, &e.key[..8.min(e.key.len())]))
+        .unwrap_or_else(|| "anonymous".to_string());
     let broker = state
         .broker_client
         .as_ref()
@@ -166,7 +172,7 @@ async fn execute_trade(
                         Some(&symbol),
                         Some(&req.action),
                         Some(&cb_check.reason),
-                        "user",
+                        &user_id,
                         None,
                     )
                     .await;
@@ -196,7 +202,7 @@ async fn execute_trade(
                             Some(&symbol),
                             Some(&req.action),
                             Some(&risk_check.reason),
-                            "user",
+                            &user_id,
                             None,
                         )
                         .await;
@@ -249,7 +255,7 @@ async fn execute_trade(
             Some(&symbol),
             Some(&req.action),
             Some(&details),
-            "user",
+            &user_id,
             Some(&order.id),
         )
         .await;
@@ -277,9 +283,19 @@ async fn execute_trade(
 
     // --- Post-fill: log trade, register risk, update portfolio in a transaction ---
     if let Some(trade_logger) = state.trade_logger.as_ref() {
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        // Poll for fill status (up to 10s with 1s intervals) instead of blind 2s sleep
+        let mut filled_order = order.clone();
+        for _ in 0..10 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            if let Ok(polled) = broker.get_order(&order.id).await {
+                filled_order = polled;
+                if filled_order.status == "filled" || filled_order.status == "partially_filled" {
+                    break;
+                }
+            }
+        }
 
-        let filled_order = broker.get_order(&order.id).await.unwrap_or(order.clone());
+        let filled_order = filled_order;
 
         let fill_price_f64 = if let Some(avg_price_str) = &filled_order.filled_avg_price {
             avg_price_str.parse::<f64>().unwrap_or(0.0)
@@ -382,11 +398,12 @@ async fn execute_trade(
                     .to_string();
                     let _ = sqlx::query(
                         "INSERT INTO audit_log (event_type, symbol, action, details, user_id, order_id)
-                         VALUES ('trade_executed', ?, ?, ?, 'user', ?)"
+                         VALUES ('trade_executed', ?, ?, ?, ?, ?)"
                     )
                     .bind(&symbol)
                     .bind(&req.action)
                     .bind(&details)
+                    .bind(&user_id)
                     .bind(&order.id)
                     .execute(&mut *tx)
                     .await;
@@ -509,10 +526,19 @@ async fn close_broker_position(
 
     // Auto-log if trade logger available
     if let Some(trade_logger) = state.trade_logger.as_ref() {
-        // Wait for fill
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        // Poll for fill status (up to 10s with 1s intervals)
+        let mut filled_order = order.clone();
+        for _ in 0..10 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            if let Ok(polled) = broker.get_order(&order.id).await {
+                filled_order = polled;
+                if filled_order.status == "filled" || filled_order.status == "partially_filled" {
+                    break;
+                }
+            }
+        }
 
-        let filled_order = broker.get_order(&order.id).await.unwrap_or(order.clone());
+        let filled_order = filled_order;
 
         if let (Some(qty_str), Some(price_str)) =
             (&filled_order.filled_qty, &filled_order.filled_avg_price)

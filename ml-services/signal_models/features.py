@@ -141,8 +141,11 @@ def extract_features_from_analysis(analysis: Dict[str, Any]) -> Dict[str, float]
     else:
         features["inter_engine_agreement"] = 0.0
 
-    # VIX proxy: use volatility from quant engine as a stand-in
-    features["vix_proxy"] = features["volatility"]
+    # VIX proxy: prefer market-level volatility if available from analysis,
+    # otherwise fall back to stock's own volatility as approximation.
+    # The Rust API computes true VIX proxy from SPY bars.
+    spy_vol = analysis.get("market_volatility") or analysis.get("spy_volatility")
+    features["vix_proxy"] = float(spy_vol) if spy_vol is not None else features["volatility"]
 
     return features
 

@@ -56,9 +56,16 @@ class LiveTradingComponent:
             headers["X-Live-Trading-Key"] = live_key
         return headers
 
+    # Safety limits for live trading (configurable via env vars)
+    MAX_ORDER_SHARES = int(os.getenv("MAX_LIVE_ORDER_SHARES", "1000"))
+    MAX_ORDER_VALUE = float(os.getenv("MAX_LIVE_ORDER_VALUE", "50000"))
+
     @staticmethod
     def execute_trade(symbol, action, shares):
-        """Execute a live trade via broker API."""
+        """Execute a live trade via broker API with safety guards."""
+        # Frontend safety: enforce max order size
+        if shares > LiveTradingComponent.MAX_ORDER_SHARES:
+            return {"success": False, "error": f"Order exceeds max shares limit ({LiveTradingComponent.MAX_ORDER_SHARES})"}
         try:
             trade_data = {
                 "symbol": symbol.upper(),
@@ -72,8 +79,10 @@ class LiveTradingComponent:
                 headers=LiveTradingComponent.get_trade_headers(),
                 timeout=API_TIMEOUT
             )
+            if response.status_code != 200:
+                return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
             return response.json()
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             return {"success": False, "error": str(e)}
 
     @staticmethod

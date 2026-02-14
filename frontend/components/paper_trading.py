@@ -72,8 +72,10 @@ class PaperTradingComponent:
                 headers=PaperTradingComponent.get_trade_headers(),
                 timeout=API_TIMEOUT
             )
+            if response.status_code != 200:
+                return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:200]}"}
             return response.json()
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             return {"success": False, "error": str(e)}
 
     @staticmethod

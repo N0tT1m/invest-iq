@@ -1,3 +1,6 @@
+"""
+DEPRECATED: This file is a legacy prototype. Use app.py for the full implementation.
+"""
 import dash
 from dash import dcc, html, Input, Output, State, ALL, ctx
 import dash.dependencies

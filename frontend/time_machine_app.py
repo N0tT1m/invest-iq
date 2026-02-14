@@ -11,6 +11,7 @@ from dash import html, dcc, callback, Input, Output, State
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import json
 import requests
 import os
 from typing import Dict, List, Optional
@@ -804,7 +805,7 @@ def start_scenario(n_clicks, scenarios):
 
     # Find which scenario was clicked
     triggered_id = ctx.triggered[0]["prop_id"]
-    scenario_id = eval(triggered_id.split(".")[0])["index"]
+    scenario_id = json.loads(triggered_id.split(".")[0])["index"]
 
     try:
         response = requests.post(

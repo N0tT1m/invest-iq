@@ -15,8 +15,9 @@ app = dash.Dash(
 )
 
 # API Configuration
-API_BASE_URL = "http://localhost:3000"
-API_KEY = "your_api_key_here"  # Replace with actual key
+import os
+API_BASE_URL = os.environ.get('API_BASE_URL', 'http://localhost:3000')
+API_KEY = os.environ.get('API_KEY', '') or os.environ.get('API_KEYS', '').split(',')[0].strip()
 
 # Headers for API requests
 def get_headers():

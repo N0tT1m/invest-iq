@@ -571,35 +571,36 @@ impl SentimentAnalysisEngine {
         // --- Sentiment Momentum (Acceleration/Deceleration) ---
         // Compare recent sentiment (last 24h) vs prior period (24-48h ago)
         let (sentiment_momentum, sentiment_acceleration) = if news.len() >= 2 {
-            let last_24h_articles: Vec<&NewsArticle> = news
+            // Track original indices so article_scores lookups are correct
+            let last_24h_indices: Vec<usize> = news
                 .iter()
-                .filter(|a| (now - a.published_utc).num_hours() < 24)
+                .enumerate()
+                .filter(|(_, a)| (now - a.published_utc).num_hours() < 24)
+                .map(|(i, _)| i)
                 .collect();
-            let prev_24h_articles: Vec<&NewsArticle> = news
+            let prev_24h_indices: Vec<usize> = news
                 .iter()
-                .filter(|a| {
+                .enumerate()
+                .filter(|(_, a)| {
                     let hours = (now - a.published_utc).num_hours();
                     (24..48).contains(&hours)
                 })
+                .map(|(i, _)| i)
                 .collect();
 
-            if !last_24h_articles.is_empty() && !prev_24h_articles.is_empty() {
-                // Compute average sentiment for each period
-                let recent_sent: f64 = last_24h_articles
+            if !last_24h_indices.is_empty() && !prev_24h_indices.is_empty() {
+                // Compute average sentiment for each period using original indices
+                let recent_sent: f64 = last_24h_indices
                     .iter()
-                    .enumerate()
-                    .map(|(i, _)| article_scores.get(i).copied().unwrap_or(0.0))
+                    .map(|&i| article_scores[i])
                     .sum::<f64>()
-                    / last_24h_articles.len() as f64;
+                    / last_24h_indices.len() as f64;
 
-                let prev_sent: f64 = prev_24h_articles
+                let prev_sent: f64 = prev_24h_indices
                     .iter()
-                    .enumerate()
-                    .skip(last_24h_articles.len())
-                    .take(prev_24h_articles.len())
-                    .map(|(i, _)| article_scores.get(i).copied().unwrap_or(0.0))
+                    .map(|&i| article_scores[i])
                     .sum::<f64>()
-                    / prev_24h_articles.len() as f64;
+                    / prev_24h_indices.len() as f64;
 
                 let momentum = recent_sent - prev_sent;
                 let accel = if prev_sent != 0.0 {
@@ -680,20 +681,22 @@ impl SentimentAnalysisEngine {
             "Very Negative"
         };
 
-        // Generate signals for new features
+        // Generate signals for momentum and acceleration features
+        let mut signals: Vec<(&str, i32, bool)> = Vec::new();
+
         if let Some(mom) = sentiment_momentum {
             if mom > 1.5 {
-                // Sentiment rapidly improving
+                signals.push(("Sentiment Rapidly Improving", 2, true));
             } else if mom < -1.5 {
-                // Sentiment rapidly deteriorating
+                signals.push(("Sentiment Rapidly Deteriorating", 2, false));
             }
         }
 
         if let Some(accel) = sentiment_acceleration {
-            if accel > 0.3 {
-                // Accelerating positive sentiment
-            } else if accel < -0.3 {
-                // Accelerating negative sentiment
+            if accel > 1.0 {
+                signals.push(("Sentiment Acceleration Positive", 1, true));
+            } else if accel < -1.0 {
+                signals.push(("Sentiment Acceleration Negative", 1, false));
             }
         }
 
@@ -709,15 +712,28 @@ impl SentimentAnalysisEngine {
             ""
         };
 
+        let signal_suffix = if signals.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = signals
+                .iter()
+                .map(|(name, _, bullish)| {
+                    format!("{} {}", if *bullish { "+" } else { "-" }, name)
+                })
+                .collect();
+            format!(" | {}", parts.join(", "))
+        };
+
         let reason = format!(
-            "{} news sentiment ({} positive, {} negative, {} neutral){}{}{}",
+            "{} news sentiment ({} positive, {} negative, {} neutral){}{}{}{}",
             sentiment_label,
             positive_count,
             negative_count,
             neutral_count,
             buzz_label,
             fatigue_label,
-            contradiction_label
+            contradiction_label,
+            signal_suffix
         );
 
         let metrics = json!({
@@ -739,6 +755,7 @@ impl SentimentAnalysisEngine {
             "sentiment_acceleration": sentiment_acceleration,
             "contradictory_signal": contradictory_signal,
             "news_fatigue": news_fatigue,
+            "momentum_signals": signals.iter().map(|(name, _, _)| *name).collect::<Vec<&str>>(),
         });
 
         Ok(AnalysisResult {

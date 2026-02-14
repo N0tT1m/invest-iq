@@ -1,8 +1,16 @@
 use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
+use tokio::sync::Mutex;
+
+/// Serializes audit writes to prevent race conditions on the hash chain.
+static AUDIT_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Log an audit event to the audit_log table with tamper-evident hash chain.
 /// Each entry stores a SHA-256 hash of its contents plus the previous entry's hash,
 /// forming an append-only verifiable chain.
+///
+/// Uses a mutex + transaction to ensure the read-prev-hash + insert is atomic,
+/// preventing concurrent writes from breaking the hash chain.
 pub async fn log_audit(
     pool: &sqlx::AnyPool,
     event_type: &str,
@@ -12,48 +20,56 @@ pub async fn log_audit(
     user_id: &str,
     order_id: Option<&str>,
 ) {
-    // Fetch the previous entry's hash and sequence number
-    let (prev_hash, prev_seq): (String, i64) = sqlx::query_as(
-        "SELECT COALESCE(entry_hash, ''), COALESCE(sequence_number, 0)
-         FROM audit_log ORDER BY sequence_number DESC LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_default();
+    // Serialize audit writes to prevent race conditions on the hash chain
+    let _guard = AUDIT_WRITE_LOCK.lock().await;
 
-    let sequence_number = prev_seq + 1;
-    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let tx_result: Result<(), sqlx::Error> = async {
+        let mut tx = pool.begin().await?;
 
-    // Compute entry hash: SHA-256(prev_hash || event_type || symbol || action || details || timestamp)
-    let entry_hash = compute_entry_hash(
-        &prev_hash,
-        event_type,
-        symbol.unwrap_or(""),
-        action.unwrap_or(""),
-        details.unwrap_or(""),
-        &timestamp,
-    );
+        // Fetch the previous entry's hash and sequence number within the transaction
+        let (prev_hash, prev_seq): (String, i64) = sqlx::query_as(
+            "SELECT COALESCE(entry_hash, ''), COALESCE(sequence_number, 0)
+             FROM audit_log ORDER BY sequence_number DESC LIMIT 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .unwrap_or_default();
 
-    let result = sqlx::query(
-        "INSERT INTO audit_log (event_type, symbol, action, details, user_id, order_id, prev_hash, entry_hash, sequence_number, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(event_type)
-    .bind(symbol)
-    .bind(action)
-    .bind(details)
-    .bind(user_id)
-    .bind(order_id)
-    .bind(&prev_hash)
-    .bind(&entry_hash)
-    .bind(sequence_number)
-    .bind(&timestamp)
-    .execute(pool)
+        let sequence_number = prev_seq + 1;
+        let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let entry_hash = compute_entry_hash(
+            &prev_hash,
+            event_type,
+            symbol.unwrap_or(""),
+            action.unwrap_or(""),
+            details.unwrap_or(""),
+            &timestamp,
+        );
+
+        sqlx::query(
+            "INSERT INTO audit_log (event_type, symbol, action, details, user_id, order_id, prev_hash, entry_hash, sequence_number, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(event_type)
+        .bind(symbol)
+        .bind(action)
+        .bind(details)
+        .bind(user_id)
+        .bind(order_id)
+        .bind(&prev_hash)
+        .bind(&entry_hash)
+        .bind(sequence_number)
+        .bind(&timestamp)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
     .await;
 
-    if let Err(e) = result {
+    if let Err(e) = tx_result {
         tracing::warn!("Failed to write audit log ({}): {}", event_type, e);
     }
 }

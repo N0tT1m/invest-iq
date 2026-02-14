@@ -288,7 +288,28 @@ async fn review_trade(
         .ok_or_else(|| anyhow::anyhow!("Database not configured"))?;
     let pool = pm.db().pool();
 
-    // Verify trade is still pending
+    // Atomically claim the trade by updating status only if still pending.
+    // This prevents double-spend if two approvals race.
+    let claim_result = sqlx::query(
+        "UPDATE pending_trades SET status = 'claimed', reviewed_at = ? WHERE id = ? AND status = 'pending'"
+    )
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    if claim_result.rows_affected() == 0 {
+        let current_status: Option<(String,)> = sqlx::query_as(
+            "SELECT status FROM pending_trades WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+        let status = current_status.map(|r| r.0).unwrap_or_else(|| "not found".to_string());
+        return Err(anyhow::anyhow!("Trade {} is already {}", id, status).into());
+    }
+
+    // Now fetch the full trade details (we own it exclusively)
     let trade: PendingTrade = sqlx::query_as(
         "SELECT id, symbol, action, shares, confidence, reason, signal_type,
                 proposed_at, status, reviewed_at, price, order_id
@@ -297,10 +318,6 @@ async fn review_trade(
     .bind(id)
     .fetch_one(pool)
     .await?;
-
-    if trade.status != "pending" {
-        return Err(anyhow::anyhow!("Trade {} is already {}", id, trade.status).into());
-    }
 
     match req.action.as_str() {
         "approve" => {

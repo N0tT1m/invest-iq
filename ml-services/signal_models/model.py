@@ -196,25 +196,59 @@ class WeightOptimizer:
 
     def __init__(self, model_dir: str = "./models/signal_models"):
         self.model_dir = Path(model_dir)
-        self.model: Optional[xgb.Booster] = None
+        self.models: Optional[list] = None  # List[xgb.Booster] for multi-model format
+        self.model: Optional[xgb.Booster] = None  # Single model (legacy format)
         self._loaded = False
+        self._multi_model = False
 
     def load(self) -> bool:
-        """Load trained model from disk."""
+        """Load trained model from disk.
+
+        Supports two formats:
+        1. Multi-file: weight_optimizer_manifest.json + weight_optimizer_0..3.json (from train.py)
+        2. Legacy single-file: weight_optimizer.json
+        """
+        if not HAS_XGBOOST:
+            logger.warning("xgboost not installed — cannot load weight optimizer")
+            return False
+
+        # Try multi-file format first (matches train.py output)
+        manifest_path = self.model_dir / "weight_optimizer_manifest.json"
+        if manifest_path.exists():
+            try:
+                import json
+                with open(manifest_path) as f:
+                    manifest = json.load(f)
+                n_models = manifest.get("n_models", 4)
+                models = []
+                for i in range(n_models):
+                    model_path = self.model_dir / f"weight_optimizer_{i}.json"
+                    if not model_path.exists():
+                        logger.warning("Missing model file %s", model_path)
+                        break
+                    booster = xgb.Booster()
+                    booster.load_model(str(model_path))
+                    models.append(booster)
+                if len(models) == n_models:
+                    self.models = models
+                    self._multi_model = True
+                    self._loaded = True
+                    logger.info("Weight optimizer loaded (multi-model, %d models) from %s", n_models, self.model_dir)
+                    return True
+            except Exception as e:
+                logger.error("Failed to load multi-model weight optimizer: %s", e)
+
+        # Fall back to legacy single-file format
         path = self.model_dir / "weight_optimizer.json"
         if not path.exists():
             logger.info("Weight optimizer not found at %s — using default weights", path)
-            return False
-
-        if not HAS_XGBOOST:
-            logger.warning("xgboost not installed — cannot load weight optimizer")
             return False
 
         try:
             self.model = xgb.Booster()
             self.model.load_model(str(path))
             self._loaded = True
-            logger.info("Weight optimizer loaded from %s", path)
+            logger.info("Weight optimizer loaded (single-model) from %s", path)
             return True
         except Exception as e:
             logger.error("Failed to load weight optimizer: %s", e)
@@ -239,7 +273,12 @@ class WeightOptimizer:
 
         try:
             dmat = xgb.DMatrix(features.reshape(1, -1))
-            raw = self.model.predict(dmat)[0]  # shape (4,)
+
+            if self._multi_model and self.models:
+                # Multi-model: each model predicts one weight dimension
+                raw = np.array([m.predict(dmat)[0] for m in self.models])
+            else:
+                raw = self.model.predict(dmat)[0]  # shape (4,)
 
             # Softmax normalization to ensure positive values summing to 1
             exp_vals = np.exp(raw - np.max(raw))  # numerical stability

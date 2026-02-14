@@ -6,8 +6,18 @@ use axum::{
     Json,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+
+/// Hash a key with SHA-256 for constant-time-safe HashMap lookup.
+/// By storing and comparing hashes (fixed 64-char hex) instead of raw keys,
+/// the HashMap lookup timing does not leak information about the key value.
+fn hash_key(key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 #[cfg(test)]
 #[path = "auth_tests.rs"]
@@ -82,8 +92,9 @@ pub async fn auth_middleware(
     // Try to extract API key from various sources
     let api_key = extract_api_key(&headers, &request)?;
 
-    // Validate the API key and get role
-    let role = match valid_keys.get(api_key.as_str()) {
+    // Hash the provided key and look up in the hashed-key HashMap
+    let key_hash = hash_key(&api_key);
+    let role = match valid_keys.get(&key_hash) {
         Some(role) => {
             state.brute_force_guard.record_success(&ip);
             *role
@@ -149,14 +160,16 @@ pub(crate) fn get_valid_api_keys() -> HashMap<String, Role> {
                 return None;
             }
 
-            // Parse "key:role" format, default to Admin if no role specified
+            // Parse "key:role" format, default to Admin if no role specified.
+            // Keys are hashed with SHA-256 before storing so lookups compare
+            // fixed-length hashes, eliminating timing side-channels.
             if let Some((key, role_str)) = entry.split_once(':') {
-                let key = key.trim().to_string();
+                let key = key.trim();
                 let role = Role::from_str(role_str.trim()).unwrap_or(Role::Admin);
-                Some((key, role))
+                Some((hash_key(key), role))
             } else {
                 // No role specified, default to Admin (backwards compatible)
-                Some((entry.to_string(), Role::Admin))
+                Some((hash_key(entry), Role::Admin))
             }
         })
         .collect()
@@ -213,7 +226,8 @@ pub async fn live_trading_auth_middleware(
                 return Err(AuthError::MissingLiveTradingKey);
             }
 
-            if provided != expected {
+            // Compare hashes instead of raw strings to prevent timing attacks
+            if hash_key(provided) != hash_key(&expected) {
                 tracing::warn!("Invalid live trading key attempted");
                 return Err(AuthError::InvalidLiveTradingKey);
             }

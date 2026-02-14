@@ -137,13 +137,15 @@ async fn build_positions_with_pnl(state: &AppState) -> Result<Vec<PositionWithPn
         let rt = tokio::runtime::Handle::current();
         let symbol = symbol.to_string();
         let orch = orchestrator.clone();
-        rt.block_on(async move {
-            let bars = orch
-                .get_bars(&symbol, analysis_core::Timeframe::Day1, 1)
-                .await?;
-            bars.last()
-                .map(|bar| bar.close)
-                .ok_or_else(|| anyhow::anyhow!("No price data for {}", symbol))
+        tokio::task::block_in_place(|| {
+            rt.block_on(async move {
+                let bars = orch
+                    .get_bars(&symbol, analysis_core::Timeframe::Day1, 1)
+                    .await?;
+                bars.last()
+                    .map(|bar| bar.close)
+                    .ok_or_else(|| anyhow::anyhow!("No price data for {}", symbol))
+            })
         })
     };
     let summary = pm.get_portfolio_summary(price_fetcher).await?;

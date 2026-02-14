@@ -130,19 +130,21 @@ async fn get_portfolio_summary(
     // Create price fetcher closure
     let orchestrator = state.orchestrator.clone();
     let price_fetcher = move |symbol: &str| -> anyhow::Result<f64> {
-        // We need to make this async work in sync context
-        // For now, we'll use a blocking approach
         let rt = tokio::runtime::Handle::current();
         let symbol = symbol.to_string();
         let orch = orchestrator.clone();
 
-        rt.block_on(async move {
-            let bars = orch
-                .get_bars(&symbol, analysis_core::Timeframe::Day1, 1)
-                .await?;
-            bars.last()
-                .map(|bar| bar.close)
-                .ok_or_else(|| anyhow::anyhow!("No price data available for {}", symbol))
+        // Use block_in_place to safely run async code from a sync closure
+        // without deadlocking the tokio runtime
+        tokio::task::block_in_place(|| {
+            rt.block_on(async move {
+                let bars = orch
+                    .get_bars(&symbol, analysis_core::Timeframe::Day1, 1)
+                    .await?;
+                bars.last()
+                    .map(|bar| bar.close)
+                    .ok_or_else(|| anyhow::anyhow!("No price data available for {}", symbol))
+            })
         })
     };
 
@@ -376,13 +378,15 @@ async fn save_snapshot(
         let symbol = symbol.to_string();
         let orch = orchestrator.clone();
 
-        rt.block_on(async move {
-            let bars = orch
-                .get_bars(&symbol, analysis_core::Timeframe::Day1, 1)
-                .await?;
-            bars.last()
-                .map(|bar| bar.close)
-                .ok_or_else(|| anyhow::anyhow!("No price data available for {}", symbol))
+        tokio::task::block_in_place(|| {
+            rt.block_on(async move {
+                let bars = orch
+                    .get_bars(&symbol, analysis_core::Timeframe::Day1, 1)
+                    .await?;
+                bars.last()
+                    .map(|bar| bar.close)
+                    .ok_or_else(|| anyhow::anyhow!("No price data available for {}", symbol))
+            })
         })
     };
 

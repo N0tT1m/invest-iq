@@ -1,5 +1,15 @@
 use analysis_core::Bar;
 
+/// Return val if it is finite, otherwise return default.
+#[inline]
+pub fn finite_or(val: f64, default: f64) -> f64 {
+    if val.is_finite() {
+        val
+    } else {
+        default
+    }
+}
+
 /// Simple Moving Average
 pub fn sma(data: &[f64], period: usize) -> Vec<f64> {
     if period == 0 || data.len() < period {
@@ -9,7 +19,7 @@ pub fn sma(data: &[f64], period: usize) -> Vec<f64> {
     let mut result = Vec::with_capacity(data.len() - period + 1);
     for i in period - 1..data.len() {
         let sum: f64 = data[i + 1 - period..=i].iter().sum();
-        result.push(sum / period as f64);
+        result.push(finite_or(sum / period as f64, 0.0));
     }
     result
 }
@@ -23,17 +33,27 @@ pub fn ema(data: &[f64], period: usize) -> Vec<f64> {
     let mut result = Vec::with_capacity(data.len());
     let multiplier = 2.0 / (period as f64 + 1.0);
 
-    // Start with SMA for first value
+    // Not enough data for a full SMA seed -- return partial SMA
     if data.len() < period {
-        return vec![data.iter().sum::<f64>() / data.len() as f64];
+        let avg = data.iter().sum::<f64>() / data.len() as f64;
+        return vec![finite_or(avg, 0.0)];
     }
 
-    let sma: f64 = data[..period].iter().sum::<f64>() / period as f64;
-    result.push(sma);
+    // Seed: SMA over the first `period` elements
+    let sma_seed: f64 = data[..period].iter().sum::<f64>() / period as f64;
+    let sma_seed = finite_or(sma_seed, 0.0);
 
-    for i in 1..data.len() {
-        let ema_val = (data[i] - result[i - 1]) * multiplier + result[i - 1];
-        result.push(ema_val);
+    // Fill the first `period` slots with the SMA so the output length
+    // matches the input length (callers like MACD and Keltner rely on this).
+    for _ in 0..period {
+        result.push(sma_seed);
+    }
+
+    // EMA smoothing starts at index `period` (the element right after the SMA window)
+    for i in period..data.len() {
+        let prev_ema = result[i - 1];
+        let ema_val = (data[i] - prev_ema) * multiplier + prev_ema;
+        result.push(finite_or(ema_val, prev_ema));
     }
 
     result
@@ -75,7 +95,7 @@ pub fn rsi(data: &[f64], period: usize) -> Vec<f64> {
         };
 
         let rsi = 100.0 - (100.0 / (1.0 + rs));
-        rsi_values.push(rsi);
+        rsi_values.push(finite_or(rsi, 50.0));
     }
 
     rsi_values
@@ -153,8 +173,8 @@ pub fn bollinger_bands(data: &[f64], period: usize, std_dev: f64) -> BollingerBa
         let variance: f64 = slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / period as f64;
         let std = variance.sqrt();
 
-        upper.push(mean + std_dev * std);
-        lower.push(mean - std_dev * std);
+        upper.push(finite_or(mean + std_dev * std, mean));
+        lower.push(finite_or(mean - std_dev * std, mean));
     }
 
     BollingerBands {
@@ -183,11 +203,12 @@ pub fn atr(bars: &[Bar], period: usize) -> Vec<f64> {
 
     let mut atr_values = Vec::new();
     let mut atr = true_ranges[..period].iter().sum::<f64>() / period as f64;
+    atr = finite_or(atr, 0.0);
     atr_values.push(atr);
 
     for tr in &true_ranges[period..] {
         atr = (atr * (period - 1) as f64 + tr) / period as f64;
-        atr_values.push(atr);
+        atr_values.push(finite_or(atr, 0.0));
     }
 
     atr_values
@@ -223,7 +244,7 @@ pub fn stochastic(bars: &[Bar], k_period: usize, d_period: usize) -> StochasticR
             100.0 * (bars[i].close - lowest) / (highest - lowest)
         };
 
-        k_values.push(k);
+        k_values.push(finite_or(k, 50.0));
     }
 
     let d_values = sma(&k_values, d_period);
@@ -348,11 +369,12 @@ pub fn adx(bars: &[Bar], period: usize) -> AdxResult {
 
     let mut adx_values = Vec::new();
     let mut adx_val = dx_values[..period].iter().sum::<f64>() / period as f64;
+    adx_val = finite_or(adx_val, 0.0);
     adx_values.push(adx_val);
 
     for dx in &dx_values[period..] {
         adx_val = (adx_val * (period - 1) as f64 + dx) / period as f64;
-        adx_values.push(adx_val);
+        adx_values.push(finite_or(adx_val, 0.0));
     }
 
     AdxResult {
@@ -441,7 +463,7 @@ pub fn vwap(bars: &[Bar]) -> Vec<f64> {
             typical_price
         };
 
-        vwap_values.push(vwap);
+        vwap_values.push(finite_or(vwap, typical_price));
     }
 
     vwap_values

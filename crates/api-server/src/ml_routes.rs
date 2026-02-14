@@ -250,7 +250,15 @@ async fn trade_signal(
     // Market context
     features.insert("market_regime_encoded".into(), 4.0); // default: normal
     features.insert("inter_engine_agreement".into(), 0.0);
-    features.insert("vix_proxy".into(), 0.0);
+
+    // Compute VIX proxy from quant volatility (annualized stock vol)
+    let vix_proxy = analysis
+        .quantitative
+        .as_ref()
+        .and_then(|q| q.metrics.get("volatility"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    features.insert("vix_proxy".into(), vix_proxy);
 
     let prediction = provider
         .predict_trade(&features)

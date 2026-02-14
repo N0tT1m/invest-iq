@@ -1,12 +1,7 @@
 """
 InvestIQ Dashboard Components
 
-New feature visualization components for:
-- Sentiment Velocity
-- Risk Radar
-- Confidence Compass (Calibration)
-- Flow Map
-- And more...
+All visualization and interaction components for the Dash frontend.
 """
 
 from .sentiment_velocity import SentimentVelocityComponent, create_velocity_gauge
@@ -52,6 +47,18 @@ from .social_sentiment import SocialSentimentComponent
 from .macro_overlay import MacroOverlayComponent
 from .portfolio_dashboard import PortfolioDashboardComponent
 from .backtest_panel import BacktestPanelComponent
+from .paper_trading import PaperTradingComponent
+from .live_trading import LiveTradingComponent
+from .agent_trades import AgentTradesComponent
+from .agent_analytics import AgentAnalyticsComponent
+from .symbol_search import SymbolSearchComponent
+from .stock_screener import StockScreenerComponent
+from .portfolio_analytics import PortfolioAnalyticsComponent
+from .ml_trade_signal import MLTradeSignalComponent
+from .ml_sentiment import MLSentimentComponent
+from .ml_price_forecast import MLPriceForecastComponent
+from .ml_calibration import MLCalibrationComponent
+from .ml_strategy_weights import MLStrategyWeightsComponent
 
 __all__ = [
     'SentimentVelocityComponent',
@@ -89,4 +96,16 @@ __all__ = [
     'MacroOverlayComponent',
     'PortfolioDashboardComponent',
     'BacktestPanelComponent',
+    'PaperTradingComponent',
+    'LiveTradingComponent',
+    'AgentTradesComponent',
+    'AgentAnalyticsComponent',
+    'SymbolSearchComponent',
+    'StockScreenerComponent',
+    'PortfolioAnalyticsComponent',
+    'MLTradeSignalComponent',
+    'MLSentimentComponent',
+    'MLPriceForecastComponent',
+    'MLCalibrationComponent',
+    'MLStrategyWeightsComponent',
 ]
