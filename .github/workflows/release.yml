@@ -162,6 +162,7 @@ jobs:
           args: ${{ matrix.args }}
 
   publish-release:
+    if: always() && needs.create-release.result == 'success' && needs.build-api-server.result == 'success'
     needs: [create-release, build-api-server, build-desktop]
     runs-on: ubuntu-latest
     steps:
