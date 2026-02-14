@@ -1,5 +1,53 @@
 # InvestIQ Deployment Guide
 
+## Quick Start (Pre-built Binary)
+
+The fastest way to deploy. The API server has the frontend embedded — one binary, no dependencies.
+
+```bash
+# 1. Download the latest release for your platform
+gh release download --repo N0tT1m/invest-iq --pattern "api-server-linux*" --dir .
+# Also grab ML models if available
+gh release download --repo N0tT1m/invest-iq --pattern "ml-models*" --dir .
+
+# 2. Extract ML models
+unzip ml-models.zip
+
+# 3. Configure environment
+cat > .env <<EOF
+POLYGON_API_KEY=your_key_here
+DATABASE_URL=sqlite:portfolio.db
+RUST_LOG=info
+EOF
+
+# 4. Run
+chmod +x api-server-linux-x64
+./api-server-linux-x64
+# API + Frontend at http://localhost:3000
+```
+
+### Platform Downloads
+
+| Platform | Asset Name | Command |
+|----------|-----------|---------|
+| Linux x64 | `api-server-linux-x64` | `gh release download --pattern "api-server-linux*"` |
+| macOS Apple Silicon | `api-server-macos-arm64` | `gh release download --pattern "api-server-macos-arm*"` |
+| macOS Intel | `api-server-macos-x64` | `gh release download --pattern "api-server-macos-x64*"` |
+| Windows | `api-server-windows-x64.exe` | `gh release download --pattern "api-server-windows*"` |
+
+### ML Models
+
+ML models are shipped as `ml-models.zip` attached to the release (uploaded separately by maintainers via `./scripts/upload-models.sh <tag>`).
+
+Included (~10 MB):
+- `ml-services/models/signal_models/` — XGBoost meta-model, calibrators, weight optimizers
+- `ml-services/models/price_predictor/` — PatchTST price forecasting model
+
+Not included (auto-downloads on first use):
+- `ml-services/models/sentiment/` — FinBERT model (~836 MB, fetched from HuggingFace)
+
+Set `ML_MODELS_PATH` to point to the extracted models directory if it differs from the default (`./ml-services/models`).
+
 ## Quick Start (Docker)
 
 ```bash
@@ -205,3 +253,73 @@ cp backups/portfolio_20260210_020000.db portfolio.db
 - `GET /health` — Returns dependency status (DB, Polygon, Redis, Alpaca, ML)
 - `GET /metrics` — Request count, error count, latency histogram
 - ML service: `GET http://localhost:8004/health`
+
+## Creating Releases
+
+Releases are automated via GitHub Actions (`.github/workflows/release.yml`). Pushing a version tag triggers the build.
+
+### Release Workflow
+
+```bash
+# 1. Commit all changes
+git add -A && git commit -m "Release v1.0.1"
+git push origin main
+
+# 2. Tag and push (triggers CI build)
+git tag v1.0.1
+git push origin v1.0.1
+
+# 3. Upload ML models (local machine — models are gitignored)
+./scripts/upload-models.sh v1.0.1
+
+# 4. Monitor the build
+gh run watch
+```
+
+### What the Workflow Does
+
+1. **Creates a draft release** on GitHub
+2. **Builds the API server** for 4 platforms (Windows, macOS ARM/Intel, Linux) in parallel
+3. **Builds the Tauri desktop app** for Windows and macOS (requires signing secrets)
+4. **Publishes the release** once all API server builds succeed (desktop build failures don't block publishing)
+
+### Pre-release Tags
+
+Tags containing `-rc` or `-beta` are automatically marked as pre-releases:
+
+```bash
+git tag v1.0.1-rc1    # marked as pre-release
+git tag v1.0.1-beta2  # marked as pre-release
+git tag v1.0.1        # marked as latest release
+```
+
+### Re-creating a Failed Release
+
+```bash
+# Delete the broken tag
+git push origin --delete v1.0.1
+git tag -d v1.0.1
+
+# Fix the issue, re-tag, and push
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+### Desktop App Signing Secrets
+
+The Tauri desktop build requires these GitHub repository secrets for code signing:
+
+| Secret | Purpose |
+|--------|---------|
+| `APPLE_CERTIFICATE` | Base64-encoded .p12 certificate |
+| `APPLE_CERTIFICATE_PASSWORD` | Certificate password |
+| `APPLE_SIGNING_IDENTITY` | Signing identity string |
+| `APPLE_ID` | Apple Developer account email |
+| `APPLE_PASSWORD` | App-specific password |
+| `APPLE_TEAM_ID` | Apple Developer team ID |
+| `WINDOWS_CERTIFICATE` | Base64-encoded .pfx certificate |
+| `WINDOWS_CERTIFICATE_PASSWORD` | Certificate password |
+| `TAURI_SIGNING_PRIVATE_KEY` | Tauri updater signing key |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Signing key password |
+
+If these are not configured, the desktop build will fail but the API server binaries will still be published.

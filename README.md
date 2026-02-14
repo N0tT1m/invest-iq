@@ -506,6 +506,109 @@ Key tables: `trades`, `positions`, `alerts`, `backtest_results`, `backtest_trade
 
 Trade execution uses database transactions (trade log + risk position + portfolio update atomic). Idempotency keys prevent duplicate order submission (24h expiry).
 
+## Releases & Distribution
+
+Pre-built binaries are published as GitHub Releases. The API server binary has the frontend embedded — no separate frontend setup required.
+
+### Creating a Release
+
+```bash
+# 1. Tag the commit
+git tag v1.0.1
+
+# 2. Push the tag (triggers the release workflow)
+git push origin v1.0.1
+
+# 3. Attach ML models (run locally — models are gitignored)
+./scripts/upload-models.sh v1.0.1
+```
+
+The release workflow automatically builds the API server for:
+- **Windows** — `api-server-windows-x64.exe`
+- **macOS (ARM)** — `api-server-macos-arm64`
+- **macOS (Intel)** — `api-server-macos-x64`
+- **Linux** — `api-server-linux-x64`
+
+It also builds the Tauri desktop app (requires signing secrets).
+
+### Release Assets
+
+| Asset | Contents |
+|-------|----------|
+| `api-server-*` | Standalone API server with embedded frontend |
+| `ml-models.zip` | Signal models + price predictor (~10 MB, uploaded manually) |
+| Desktop installers | `.exe`/`.msi` (Windows), `.dmg` (macOS) — if signing secrets configured |
+
+The FinBERT sentiment model (~836 MB) is not included in releases. It downloads automatically on first run via HuggingFace.
+
+### Downloading a Release (Testers)
+
+Install the [GitHub CLI](https://cli.github.com/), then:
+
+```bash
+# Install gh
+# Windows: winget install GitHub.cli
+# macOS:   brew install gh
+# Login once
+gh auth login
+
+# Download the latest release
+gh release download --repo N0tT1m/invest-iq --dir .
+
+# Or download a specific version / platform
+gh release download v1.0.1 --repo N0tT1m/invest-iq --pattern "api-server-windows*" --dir .
+gh release download v1.0.1 --repo N0tT1m/invest-iq --pattern "ml-models*" --dir .
+```
+
+### Running a Release
+
+```bash
+# 1. Unzip ML models (if downloaded)
+unzip ml-models.zip
+
+# 2. Create .env file with at minimum:
+#    POLYGON_API_KEY=your_key_here
+
+# 3. Run the server
+./api-server-linux-x64          # Linux
+./api-server-macos-arm64        # macOS Apple Silicon
+api-server-windows-x64.exe      # Windows
+
+# Server starts at http://localhost:3000 (frontend + API)
+```
+
+### Distributing the .env File
+
+The `.env` file contains secrets and should never be committed or included in releases. Options for sharing with testers:
+
+- **1Password / Bitwarden Send** — Generate a time-limited, one-use link
+- **age encryption** — `age -e -r <recipient-pubkey> .env > .env.age`, share `.env.age` in the release
+- **Tailscale file send** — `tailscale file cp .env <tester-machine>:` (direct, encrypted, no cloud)
+
+### Uploading ML Models
+
+The `scripts/upload-models.sh` script packages signal models and price predictor into `ml-models.zip` and attaches it to a release:
+
+```bash
+./scripts/upload-models.sh v1.0.1
+# Packages: ml-services/models/signal_models/ + ml-services/models/price_predictor/
+# Excludes: FinBERT sentiment model (836 MB, auto-downloads at runtime)
+# Uploads:  ml-models.zip (~10 MB) to the specified release
+```
+
+### Monitoring Releases
+
+```bash
+# Watch the build in progress
+gh run watch
+
+# List releases
+gh release list --repo N0tT1m/invest-iq
+
+# View a specific release
+gh release view v1.0.1 --repo N0tT1m/invest-iq
+```
+
 ## Development
 
 ```bash
